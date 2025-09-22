@@ -4,6 +4,11 @@ The **Magician Annotator Tool** is a graphical application for interactive annot
 It allows manual marking of defects, severity classification, lighting estimation, and region selection.  
 The tool supports batch processing, magnification, JSON-based metadata storage, and optional server upload.
 
+
+---
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/illustration.jpg?raw=true" height=200/>
+
 ---
 
 ## ✨ Features
