@@ -7,7 +7,7 @@ The tool supports batch processing, magnification, JSON-based metadata storage, 
 
 ---
 
-<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/illustration.jpg?raw=true" height=200/>
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/illustration.jpg?raw=true" />
 
 ---
 
