@@ -26,6 +26,9 @@ import json
 import os
 import sys
 import numpy as np
+import time
+import threading
+
 """
 from wxAcquisition import CameraSettingsDialog
 """
@@ -35,10 +38,12 @@ import wx.lib.newevent
 import sys
 import os
 
+from folderStream import FolderStreamer
+
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-version = "0.07"
+version = "0.17"
 useSAM  = False
 useClassifier  = False #<- Switch classifier off
 combineChannels = True
@@ -89,18 +94,24 @@ def get_md5(file_path):
 Check if a file exists
 """
 def checkIfFileExists(filename):
+    if (filename is None):  
+       return False
     return os.path.isfile(filename) 
 
 """
 Check if a path exists
 """
 def checkIfPathExists(filename):
+    if (filename is None):  
+       return False
     return os.path.exists(filename) 
 
 """
 Check if a path exists
 """
 def checkIfPathIsDirectory(filename):
+    if (filename is None):  
+       return False
     return os.path.isdir(filename) 
 
 
@@ -193,6 +204,35 @@ def detect_sobel_edges(image):
     return result
 
 
+
+def tenengrad_focus_measure(image, ksize=3):
+    """
+    Compute the Tenengrad focus measure of an image.
+    
+    Parameters:
+        image (numpy.ndarray): Input image (BGR or grayscale).
+        ksize (int): Kernel size for Sobel operator (must be 1, 3, 5, or 7).
+    
+    Returns:
+        float: Tenengrad focus measure value.
+    """
+    # Convert to grayscale if image is colored
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image
+    
+    # Apply Sobel operator in X and Y directions
+    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize)
+    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=ksize)
+    
+    # Compute gradient magnitude
+    gxy = gx**2 + gy**2
+    
+    # Return mean gradient magnitude (Tenengrad measure)
+    return np.mean(gxy)
+
+
 def determine_intensity_region(image, threshold=0.1):
     """
     Determines the region of the image with the highest intensity values.
@@ -214,11 +254,11 @@ def determine_intensity_region(image, threshold=0.1):
     height, width = gray_image.shape
 
     # Define regions
-    top_left = gray_image[:height//2, :width//2]
-    top = gray_image[:height//2, width//4:(3*width)//4]
-    top_right = gray_image[:height//2, width//2:]
-    bottom_left = gray_image[height//2:, :width//2]
-    bottom = gray_image[height//2:, width//4:(3*width)//4]
+    top_left     = gray_image[:height//2, :width//2]
+    top          = gray_image[:height//2, width//4:(3*width)//4]
+    top_right    = gray_image[:height//2, width//2:]
+    bottom_left  = gray_image[height//2:, :width//2]
+    bottom       = gray_image[height//2:, width//4:(3*width)//4]
     bottom_right = gray_image[height//2:, width//2:]
 
     # Compute average intensities for each region
@@ -235,7 +275,7 @@ def determine_intensity_region(image, threshold=0.1):
 
     # Find the region with the highest intensity
     max_region = max(regions, key=regions.get)
-    max_value = regions[max_region]
+    max_value  = regions[max_region]
 
     # Calculate the overall mean intensity
     overall_mean = np.mean(gray_image)
@@ -263,10 +303,10 @@ def adjust_contrast(image: np.ndarray, factor: float):
     img_float = image.astype(np.float32) / 255.0
     
     # Compute mean intensity per channel
-    mean = np.mean(img_float, axis=(0, 1), keepdims=True)
+    mean      = np.mean(img_float, axis=(0, 1), keepdims=True)
     
     # Apply contrast adjustment
-    adjusted = mean + factor * (img_float - mean)
+    adjusted  = mean + factor * (img_float - mean)
     
     # Clip values to valid range and convert back to uint8
     adjusted = np.clip(adjusted * 255, 0, 255).astype(np.uint8)
@@ -350,6 +390,271 @@ def slowPC():
         return True
     return False
 
+
+class UploadDialog(wx.Dialog):
+    def __init__(self, parent, zip_path, dataset):
+        super().__init__(parent, title="Upload Annotations", size=(350, 200))
+        self.zip_path = zip_path  # path to the zip file
+        self.dataset  = dataset
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Username
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        hbox1.Add(wx.StaticText(self, label="Username:"), 0, wx.ALL | wx.CENTER, 5)
+        self.username = wx.TextCtrl(self)
+        hbox1.Add(self.username, 1, wx.ALL | wx.EXPAND, 5)
+        vbox.Add(hbox1, 0, wx.EXPAND)
+
+        # Password
+        hbox2 = wx.BoxSizer(wx.HORIZONTAL)
+        hbox2.Add(wx.StaticText(self, label="Password:"), 0, wx.ALL | wx.CENTER, 5)
+        self.password = wx.TextCtrl(self, style=wx.TE_PASSWORD)
+        hbox2.Add(self.password, 1, wx.ALL | wx.EXPAND, 5)
+        vbox.Add(hbox2, 0, wx.EXPAND)
+
+
+ 
+        vbox.Add(wx.StaticText(self, label=" Contact ammarkov@ics.forth.gr for a new account"), 0, wx.EXPAND)
+
+        # Buttons
+        btns = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
+        vbox.Add(btns, 0, wx.EXPAND | wx.ALL, 10)
+
+        self.SetSizer(vbox)
+
+        # Override Upload (OK) behavior
+        self.Bind(wx.EVT_BUTTON, self.onUpload, id=wx.ID_OK)
+
+    def onUpload(self, event):
+     user     = self.username.GetValue().strip()
+     pwd      = self.password.GetValue().strip()
+     dataset  = self.dataset
+
+     if not user or not pwd:
+        wx.MessageBox("Please enter both username and password.", "Error", wx.OK | wx.ICON_ERROR)
+        return  # don’t close yet
+
+     # Command for curl file upload
+     url = "http://ammar.gr/magician/upload.php"
+     cmd = [
+        "curl",
+        "-s",  # silent mode
+        "-F", f"username={user}",
+        "-F", f"password={pwd}",
+        "-F", f"dataset={dataset}",
+        "-F", f"file=@{self.zip_path}",  # attach file
+        url
+     ]
+
+     try:
+        import subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        wx.MessageBox(f"Upload successful!\nServer response:\n{result.stdout}", 
+                      "Success", wx.OK | wx.ICON_INFORMATION)
+        self.EndModal(wx.ID_OK)
+     except subprocess.CalledProcessError as e:
+        wx.MessageBox(f"Upload failed!\n{e.stderr}", "Error", wx.OK | wx.ICON_ERROR)
+
+
+
+class BatchProcessDialog(wx.Dialog):
+    def __init__(self, parent, folderStreamer):
+        super().__init__(parent, title="Batch Download of Dataset", size=(400, 200))
+        self.folderStreamer = folderStreamer
+        self.stop_requested = False  # flag for cancellation
+
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Spin control for number of iterations
+        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
+        hbox1.Add(wx.StaticText(self, label="Number of files to download:"), 0, wx.ALL | wx.CENTER, 5)
+        self.spin = wx.SpinCtrl(self, min=1, max=100000, initial=self.folderStreamer.max())
+        hbox1.Add(self.spin, 1, wx.ALL | wx.CENTER, 5)
+        vbox.Add(hbox1, 0, wx.EXPAND)
+
+        # Progress bar
+        self.gauge = wx.Gauge(self, range=100, size=(250, 25))
+        vbox.Add(self.gauge, 0, wx.ALL | wx.EXPAND, 10)
+
+        # ETA label
+        self.eta_label = wx.StaticText(self, label="Estimated time remaining: --")
+        vbox.Add(self.eta_label, 0, wx.ALL | wx.CENTER, 5)
+
+        # Buttons
+        btns = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
+        vbox.Add(btns, 0, wx.EXPAND | wx.ALL, 10)
+
+        self.SetSizer(vbox)
+
+        # Get references to buttons
+        self.okBtn = self.FindWindowById(wx.ID_OK)
+        self.cancelBtn = self.FindWindowById(wx.ID_CANCEL)
+
+        # Override button behavior
+        self.okBtn.Bind(wx.EVT_BUTTON, self.onStart)
+        self.cancelBtn.Bind(wx.EVT_BUTTON, self.onCancel)
+
+    def onStart(self, event):
+        count = self.spin.GetValue()
+        self.okBtn.Disable()  # prevent starting twice
+        self.stop_requested = False
+        threading.Thread(target=self.runBatch, args=(count,), daemon=True).start()
+
+    def onCancel(self, event):
+        self.stop_requested = True  # signal thread to stop
+        self.cancelBtn.Disable()    # prevent spamming cancel button
+
+    def runBatch(self, count):
+        times = []
+        for i in range(count):
+            if self.stop_requested:
+                wx.CallAfter(self.eta_label.SetLabel, "Cancelled by user.")
+                break
+
+            start = time.perf_counter()
+
+            self.folderStreamer.next()
+            self.folderStreamer.getJSON()
+            self.folderStreamer.getImageSimple()
+
+            elapsed = time.perf_counter() - start
+            times.append(elapsed)
+
+            avg_time = sum(times) / len(times)
+            remaining = avg_time * (count - i - 1) / 60
+
+            # Update UI safely
+            wx.CallAfter(self.gauge.SetValue, int((i + 1) / count * 100))
+            wx.CallAfter(self.eta_label.SetLabel, f"Estimated time remaining: {remaining:.1f} mins")
+
+        wx.CallAfter(self.EndModal, wx.ID_OK)
+class MagnifierFrame(wx.Frame):
+    def __init__(self, parent, zoom=3, size=(300, 300), win_size=(400, 400)):
+        super().__init__(parent, title="Magnifier", size=win_size)
+        self.panel = wx.Panel(self)
+        self.zoom = zoom
+        self.size = size
+        self.original_img = None
+        self.last_x, self.last_y = 0, 0  # store last cursor pos
+        self.show_crosshair = False
+
+        # Layout: image + controls
+        vbox = wx.BoxSizer(wx.VERTICAL)
+
+        # Image display
+        self.imageCtrl = wx.StaticBitmap(self.panel, size=size)
+        vbox.Add(self.imageCtrl, 1, wx.EXPAND | wx.ALL, 5)
+
+        # Zoom controls row
+        hbox = wx.BoxSizer(wx.HORIZONTAL)
+
+        self.btnZoomOut = wx.Button(self.panel, label="–")
+        self.btnZoomIn = wx.Button(self.panel, label="+")
+        hbox.Add(self.btnZoomOut, 0, wx.ALL, 5)
+        hbox.Add(self.btnZoomIn, 0, wx.ALL, 5)
+
+        # Slider
+        self.slider = wx.Slider(self.panel, value=self.zoom, minValue=1, maxValue=20,
+                                style=wx.SL_HORIZONTAL | wx.SL_LABELS)
+        hbox.Add(self.slider, 1, wx.ALL | wx.EXPAND, 5)
+
+        # Text field for zoom value
+        self.txtZoom = wx.TextCtrl(self.panel, value=str(self.zoom), size=(50, -1),
+                                   style=wx.TE_PROCESS_ENTER)
+        hbox.Add(self.txtZoom, 0, wx.ALL, 5)
+
+        # Checkbox for crosshair
+        self.crosshairCheckbox = wx.CheckBox(self.panel, label="Show Crosshair")
+        hbox.Add(self.crosshairCheckbox, 0, wx.ALL | wx.CENTER, 5)
+
+        vbox.Add(hbox, 0, wx.EXPAND)
+
+        self.panel.SetSizer(vbox)
+
+        # Bind events
+        self.btnZoomIn.Bind(wx.EVT_BUTTON, self.onZoomIn)
+        self.btnZoomOut.Bind(wx.EVT_BUTTON, self.onZoomOut)
+        self.slider.Bind(wx.EVT_SLIDER, self.onSliderChange)
+        self.txtZoom.Bind(wx.EVT_TEXT_ENTER, self.onTextEnter)
+        self.crosshairCheckbox.Bind(wx.EVT_CHECKBOX, self.onCrosshairToggle)
+
+    def setImage(self, img):
+        """Store original image (as wx.Image) for magnification."""
+        self.original_img = img
+
+    def updateMagnifier(self, x, y):
+        if not self.original_img:
+            return
+
+        self.last_x, self.last_y = x, y  # store last position
+
+        half_w = self.size[0] // (2 * self.zoom)
+        half_h = self.size[1] // (2 * self.zoom)
+
+        # Crop region around cursor
+        crop_x1 = max(0, x - half_w)
+        crop_y1 = max(0, y - half_h)
+        crop_x2 = min(self.original_img.GetWidth(),  x + half_w)
+        crop_y2 = min(self.original_img.GetHeight(), y + half_h)
+
+        sub_img = self.original_img.GetSubImage(
+            (crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1)
+        )
+        sub_img = sub_img.Scale(self.size[0], self.size[1], wx.IMAGE_QUALITY_HIGH)
+
+        # Draw crosshair if enabled
+        if self.show_crosshair:
+            dc = wx.MemoryDC()
+            bmp = wx.Bitmap(sub_img)
+            dc.SelectObject(bmp)
+            w, h = bmp.GetWidth(), bmp.GetHeight()
+            pen = wx.Pen(wx.Colour(255, 0, 0), 1)  # red crosshair
+            dc.SetPen(pen)
+            # Horizontal line
+            dc.DrawLine(0, h//2, w, h//2)
+            # Vertical line
+            dc.DrawLine(w//2, 0, w//2, h)
+            dc.SelectObject(wx.NullBitmap)
+            self.imageCtrl.SetBitmap(bmp)
+        else:
+            self.imageCtrl.SetBitmap(wx.Bitmap(sub_img))
+
+        self.panel.Layout()
+
+    def refreshZoom(self):
+        """Update slider + text + refresh view."""
+        self.slider.SetValue(self.zoom)
+        self.txtZoom.SetValue(str(self.zoom))
+        self.updateMagnifier(self.last_x, self.last_y)
+
+    def onZoomIn(self, event):
+        self.zoom = min(self.zoom + 1, 20)
+        self.refreshZoom()
+
+    def onZoomOut(self, event):
+        self.zoom = max(self.zoom - 1, 1)
+        self.refreshZoom()
+
+    def onSliderChange(self, event):
+        self.zoom = self.slider.GetValue()
+        self.refreshZoom()
+
+    def onTextEnter(self, event):
+        try:
+            val = int(self.txtZoom.GetValue())
+            if 1 <= val <= 20:
+                self.zoom = val
+                self.refreshZoom()
+        except ValueError:
+            pass  # ignore invalid input
+
+    def onCrosshairToggle(self, event):
+        self.show_crosshair = self.crosshairCheckbox.GetValue()
+        self.updateMagnifier(self.last_x, self.last_y)
+
+
+
 class PhotoCtrl(wx.App):
     def __init__(self, redirect=False, filename=None):
         if (useSAM):
@@ -369,24 +674,22 @@ class PhotoCtrl(wx.App):
         print("Screen Resolution: {}x{}".format(screen_width, screen_height))
 
         if (screen_width>=1920):
-          self.PhotoMaxSizeWidth   = 950
-          self.PhotoMaxSizeHeight  = 800
+          self.PhotoMaxSizeWidth   = 800
+          self.PhotoMaxSizeHeight  = 650
         else:
           self.PhotoMaxSizeWidth   = 475 #<- Small monitor
           self.PhotoMaxSizeHeight  = 400
          
         windowTitle = 'Segmentation Control Annotator Tool v%s'%version
         windowPosition = wx.Point(10,10)
-        windowSize = wx.Size(300+self.PhotoMaxSizeWidth*2,self.PhotoMaxSizeHeight+140)
+        windowSize = wx.Size(300+self.PhotoMaxSizeWidth*2,self.PhotoMaxSizeHeight+220)
         print("Set window frame to ",windowSize)
 
         self.SetOutputWindowAttributes(title=windowTitle, pos=windowPosition, size=windowSize)
         self.frame = wx.Frame(None, size=windowSize, title=windowTitle, style=wx.DEFAULT_FRAME_STYLE)
-
-
-
         self.panel = wx.Panel(self.frame, size=windowSize)
 
+        self.folderStreamer =  FolderStreamer()
 
         self.regions_of_interest = []
         self.points_of_interest  = []
@@ -400,6 +703,7 @@ class PhotoCtrl(wx.App):
         self.filepath = ""
         self.filePathIsDirectory = False
         self.metadata = None
+        self.tenengrad_focus_measure = 0.0
 
         self.createWidgets()
         self.frame.Show()
@@ -446,12 +750,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     def createWidgets(self):
         # Create the File menu-----------------------------------------------------
-        fileMenu = wx.Menu()
         menuBar = wx.MenuBar()
+
+        fileMenu = wx.Menu()
 
         # Add items to the File menu
         itemOpen    = fileMenu.Append(wx.ID_OPEN, "&Open Image", "Open an image file")
         itemOpenDir = fileMenu.Append(wx.ID_OPEN, "Open &Directory", "Open a directory")
+        itemOpenNet = fileMenu.Append(wx.ID_OPEN, "Open &Network", "Open network server")
+        itemUpload = fileMenu.Append(wx.ID_UP, "Upload &Annotations", "Upload annotations to server")
+        self.Bind(wx.EVT_MENU, self.onUploadAnnotations, itemUpload)
+        itemBatch = fileMenu.Append(wx.ID_DOWN, "Download &All", "Process multiple files automatically")
+        self.Bind(wx.EVT_MENU, self.onRunBatch, itemBatch)
 
         itemSave    = fileMenu.Append(wx.ID_SAVE, "&Save", "Save the current file")
         fileMenu.AppendSeparator()
@@ -463,13 +773,23 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         # Bind events to the menu items
         self.Bind(wx.EVT_MENU, self.onBrowse, itemOpen)
         self.Bind(wx.EVT_MENU, self.onOpenDirectory, itemOpenDir)  # Bind to the new option
+        self.Bind(wx.EVT_MENU, self.onOpenNetwork, itemOpenNet)  # Bind to the new option 
         self.Bind(wx.EVT_MENU, self.onGenerateJSON, itemGen)  # Bind to the new option
         self.Bind(wx.EVT_MENU, self.onSave, itemSave)
         self.Bind(wx.EVT_MENU, self.onDebug, itemDebug)
         self.Bind(wx.EVT_MENU, self.onExit, itemExit)
 
+
         # Add the File menu to the menu bar
         menuBar.Append(fileMenu, "&File")
+
+
+        toolsMenu = wx.Menu()
+        itemMagnify    = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
+        self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
+
+        # Add the File menu to the menu bar
+        menuBar.Append(toolsMenu, "&Tools")
 
         # Create the Help menu-----------------------------------------------------
         helpMenu = wx.Menu()
@@ -492,7 +812,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         # Add a secondary StaticBitmap
         self.secondaryImageCtrl = wx.StaticBitmap(self.panel, wx.ID_ANY, wx.Bitmap(img))
 
-        instructLbl   = wx.StaticText(self.panel, label='Browse for an image')
+        self.instructLbl   = wx.StaticText(self.panel, label='Magician Annotator')
         self.photoTxt = wx.TextCtrl(self.panel, size=(200, -1),style=wx.TE_PROCESS_ENTER)
         self.photoTxt.Bind(wx.EVT_TEXT_ENTER, self.onPhotoTxtEnter)
 
@@ -585,14 +905,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.lightLabel = wx.StaticText(self.panel, label = "Light Direction")
         self.lightComboBox = wx.ComboBox(self.panel, choices=["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"], style=wx.CB_DROPDOWN)
 
-
         self.datasetLabel = wx.StaticText(self.panel, label = "Dataset Information")
-        self.datasetList = wx.ListBox(self.panel, choices=[], style=wx.LB_SINGLE)
 
+        datasetListSize = wx.Size(-1,80) 
+        self.datasetList  = wx.ListBox(self.panel, size=datasetListSize, choices=[], style=wx.LB_SINGLE)
 
         #Side buttons
         self.regionLabel = wx.StaticText(self.panel, label = "Image Regions")
-        self.regionList = wx.ListBox(self.panel, choices=[], style=wx.LB_SINGLE)
+        regionListSize = wx.Size(-1,40) 
+        self.regionList = wx.ListBox(self.panel, size=regionListSize, choices=[], style=wx.LB_SINGLE)
         self.regionList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
         self.removeRegionBtn = wx.Button(self.panel, label='Remove Selected Point')
         self.removeRegionBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
@@ -628,7 +949,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.underImage = wx.BoxSizer(wx.HORIZONTAL)
 
         self.mainSizer.Add(wx.StaticLine(self.panel, wx.ID_ANY), 0, wx.ALL | wx.EXPAND, 5)
-        self.mainSizer.Add(instructLbl, 0, wx.ALL, 5)
+        self.mainSizer.Add(self.instructLbl, 0, wx.ALL, 5)
 
 
         # Add both StaticBitmaps to a horizontal sizer
@@ -650,7 +971,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         #------------------------------------------------------------
         self.sideSizer.Add(self.defectLabel, 0, wx.ALL, 5)
         self.sideSizer.Add(self.defectComboBox, 0, wx.ALL, 5)
-
 
         self.sideSizer.Add(self.severityLabel, 0, wx.ALL, 5)
         self.sideSizer.Add(self.severityComboBox, 0, wx.ALL, 5) 
@@ -709,10 +1029,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.imageCtrl.Bind(wx.EVT_RIGHT_DOWN, self.onRightDown)  # Bind to image control
         self.secondaryImageCtrl.Bind(wx.EVT_RIGHT_DOWN, self.onRightDown)  # Bind to image control
 
-
         # Bind the mouse wheel event to the panel
         self.panel.Bind(wx.EVT_MOUSEWHEEL, self.onMouseWheel)
-
 
         # Bind left and right arrow keys to onNext and onPrevious methods
         self.frame.Bind(wx.EVT_CHAR_HOOK, self.onKeyPress)
@@ -727,6 +1045,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             
             if 'md5hash' in data:
                 self.filehash = data['md5hash']
+            if 'md5hash' in data:
+                self.filehash = data['md5hash']
+
+            if "tenengradFocusMeasure" in data:
+                self.tenengrad_focus_measure = data['tenengradFocusMeasure']
+
+
             # Restore self.pointList
             if 'pointClicks' in data:
                 self.points_of_interest = data['pointClicks']
@@ -749,8 +1074,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         print("on generate called!")
         if (self.filePathIsDirectory):
                #self.onSave(None)
-               self.directoryListIndex = 0
-               for i in range(len(self.directoryListIndex)):
+               self.folderStreamer.select(0)
+               #self.directoryListIndex = 0
+               #for i in range(len(self.directoryListIndex)):
+               for i in range(self.folderStreamer.max()):
                  print("NEXT")   
                  self.onNext(event) 
 
@@ -775,31 +1102,36 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            print("Not producing a foreground file since no foreground was selected") 
 
         allData = dict()
-        allData["width"] =self.width #self.sam_processor.image.shape[1]
-        allData["height"]=self.height #self.sam_processor.image.shape[0] 
-        allData["md5hash"]=self.filehash
+        allData["width"]   = self.width #self.sam_processor.image.shape[1]
+        allData["height"]  = self.height #self.sam_processor.image.shape[0] 
+        allData["md5hash"] = self.filehash
 
-        allData["regionClicks"]=list()
+        allData["tenengradFocusMeasure"] = self.tenengrad_focus_measure
+
+
+        allData["regionClicks"] = list()
         for x, y in self.regions_of_interest:
               allData["regionClicks"].append((x,y))
 
-        allData["pointClicks"]=list()
+        allData["pointClicks"] = list()
         for x, y in self.points_of_interest:
               allData["pointClicks"].append((x,y))
 
-        allData["pointClasses"]=list()
+        allData["pointClasses"] = list()
         for aClass in self.points_classes:
               allData["pointClasses"].append(aClass)
 
-        allData["pointSeverities"]=list()
+        allData["pointSeverities"] = list()
         for aSeverity in self.points_severities:
               allData["pointSeverities"].append(aSeverity)
 
         if (self.lightComboBox.GetValue()!="Unknown"):
-              allData["lightDirection"]=self.lightComboBox.GetValue()
+              allData["lightDirection"] = self.lightComboBox.GetValue()
 
         with open("%s.json" % self.filepath, "w") as outfile:
             json.dump(allData, outfile, sort_keys=False)
+
+        self.folderStreamer.saveJSON()
 
 
     def cleanThisFrameMetaData(self):
@@ -818,9 +1150,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            else:
                self.cleanThisFrameMetaData()
 
-           if (checkIfFileExists("%s.json"%filepath)):
+           #if (checkIfFileExists("%s.json"%filepath)):
+           #    print("There are saved data that need to be restored here")
+           #    self.restoreFromJSON("%s.json" % filepath)
+           jsonPath = self.folderStreamer.getJSON()
+           if (checkIfFileExists(jsonPath)):
                print("There are saved data that need to be restored here")
-               self.restoreFromJSON("%s.json" % filepath)
+               self.restoreFromJSON(jsonPath)
            
 
            #self.filehash = get_md5(filepath) 
@@ -830,7 +1166,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
            # Process the image with SAM and update the second StaticBitmap
            global combineChannels
-           imgCV = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED
+           imgCV  = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED
            imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
            print("Raw image dims for ",filepath," ",imgCV.shape)
            self.viewedImageFullWidth  = imgCV.shape[1]
@@ -884,14 +1220,17 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                     processed_img = imgClassifier
                     self.sam_processor.image = imgClassifier
                 else:
-                    processed_img = imgCV
-                    self.sam_processor.image = imgCV
+                    processed_img                  = imgCV
+                    self.sam_processor.image       = imgCV
                 self.sam_processor.foregroundImage = imgCV 
              else:
-                processed_img = imgCV
-                self.sam_processor.image = imgCV
+                processed_img                      = imgCV
+                self.sam_processor.image           = imgCV
                 self.sam_processor.foregroundImage = imgCV
   
+           self.tenengrad_focus_measure = tenengrad_focus_measure(processed_img)
+           print("Focus : ",self.tenengrad_focus_measure)
+   
            self.width  = processed_img.shape[1]
            self.height = processed_img.shape[0]
            self.viewedImageViewWidth  = self.width
@@ -910,6 +1249,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                      self.sam_processor.select_area(int(x),int(y))
 
            self.onView()
+
+           bmp = self.imageCtrl.GetBitmap()
+           if hasattr(self, 'magnifier') and self.magnifier and bmp.IsOk():
+               img = bmp.ConvertToImage()
+               self.magnifier.setImage(img)
+               self.magnifier.refreshZoom()
+
 
     def onCameraSettings(self, event):
         #Deactivated
@@ -953,15 +1299,16 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if (self.filepath!=""):
            self.filePathIsDirectory = checkIfPathIsDirectory(self.filepath)
            if (self.filePathIsDirectory):
+               self.folderStreamer.loadNewDataset(self.filepath)
                self.directoryList = list_image_files(self.filepath)
-               self.directoryListIndex = 0
+               #self.directoryListIndex = 0
+               self.folderStreamer.select(0)
                print("Directory mode")
                #print("Directory mode : ",self.directoryList)
                self.populateMetaData("%s/info.json"%self.filepath)
-               self.filepath = self.directoryList[self.directoryListIndex]
-               print("setScrollbar Value/Max ( ",self.directoryListIndex,",",len(self.directoryList),")") 
-               self.scrollBar.SetValue(self.directoryListIndex)
-               self.scrollBar.SetMax(len(self.directoryList))
+               #self.filepath = self.directoryList[self.directoryListIndex]
+               self.filepath = self.folderStreamer.getImage()
+               self.updateMinMaxSlider()
 
 
            self.onProcessNewImageSample(self.filepath)
@@ -972,11 +1319,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     def onExit(self, event):
         sys.exit(0)
 
-
     def onProcessorComboBoxSelect(self, event):
         print("Combo box select changed")
         self.onRedrawData(event)
-
 
     def onComboBoxSelect(self, event):
       selected_option = self.defectComboBox.GetValue()
@@ -999,6 +1344,20 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onNewInputPath(directory_path)
 
         dialog.Destroy()
+
+    def onOpenNetwork(self, event):
+        from datasetSelector import DatasetSelector
+        dlg = DatasetSelector()
+        if dlg.ShowModal() == wx.ID_OK:
+            print("Selected Dataset:",  dlg.selectedDataset)
+            print("Caching Directory:", dlg.selectedDirectory)
+            # You can pass this to your HTTPFolderStreamer
+            #self.onNewInputPath(dlg.selectedDataset)
+            from HTTPStream import HTTPFolderStreamer 
+            self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=dlg.selectedDirectory)
+            self.onNext(event)
+            self.onPrevious(event)
+        dlg.Destroy()
 
     def onBrowse(self, event):
         wildcard = "JPEG files (*.jpg)|*.jpg"
@@ -1072,7 +1431,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           dc.SelectObject(temp_bmp)  # Select the temporary bitmap into the memory DC
           dc.SetBrush(wx.TRANSPARENT_BRUSH)  # Make sure circles are not filled with white
 
-
           numberOfPointsToDraw = len(self.points_of_interest)
           for pointID in range(numberOfPointsToDraw):
               x = self.points_of_interest[pointID][0]
@@ -1086,7 +1444,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 17)
               else:
                 #Regular defect here 
-                if "Class A" in pSever:  
+                if   "Class A" in pSever:  
                    dc.SetPen(wx.Pen(wx.YELLOW, 2))
                 elif "Class B" in pSever: 
                    dc.SetPen(wx.Pen(wx.ORANGE, 2))
@@ -1115,6 +1473,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         #if selected_index != -1:
         #    wx.MessageBox(f"Selected Point: {self.points_of_interest[selected_index]}")
 
+    def updateMinMaxSlider(self):
+        cur      = self.folderStreamer.current()
+        maxim    = self.folderStreamer.max()
+        percent  = 100.0 * (cur/maxim) 
+
+        self.scrollBar.SetValue(cur)
+        self.scrollBar.SetMax(maxim)
+        print("setScrollbar Value/Max ( ",cur,",",maxim,")")
+        self.instructLbl.SetLabel("Sample %u/%u - %0.2f%%  - Focus %0.2f" % (cur,maxim,percent,self.tenengrad_focus_measure) )
 
     def onScroll(self, event):
         # Handle scroll events here
@@ -1123,19 +1490,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         scroll_max      = self.scrollBar.GetMax()
         print("Scroll Position:", scroll_position,"/",scroll_max)
 
+        self.folderStreamer.select(scroll_position)
+
         if (self.filePathIsDirectory):
                self.onSave(None)
-               if (scroll_position>=0) and (scroll_position<len(self.directoryList)):
-                   self.directoryListIndex = scroll_position
-                   self.filepath = self.directoryList[self.directoryListIndex]
-                   self.onProcessNewImageSample(self.filepath)
-                   print("setScrollbar Value/Max ( ",self.directoryListIndex,",",len(self.directoryList),")") 
-                   self.scrollBar.SetValue(self.directoryListIndex)
-                   self.scrollBar.SetMax(len(self.directoryList))
-                   self.onView()
-               else:
-                   print("Incorrect scroll position!")
-
+               self.filepath = self.folderStreamer.getImage()
+               self.onProcessNewImageSample(self.filepath)
+               self.updateMinMaxSlider()
+               self.onView()
+              
 
     def increase_brightness(self, event):
         if self.brightness_offset < 5:
@@ -1193,34 +1556,21 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     def onPrevious(self, event):
         print("Previous")
+        self.folderStreamer.previous()
         if (self.filePathIsDirectory):
                self.onSave(None)
-               if (self.directoryListIndex>0):
-                   self.directoryListIndex = self.directoryListIndex - 1
-               else:
-                   self.directoryListIndex = len(self.directoryList) - 1
-               
-               print("setScrollbar Value/Max ( ",self.directoryListIndex,",",len(self.directoryList),")") 
-               self.scrollBar.SetValue(self.directoryListIndex)
-               self.scrollBar.SetMax(len(self.directoryList))
-               self.filepath = self.directoryList[self.directoryListIndex]
+               self.updateMinMaxSlider()
+               self.filepath = self.folderStreamer.getImage()
                self.onProcessNewImageSample(self.filepath)
                self.onView()
 
-
     def onNext(self, event):
         print("Next")
+        self.folderStreamer.next()
         if (self.filePathIsDirectory):
                self.onSave(None)
-               if (self.directoryListIndex<len(self.directoryList)-1):
-                   self.directoryListIndex = self.directoryListIndex + 1
-               else:
-                   self.directoryListIndex = 0
-
-               print("setScrollbar Value/Max ( ",self.directoryListIndex,",",len(self.directoryList),")") 
-               self.scrollBar.SetValue(self.directoryListIndex)
-               self.scrollBar.SetMax(len(self.directoryList))
-               self.filepath = self.directoryList[self.directoryListIndex]
+               self.updateMinMaxSlider()
+               self.filepath = self.folderStreamer.getImage()
                self.onProcessNewImageSample(self.filepath)
                self.onView()
 
@@ -1248,7 +1598,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             print(len(self.points_of_interest)," vs ",len(self.points_classes))
         else:
             for i in range(0,len(self.points_of_interest)):            
-               result.append("%u,%u - %s / %s" % (self.points_of_interest[i][0],self.points_of_interest[i][1],self.points_classes[i],self.points_severities[i]))
+               result.append("%u,%u - %s / %s" % (self.points_of_interest[i][0],
+                                                  self.points_of_interest[i][1],
+                                                  self.points_classes[i],
+                                                  self.points_severities[i])    )
         return result
 
     def updatePointList(self):
@@ -1315,10 +1668,50 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             event.Skip()
 
+    def onUploadAnnotations(self, event):
+      print("Local Dir: ",self.folderStreamer.local_dir)
+      os.system("zip upload.zip  %s/color*.json "%self.folderStreamer.local_dir)
+      zip_path = "upload.zip"  # replace with your real file path
+      dlg = UploadDialog(self.frame, zip_path, self.folderStreamer.local_dir)
+      dlg.ShowModal()
+      dlg.Destroy()
+      os.system("rm upload.zip")
+
+    def onRunBatch(self, event):
+        dlg = BatchProcessDialog(self.frame, self.folderStreamer)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    def onOpenMagnifier(self, event):
+     """Open a magnifier window."""
+     if hasattr(self, 'magnifier') and self.magnifier:
+        self.magnifier.Raise()
+        return
+
+     self.magnifier = MagnifierFrame(self.frame)
+     self.magnifier.Show()
+
+     # Pass the current image (wx.Image) to magnifier
+     bmp = self.imageCtrl.GetBitmap()
+     if bmp.IsOk():
+        img = bmp.ConvertToImage()
+        self.magnifier.setImage(img)
+
+     # Bind mouse motion to update magnifier for both images
+     self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
+     self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
+
+
+    def onMouseMoveMagnifier(self, event):
+     if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
+        x, y = event.GetX(), event.GetY()
+        self.magnifier.updateMagnifier(x, y)
+     event.Skip()
+
 if __name__ == '__main__':
     print("Annotator App Starting..")
-    app = PhotoCtrl()
-
+    app        = PhotoCtrl()
+    inputIsSet = False
     if (len(sys.argv)>1):
        #print('Argument List:', str(sys.argv))
        for i in range(0, len(sys.argv)):
@@ -1341,6 +1734,13 @@ if __name__ == '__main__':
 
                app.photoTxt.SetValue(loadDataset)
                app.onNewInputPath(loadDataset)
+               inputIsSet = False
  
+
+    if not inputIsSet:
+               app.photoTxt.SetValue("default")
+               app.onNewInputPath("default")
+
+
     app.MainLoop()
 
