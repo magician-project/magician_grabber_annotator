@@ -1,4 +1,4 @@
-# Magician Project Annotator Tool
+# Magician Grabber Annotator Tool
 
 The **Magician Annotator Tool** is a graphical application for interactive annotation of industrial datasets.  
 It allows manual marking of defects, severity classification, lighting estimation, and region selection.  
