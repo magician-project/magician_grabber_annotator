@@ -1,3 +1,4 @@
+import os
 import wx
 import requests
 
@@ -6,6 +7,8 @@ class DatasetSelector(wx.Dialog):
         super().__init__(parent, title="Dataset Selector", size=(500, 200))
 
         self.selectedDataset = None  # this will hold the final choice
+        self.replaceAnnotations = False  # <-- flag for the checkbox
+        self.local_base_path = "./"  # local directory base to check
 
         panel = wx.Panel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -26,6 +29,11 @@ class DatasetSelector(wx.Dialog):
         hbox2.Add(self.dropdown, proportion=1)
         vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
+        # Checkbox for annotation replacement
+        self.checkbox = wx.CheckBox(panel, label="Replace annotations with live snapshot")
+        vbox.Add(self.checkbox, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+
+
         # Buttons
         hbox3 = wx.BoxSizer(wx.HORIZONTAL)
         self.fetch_button  = wx.Button(panel, label="Connect To Server")
@@ -42,6 +50,21 @@ class DatasetSelector(wx.Dialog):
         self.fetch_button.Bind(wx.EVT_BUTTON, self.onFetchDirectories)
         self.select_button.Bind(wx.EVT_BUTTON, self.onSelectDataset)
         self.cancel_button.Bind(wx.EVT_BUTTON, lambda evt: self.EndModal(wx.ID_CANCEL))
+        self.dropdown.Bind(wx.EVT_CHOICE, self.onDropdownSelection)
+
+    def onDropdownSelection(self, event):
+        selection = self.dropdown.GetStringSelection()
+        self.updateCheckboxState(selection)
+
+    def updateCheckboxState(self, selection):
+        local_path = os.path.join(self.local_base_path, selection)
+        if os.path.exists(local_path):
+            #self.checkbox.Disable()
+            self.checkbox.SetValue(False)
+        else:
+            #self.checkbox.Enable()
+            self.checkbox.SetValue(True)
+
 
     def onFetchDirectories(self, event):
         base_url = self.url_input.GetValue().strip()
@@ -74,6 +97,7 @@ class DatasetSelector(wx.Dialog):
                 base_url += "/"
             self.selectedDataset   = base_url + selection + "/"
             self.selectedDirectory = selection
+            self.replaceAnnotations = self.checkbox.GetValue()  # <-- read checkbox state
             self.EndModal(wx.ID_OK)
         else:
             wx.MessageBox("No dataset selected", "Info", wx.OK | wx.ICON_INFORMATION)

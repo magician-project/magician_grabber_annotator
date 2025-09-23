@@ -9,8 +9,59 @@ import threading
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
+def retrieve_annotation_zips(base_url, datasetname, local_dir="downloads"):
+    """
+    Retrieves all zip files from base_url that match the given datasetname.
+    Downloads and unzips them into local_dir.
+    """
+    os.makedirs(local_dir, exist_ok=True)
+
+    print(f"Trying to retrieve extra annotation zips from {base_url}")
+    resp = requests.get(base_url)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Cannot access {base_url}: {resp.status_code}")
+
+    html = resp.text
+    for line in html.splitlines():
+        if "<a href=" in line:
+            start = line.find('<a href="') + 9
+            end = line.find('"', start)
+            if start > 8 and end > start:
+                fname = line[start:end]
+                if not fname.endswith(".zip"):
+                    continue
+
+                print("Found ZIP entry:", fname)
+
+                parts = fname[:-4].split("_")  # strip .zip first
+                if len(parts) < 5:
+                    continue
+
+                # format: upload_user_datasetname_date_time
+                user = parts[1]
+                date = parts[-2]
+                time = parts[-1]
+                dset = "_".join(parts[2:-2])  # <-- everything between user and date
+
+                if dset == datasetname:
+                    zip_url = base_url.rstrip("/") + "/" + fname
+                    print(f"Downloading zip for dataset '{datasetname}': {zip_url}")
+                    zresp = requests.get(zip_url)
+                    if zresp.status_code != 200:
+                        print(f"Failed to download {zip_url}")
+                        continue
+                    import zipfile
+                    from io import BytesIO
+                    with zipfile.ZipFile(BytesIO(zresp.content)) as zf:
+                        zf.extractall(local_dir)
+                    print(f"Extracted {fname} into {local_dir}")
+                    os.system(f"mv {local_dir}/{local_dir}/*.json {local_dir}/ && rmdir {local_dir}/{local_dir}/")
+
+
+
+
 class HTTPFolderStreamer:
-    def __init__(self, base_url=None, local_dir="http_cache", label="colorFrame_0_"):
+    def __init__(self, base_url=None, local_dir="http_cache", label="colorFrame_0_", retrieve_zip=False):
         self.base_url = base_url.rstrip("/") + "/" if base_url else None
         self.local_dir = local_dir
         self.label = label
@@ -23,6 +74,8 @@ class HTTPFolderStreamer:
         self._prefetch_thread = None
         if self.base_url:
             self.loadNewDataset(self.base_url)
+            if (retrieve_zip):
+               retrieve_annotation_zips("http://ammar.gr/magician/uploads/", local_dir, local_dir)
 
     def loadNewDataset(self, url):
         print(f"Loading file list from: {url}")
@@ -44,6 +97,8 @@ class HTTPFolderStreamer:
         files.sort()
         self.file_list = files
         self.index = 0
+
+
 
     def current(self):
         return self.index

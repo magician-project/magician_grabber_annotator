@@ -529,6 +529,9 @@ class BatchProcessDialog(wx.Dialog):
             wx.CallAfter(self.eta_label.SetLabel, f"Estimated time remaining: {remaining:.1f} mins")
 
         wx.CallAfter(self.EndModal, wx.ID_OK)
+
+
+
 class MagnifierFrame(wx.Frame):
     def __init__(self, parent, zoom=3, size=(300, 300), win_size=(400, 400)):
         super().__init__(parent, title="Magnifier", size=win_size)
@@ -537,7 +540,7 @@ class MagnifierFrame(wx.Frame):
         self.size = size
         self.original_img = None
         self.last_x, self.last_y = 0, 0  # store last cursor pos
-        self.show_crosshair = False
+        self.show_crosshair = True
 
         # Layout: image + controls
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -566,7 +569,9 @@ class MagnifierFrame(wx.Frame):
 
         # Checkbox for crosshair
         self.crosshairCheckbox = wx.CheckBox(self.panel, label="Show Crosshair")
+        self.crosshairCheckbox.SetValue(self.show_crosshair)
         hbox.Add(self.crosshairCheckbox, 0, wx.ALL | wx.CENTER, 5)
+
 
         vbox.Add(hbox, 0, wx.EXPAND)
 
@@ -1354,9 +1359,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             # You can pass this to your HTTPFolderStreamer
             #self.onNewInputPath(dlg.selectedDataset)
             from HTTPStream import HTTPFolderStreamer 
-            self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=dlg.selectedDirectory)
+            self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=dlg.selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
             self.onNext(event)
             self.onPrevious(event)
+            app.photoTxt.SetValue(dlg.selectedDirectory)
         dlg.Destroy()
 
     def onBrowse(self, event):
