@@ -29,6 +29,7 @@ The datasets this tool can view, edit and annotate come from the [Magician Grabb
 ## 🛠 Installation
 
 Tested on **Ubuntu 22.04.5** with **Python 3.10**.
+The code is pretty low-dependency so it should be compatible with newer versions of Ubuntu/Python
 
 1. Clone this repository:
    ```bash
@@ -44,6 +45,7 @@ Tested on **Ubuntu 22.04.5** with **Python 3.10**.
 
 3. Install dependencies:
    ```bash
+   sudo apt install python3-venv python3-pip zip wget curl
    python3 -m pip install wxPython opencv-python numpy
    ```
 
@@ -51,9 +53,18 @@ Tested on **Ubuntu 22.04.5** with **Python 3.10**.
 
 ## ▶️ Usage
 
-Run the annotator on a dataset folder:
+Directly run the annotator on a dataset folder:
 ```bash
+source venv/bin/activate
 python3 wxAnnotator.py --from /path/to/dataset/
+```
+
+Or otherwise use the included bash script 
+that will also try to create the environment for you:
+
+
+```bash
+./runAnnotator.sh --from /path/to/dataset/
 ```
 
 ### Supported inputs
