@@ -74,6 +74,7 @@ class HTTPFolderStreamer:
         self._prefetch_thread = None
         if self.base_url:
             self.loadNewDataset(self.base_url)
+            self.getInfo()
             if (retrieve_zip):
                retrieve_annotation_zips("http://ammar.gr/magician/uploads/", local_dir, local_dir)
 
@@ -147,6 +148,14 @@ class HTTPFolderStreamer:
             return self._download_file(json_name)
         except RuntimeError:
             print(f"There is no JSON file for item {self.index}")
+            return None
+
+
+    def getInfo(self):
+        try:
+            return self._download_file("info.json")
+        except RuntimeError:
+            print(f"There is no Info file for dataset (this is weird)")
             return None
 
     def getImageSimple(self):

@@ -790,8 +790,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
         toolsMenu = wx.Menu()
-        itemMagnify    = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
+        itemMagnify       = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
+        itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
         self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
+        self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
 
         # Add the File menu to the menu bar
         menuBar.Append(toolsMenu, "&Tools")
@@ -1360,6 +1362,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             #self.onNewInputPath(dlg.selectedDataset)
             from HTTPStream import HTTPFolderStreamer 
             self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=dlg.selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
+            self.populateMetaData("%s/info.json" % dlg.selectedDirectory)
             self.onNext(event)
             self.onPrevious(event)
             app.photoTxt.SetValue(dlg.selectedDirectory)
@@ -1707,6 +1710,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
      self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
      self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
 
+    def onCreateDataset(self,event):
+       os.system("python3 datasetCreator.py") #<- Lazy
 
     def onMouseMoveMagnifier(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
