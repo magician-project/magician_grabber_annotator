@@ -9,18 +9,21 @@ import threading
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-def retrieve_annotation_zips(base_url, datasetname, local_dir="downloads"):
+def retrieve_annotation_zips(base_url, datasetnameFull, local_dir="downloads"):
     """
     Retrieves all zip files from base_url that match the given datasetname.
     Downloads and unzips them into local_dir.
     """
     os.makedirs(local_dir, exist_ok=True)
 
+    datasetname = os.path.basename(datasetnameFull) # Make something like /media/ammar/games2/Datasets/Magician/NDA_1_A_T1 -> NDA_1_A_T1 
+
     print(f"Trying to retrieve extra annotation zips from {base_url}")
     resp = requests.get(base_url)
     if resp.status_code != 200:
         raise RuntimeError(f"Cannot access {base_url}: {resp.status_code}")
-
+ 
+    recoveredAnnotations = False
     html = resp.text
     for line in html.splitlines():
         if "<a href=" in line:
@@ -31,7 +34,7 @@ def retrieve_annotation_zips(base_url, datasetname, local_dir="downloads"):
                 if not fname.endswith(".zip"):
                     continue
 
-                print("Found ZIP entry:", fname)
+                print("Found ZIP entry:", fname, end=" ")
 
                 parts = fname[:-4].split("_")  # strip .zip first
                 if len(parts) < 5:
@@ -42,6 +45,7 @@ def retrieve_annotation_zips(base_url, datasetname, local_dir="downloads"):
                 date = parts[-2]
                 time = parts[-1]
                 dset = "_".join(parts[2:-2])  # <-- everything between user and date
+                print("Dataset: `", dset)# ,"` vs `",datasetname,"` ")
 
                 if dset == datasetname:
                     zip_url = base_url.rstrip("/") + "/" + fname
@@ -55,8 +59,10 @@ def retrieve_annotation_zips(base_url, datasetname, local_dir="downloads"):
                     with zipfile.ZipFile(BytesIO(zresp.content)) as zf:
                         zf.extractall(local_dir)
                     print(f"Extracted {fname} into {local_dir}")
-                    os.system(f"mv {local_dir}/{local_dir}/*.json {local_dir}/ && rmdir {local_dir}/{local_dir}/")
+                    os.system(f"mv {local_dir}/{datasetname}/*.json {local_dir}/ && rmdir {local_dir}/{datasetname}/")
+                    recoveredAnnotations = True
 
+    return recoveredAnnotations
 
 
 

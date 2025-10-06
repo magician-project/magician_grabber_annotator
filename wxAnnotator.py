@@ -29,6 +29,22 @@ import numpy as np
 import time
 import threading
 
+
+"""
+Configurations in one central place
+"""
+
+version         = "0.24"
+useSAM          = False
+useClassifier   = False #<- Switch classifier off
+combineChannels = True
+options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean"]
+severities      = ["Class A","Class B","Class C"]
+processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "Sobel","Visible","SAM"]
+
+
+
+
 """
 from wxAcquisition import CameraSettingsDialog
 """
@@ -43,29 +59,28 @@ from folderStream import FolderStreamer
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-version = "0.17"
-useSAM  = False
-useClassifier  = False #<- Switch classifier off
-combineChannels = True
-options    = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious"]
-severities = ["Class A","Class B","Class C"]
-processors = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "Sobel","Visible","SAM"]
 
-
-
-# Go up two directories
+#-------------------------------------------------------------------------------
+# Make Classifier completely seperatable from the rest of the codebase
+#-------------------------------------------------------------------------------
 if useClassifier:
-  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../classifier'))
   sys.path.append(parent_path)
-  from classifier.liveClassifierTorch import ClassifierPnm
+  from liveClassifierTorch import ClassifierPnm
 else:
   class ClassifierPnm:
-    def __init__(self, model_path='foo', tile_classes=['foo'],tile_size=64, step=16):
+    def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
+        print("Classifier PNM is disabled, please start with --classifier or change the useClassifier variable in wxAnnotator to use it!")
         pass
     def load_model(self):
         return None
-    def forward(self, image):
+    def forward(self, image, majorityVote=True):
         return None
+#-------------------------------------------------------------------------------
+
+
+#-------------------------------------------------------------------------------
+# Make SAM Processor completely seperatable from the rest of the codebase
 #-------------------------------------------------------------------------------
 if useSAM:
   from sam import SAMProcessor
@@ -78,6 +93,9 @@ else:
         self.foregroundImage = None
 #-------------------------------------------------------------------------------
 
+"""
+Do a CRC on data to prevent data corruption training errors
+"""
 def get_md5(file_path):
     # Construct the command
     command = f"md5sum {file_path}"
@@ -391,30 +409,33 @@ def slowPC():
     return False
 
 
+
 class UploadDialog(wx.Dialog):
-    def __init__(self, parent, zip_path, dataset):
+    def __init__(self, parent, zip_path, dataset, credentials="server.json"):
         super().__init__(parent, title="Upload Annotations", size=(350, 200))
         self.zip_path = zip_path  # path to the zip file
         self.dataset  = dataset
+        self.credentials = credentials
+
+        # Try to load saved credentials
+        saved_user, saved_pwd = self.load_credentials()
 
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         # Username
         hbox1 = wx.BoxSizer(wx.HORIZONTAL)
         hbox1.Add(wx.StaticText(self, label="Username:"), 0, wx.ALL | wx.CENTER, 5)
-        self.username = wx.TextCtrl(self)
+        self.username = wx.TextCtrl(self, value=saved_user)
         hbox1.Add(self.username, 1, wx.ALL | wx.EXPAND, 5)
         vbox.Add(hbox1, 0, wx.EXPAND)
 
         # Password
         hbox2 = wx.BoxSizer(wx.HORIZONTAL)
         hbox2.Add(wx.StaticText(self, label="Password:"), 0, wx.ALL | wx.CENTER, 5)
-        self.password = wx.TextCtrl(self, style=wx.TE_PASSWORD)
+        self.password = wx.TextCtrl(self, style=wx.TE_PASSWORD, value=saved_pwd)
         hbox2.Add(self.password, 1, wx.ALL | wx.EXPAND, 5)
         vbox.Add(hbox2, 0, wx.EXPAND)
 
-
- 
         vbox.Add(wx.StaticText(self, label=" Contact ammarkov@ics.forth.gr for a new account"), 0, wx.EXPAND)
 
         # Buttons
@@ -426,36 +447,58 @@ class UploadDialog(wx.Dialog):
         # Override Upload (OK) behavior
         self.Bind(wx.EVT_BUTTON, self.onUpload, id=wx.ID_OK)
 
+    def load_credentials(self):
+        """Load username and password from config file if it exists."""
+        if os.path.exists(self.credentials):
+            try:
+                with open(self.credentials, "r") as f:
+                    data = json.load(f)
+                    return data.get("username", ""), data.get("password", "")
+            except Exception:
+                pass
+        return "", ""  # defaults
+
+    def save_credentials(self, username, password):
+        """Save username and password to config file."""
+        try:
+            with open(self.credentials, "w") as f:
+                json.dump({"username": username, "password": password}, f)
+        except Exception as e:
+            wx.MessageBox(f"Failed to save credentials: {e}", "Warning", wx.OK | wx.ICON_WARNING)
+
     def onUpload(self, event):
-     user     = self.username.GetValue().strip()
-     pwd      = self.password.GetValue().strip()
-     dataset  = self.dataset
+        user     = self.username.GetValue().strip()
+        pwd      = self.password.GetValue().strip()
+        dataset  = self.dataset
 
-     if not user or not pwd:
-        wx.MessageBox("Please enter both username and password.", "Error", wx.OK | wx.ICON_ERROR)
-        return  # don’t close yet
+        if not user or not pwd:
+            wx.MessageBox("Please enter both username and password.", "Error", wx.OK | wx.ICON_ERROR)
+            return  # don’t close yet
 
-     # Command for curl file upload
-     url = "http://ammar.gr/magician/upload.php"
-     cmd = [
-        "curl",
-        "-s",  # silent mode
-        "-F", f"username={user}",
-        "-F", f"password={pwd}",
-        "-F", f"dataset={dataset}",
-        "-F", f"file=@{self.zip_path}",  # attach file
-        url
-     ]
+        # Command for curl file upload
+        url = "http://ammar.gr/magician/upload.php"
+        cmd = [
+            "curl",
+            "-s",  # silent mode
+            "-F", f"username={user}",
+            "-F", f"password={pwd}",
+            "-F", f"dataset={dataset}",
+            "-F", f"file=@{self.zip_path}",  # attach file
+            url
+        ]
 
-     try:
-        import subprocess
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        wx.MessageBox(f"Upload successful!\nServer response:\n{result.stdout}", 
-                      "Success", wx.OK | wx.ICON_INFORMATION)
-        self.EndModal(wx.ID_OK)
-     except subprocess.CalledProcessError as e:
-        wx.MessageBox(f"Upload failed!\n{e.stderr}", "Error", wx.OK | wx.ICON_ERROR)
+        try:
+            import subprocess
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            wx.MessageBox(f"Upload successful!\nServer response:\n{result.stdout}", 
+                          "Success", wx.OK | wx.ICON_INFORMATION)
 
+            # Save credentials only if successful
+            self.save_credentials(user, pwd)
+
+            self.EndModal(wx.ID_OK)
+        except subprocess.CalledProcessError as e:
+            wx.MessageBox(f"Upload failed!\n{e.stderr}", "Error", wx.OK | wx.ICON_ERROR)
 
 
 class BatchProcessDialog(wx.Dialog):
@@ -669,7 +712,7 @@ class PhotoCtrl(wx.App):
             self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_l_0b3195.pth", model_type="vit_l", device="cuda")
         else:
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
-        self.ClassifierPnm = ClassifierPnm()
+        self.ClassifierPnm = ClassifierPnm(model_path='../classifier/resnet18.pth',cfg_path='../classifier/resnet18.json')
         wx.App.__init__(self, redirect, filename)
 
 
@@ -731,6 +774,8 @@ class PhotoCtrl(wx.App):
         self.contrast_offset = 0
         self.scrollStep  = 10
 
+        self.local_base_path = "./"
+
     """
 ['ID_ABORT', 'ID_ABOUT', 'ID_ADD', 'ID_ANY', 'ID_APPLY', 'ID_BACKWARD', 'ID_BOLD
 ', 'ID_CANCEL', 'ID_CLEAR', 'ID_CLOSE', 'ID_CLOSE_ALL', 'ID_CONTEXT_HELP', 'ID_C
@@ -763,9 +808,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         itemOpen    = fileMenu.Append(wx.ID_OPEN, "&Open Image", "Open an image file")
         itemOpenDir = fileMenu.Append(wx.ID_OPEN, "Open &Directory", "Open a directory")
         itemOpenNet = fileMenu.Append(wx.ID_OPEN, "Open &Network", "Open network server")
-        itemUpload = fileMenu.Append(wx.ID_UP, "Upload &Annotations", "Upload annotations to server")
+        itemUpload  = fileMenu.Append(wx.ID_UP, "Upload &Annotations", "Upload annotations to server")
         self.Bind(wx.EVT_MENU, self.onUploadAnnotations, itemUpload)
-        itemBatch = fileMenu.Append(wx.ID_DOWN, "Download &All", "Process multiple files automatically")
+        itemBatch   = fileMenu.Append(wx.ID_DOWN, "Download &All Frames", "Process multiple files automatically")
         self.Bind(wx.EVT_MENU, self.onRunBatch, itemBatch)
 
         itemSave    = fileMenu.Append(wx.ID_SAVE, "&Save", "Save the current file")
@@ -1213,7 +1258,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 #import ipdb; ipdb.set_trace()
                 #resize imgpnm 1/2
                 if self.useClassifierCheckbox.GetValue():
-                    imgClassifier = self.ClassifierPnm.forward(imgPNM)
+                    imgClassifier = self.ClassifierPnm.forward(imgPNM,majorityVote=False)
                     imgClassifier = self.rescaleCVMAT(convertPolarCVMATToRGB(imgClassifier,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
                 imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
                 
@@ -1277,7 +1322,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         """
         
     def onAbout(self, event):
-        wx.MessageBox("Made by Ammar Qammaz a.k.a. AmmarkoV\n\nVersion %s"%version, "About", wx.OK | wx.ICON_INFORMATION)
+        wx.MessageBox("Made by Ammar Qammaz a.k.a. AmmarkoV\nhttp://ammar.gr/\nVersion %s"%version, "About", wx.OK | wx.ICON_INFORMATION)
 
     def onRescan(self, newPath):
         self.onProcessNewImageSample(self.filepath)
@@ -1354,14 +1399,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     def onOpenNetwork(self, event):
         from datasetSelector import DatasetSelector
-        dlg = DatasetSelector()
+        dlg = DatasetSelector(local_base_path=self.local_base_path)
         if dlg.ShowModal() == wx.ID_OK:
+            selectedDirectory = self.local_base_path + "/" + dlg.selectedDirectory 
             print("Selected Dataset:",  dlg.selectedDataset)
             print("Caching Directory:", dlg.selectedDirectory)
             # You can pass this to your HTTPFolderStreamer
             #self.onNewInputPath(dlg.selectedDataset)
             from HTTPStream import HTTPFolderStreamer 
-            self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=dlg.selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
+            self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
             self.populateMetaData("%s/info.json" % dlg.selectedDirectory)
             self.onNext(event)
             self.onPrevious(event)
@@ -1648,7 +1694,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.updateRegionList()
         print("Click ",self.x,",",self.y)
         print("Rescaled Click ",int(self.x*self.clickRatioX),",",int(self.y*self.clickRatioY))
-        self.sam_processor.select_area(int(self.x*self.clickRatioX),int(self.y*self.clickRatioY))
+        try:
+          self.sam_processor.select_area(int(self.x*self.clickRatioX),int(self.y*self.clickRatioY))
+        except Exception as e:
+          print("Error ",e)
         self.onView()
 
     def onMiddleDown(self, event):
@@ -1679,8 +1728,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     def onUploadAnnotations(self, event):
       print("Local Dir: ",self.folderStreamer.local_dir)
-      os.system("zip upload.zip  %s/color*.json "%self.folderStreamer.local_dir)
-      zip_path = "upload.zip"  # replace with your real file path
+      zip_path = "./upload.zip"  # replace with your real file path
+      zipCommand = "zip %s -b %s %s/color*.json "% (zip_path, self.local_base_path, self.folderStreamer.local_dir) 
+      print("Zip command : ",zipCommand)
+      os.system(zipCommand)
       dlg = UploadDialog(self.frame, zip_path, self.folderStreamer.local_dir)
       dlg.ShowModal()
       dlg.Destroy()
@@ -1711,7 +1762,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
      self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
 
     def onCreateDataset(self,event):
-       os.system("python3 datasetCreator.py") #<- Lazy
+       os.system("python3 datasetCreator.py %s" % self.local_base_path) #<- Lazy
 
     def onMouseMoveMagnifier(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
@@ -1728,8 +1779,16 @@ if __name__ == '__main__':
        for i in range(0, len(sys.argv)):
            if (sys.argv[i]=="--debug"):
                app.onDebug(None)
+           if (sys.argv[i]=="--classifier"):
+               #global useClassifier
+               useClassifier = True
+               app.useClassifierCheckbox.SetValue(True) 
+           if (sys.argv[i]=="--db"): 
+               app.local_base_path = sys.argv[i+1] 
+               print("Using ",app.local_base_path," as dataset base path")
            if (sys.argv[i]=="--from"):
                loadDataset=sys.argv[i+1]
+               print("Loading from ",loadDataset," dataset")
 
                #Small check (this will need to  be updated if defects change)..
                if ("positive" in loadDataset):
@@ -1745,7 +1804,7 @@ if __name__ == '__main__':
 
                app.photoTxt.SetValue(loadDataset)
                app.onNewInputPath(loadDataset)
-               inputIsSet = False
+               inputIsSet = True
  
 
     if not inputIsSet:

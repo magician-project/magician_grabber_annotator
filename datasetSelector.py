@@ -3,12 +3,12 @@ import wx
 import requests
 
 class DatasetSelector(wx.Dialog):
-    def __init__(self, parent=None):
+    def __init__(self,  local_base_path="./", parent=None):
         super().__init__(parent, title="Dataset Selector", size=(500, 200))
 
         self.selectedDataset = None  # this will hold the final choice
         self.replaceAnnotations = False  # <-- flag for the checkbox
-        self.local_base_path = "./"  # local directory base to check
+        self.local_base_path = local_base_path  # local directory base to check
 
         panel = wx.Panel(self)
         vbox = wx.BoxSizer(wx.VERTICAL)
