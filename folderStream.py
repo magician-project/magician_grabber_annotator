@@ -1,3 +1,11 @@
+#!/usr/bin/python3
+
+""" 
+Author : "Ammar Qammaz"
+Copyright : "2025 Foundation of Research and Technology, Computer Science Department Greece, See license.txt"
+License : "FORTH" 
+"""
+
 #pip install numpy opencv-python --user
 
 import numpy as np

@@ -36,10 +36,11 @@ Configurations in one central place
 
 version         = "0.24"
 useSAM          = False
-useClassifier   = False #<- Switch classifier off
+useClassifier   = True #<- Switch classifier off
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean"]
 severities      = ["Class A","Class B","Class C"]
+directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
 processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "Sobel","Visible","SAM"]
 
 
@@ -330,6 +331,13 @@ def adjust_contrast(image: np.ndarray, factor: float):
     adjusted = np.clip(adjusted * 255, 0, 255).astype(np.uint8)
     
     return adjusted
+
+
+def convertRGBCVMATToRGB(rgb_image,brightness=0,contrast=0):
+    brightnessValue = 10* brightness
+    contrastValue   = 1.0 + contrast/10
+    rgb_image = adjust_contrast(rgb_image,contrastValue)
+    return rgb_image
 
 
 def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
@@ -712,7 +720,8 @@ class PhotoCtrl(wx.App):
             self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_l_0b3195.pth", model_type="vit_l", device="cuda")
         else:
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
-        self.ClassifierPnm = ClassifierPnm(model_path='../classifier/resnet18.pth',cfg_path='../classifier/resnet18.json')
+
+        self.ClassifierPnm = ClassifierPnm(model_path='../classifier/last.pth',cfg_path='../classifier/last.json')
         wx.App.__init__(self, redirect, filename)
 
 
@@ -743,6 +752,7 @@ class PhotoCtrl(wx.App):
         self.points_of_interest  = []
         self.points_classes      = []
         self.points_severities   = []
+        self.AIAnnotations       = None
 
         self.width  = 0
         self.height = 0
@@ -837,8 +847,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         toolsMenu = wx.Menu()
         itemMagnify       = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
         itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
+        itemTileExplorer  = toolsMenu.Append(wx.ID_FIND, "&Tile Explorer", "Tile Explorer")
         self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
         self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
+        self.Bind(wx.EVT_MENU, self.onTileExplorer,itemTileExplorer)
 
         # Add the File menu to the menu bar
         menuBar.Append(toolsMenu, "&Tools")
@@ -929,33 +941,32 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         
         #Add a checkbox for classifier
         self.useClassifierCheckbox = wx.CheckBox(self.panel, label="Use NN Classifier")
-        self.useClassifierCheckbox.SetValue(False)
+        self.useClassifierCheckbox.SetValue(useClassifier)
 
         # Add a checkbox
         self.guessLightingCheckbox = wx.CheckBox(self.panel, label="Guess lighting direction")
         self.guessLightingCheckbox.SetValue(True)   
-
 
         global processors
         self.ProcessorComboBox = wx.ComboBox(self.panel, choices=processors, style=wx.CB_DROPDOWN)
         self.ProcessorComboBox.Bind(wx.EVT_COMBOBOX, self.onProcessorComboBoxSelect)
         self.ProcessorComboBox.SetValue(processors[0])
 
-
         # Add a wxComboBox
         self.defectLabel = wx.StaticText(self.panel, label = "Defect Classification")
         global options
         self.defectComboBox = wx.ComboBox(self.panel, choices=options, style=wx.CB_DROPDOWN)
         self.defectComboBox.Append("Add Custom Option")
-        self.defectComboBox.Bind(wx.EVT_COMBOBOX, self.onComboBoxSelect)
+        self.defectComboBox.Bind(wx.EVT_COMBOBOX, self.onDefectComboBoxSelect)
         self.defectComboBox.SetValue(options[0])
 
-        self.severityLabel = wx.StaticText(self.panel, label = "Defect Severity")
+        #self.severityLabel = wx.StaticText(self.panel, label = "Defect Severity")
         global severities
         self.severityComboBox = wx.ComboBox(self.panel, choices=severities, style=wx.CB_DROPDOWN)
 
         self.lightLabel = wx.StaticText(self.panel, label = "Light Direction")
-        self.lightComboBox = wx.ComboBox(self.panel, choices=["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"], style=wx.CB_DROPDOWN)
+        global directions
+        self.lightComboBox = wx.ComboBox(self.panel, choices=directions, style=wx.CB_DROPDOWN)
 
         self.datasetLabel = wx.StaticText(self.panel, label = "Dataset Information")
 
@@ -978,9 +989,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.removePointBtn = wx.Button(self.panel, label='Remove Selected Point')
         self.removePointBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
         #---------------------------------------------------------------------------
+        self.autoBtn = wx.Button(self.panel, label='Auto')
+        self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
         self.saveBtn = wx.Button(self.panel, label='Save')
         self.saveBtn.Bind(wx.EVT_BUTTON, self.onSave)
-        self.deleteMetadataBtn = wx.Button(self.panel, label='Delete Metadata')
+        self.deleteMetadataBtn = wx.Button(self.panel, label='Delete')
         self.deleteMetadataBtn.Bind(wx.EVT_BUTTON, self.ondeleteMetadata)
 
         #Under Buttons
@@ -989,11 +1002,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.nextBtn = wx.Button(self.panel, label='>')
         self.nextBtn.Bind(wx.EVT_BUTTON, self.onNext)
 
-
         # Add a button for camera settings
         self.cameraSettingsBtn = wx.Button(self.panel, label='Camera')
         self.cameraSettingsBtn.Bind(wx.EVT_BUTTON, self.onCameraSettings)
-
 
         self.mainSizer  = wx.BoxSizer(wx.VERTICAL)
         self.sizer      = wx.BoxSizer(wx.HORIZONTAL)
@@ -1022,10 +1033,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.sideSizer.Add(self.line , 0, wx.ALL, 5)
         #------------------------------------------------------------
         self.sideSizer.Add(self.defectLabel, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.defectComboBox, 0, wx.ALL, 5)
+        #self.sideSizer.Add(self.defectComboBox, 0, wx.ALL, 5)
 
-        self.sideSizer.Add(self.severityLabel, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.severityComboBox, 0, wx.ALL, 5) 
+        #self.sideSizer.Add(self.severityLabel, 0, wx.ALL, 5)
+        #self.sideSizer.Add(self.severityComboBox, 0, wx.ALL, 5) 
+
+        comboClass      = wx.BoxSizer(wx.HORIZONTAL)  
+        comboClass.Add(self.defectComboBox, 0, wx.ALL, 5)
+        comboClass.Add(self.severityComboBox, 0, wx.ALL, 5)
+        self.sideSizer.Add(comboClass)
 
         self.sideSizer.Add(self.lightLabel, 0, wx.ALL, 5)
         self.sideSizer.Add(self.lightComboBox, 0, wx.ALL, 5)  
@@ -1035,6 +1051,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.sideSizer.Add(self.removePointBtn, 0, wx.ALL, 5)
         #------------------------------------------------------------
         comboButtons      = wx.BoxSizer(wx.HORIZONTAL)  
+        comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
         comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
         comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
         self.sideSizer.Add(comboButtons)
@@ -1146,6 +1163,72 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         os.system("rm %s"%jsonFile)
         self.onRedrawData(event)
 
+    def onAuto(self, event): 
+      print("Automatically retrieved annotations")
+      print(self.AIAnnotations)
+      print("User Submitted annotations")
+      print(self.points_of_interest)
+      print(self.points_classes)
+      print(self.points_severities)
+      tileSize = self.ClassifierPnm.tile_size
+
+      # === Prepare cleaned lists ===
+      new_points     = []
+      new_classes    = []
+      new_severities = []
+
+      ai_points  = self.AIAnnotations.get("points", [])
+      ai_classes = self.AIAnnotations.get("classes", [])
+
+      # Helper: check if two tiles overlap
+      def tiles_overlap(pt1, pt2):
+        half = tileSize / 2
+        x1_min, y1_min = pt1[0] - half, pt1[1] - half
+        x1_max, y1_max = pt1[0] + half, pt1[1] + half
+
+        x2_min, y2_min = pt2[0] - half, pt2[1] - half
+        x2_max, y2_max = pt2[0] + half, pt2[1] + half
+
+        # Overlap if bounding boxes intersect
+        return not (x1_max < x2_min or x1_min > x2_max or
+                    y1_max < y2_min or y1_min > y2_max)
+
+      # === Iterate over AI annotations ===
+      for pt, cls in zip(ai_points, ai_classes):
+        # Skip if this AI tile overlaps any user-provided tile
+        if any(tiles_overlap(pt, user_pt) for user_pt in self.points_of_interest):
+            continue
+
+        # Replace AI class with 'class Clean' since we assume AI is unreliable
+        new_points.append(pt)
+        new_classes.append("Clean")
+        new_severities.append("AI")
+
+      # === Store the cleaned results ===
+      self.cleaned_points    = new_points
+      self.cleaned_classes   = new_classes
+      self.cleaned_severities = new_severities
+
+      # === Print summary ===
+      print("\nGenerated cleaned annotations:")
+      for p, c in zip(new_points, new_classes):
+        print(f"{p} -> {c}")
+
+      self.points_of_interest.extend(new_points)
+      self.points_classes.extend(new_classes)
+      self.points_severities.extend(new_severities)
+
+
+      print(f"Total new clean tiles: {len(new_points)}")
+
+      if (self.incrementFrameAfterAnAdditionCheckbox.GetValue()):
+          print(f"Auto incrementing due to checkbox")
+          self.onNext(event)
+
+
+      return new_points, new_classes
+        
+
     def onSave(self, event):
         print("Save")
         if (len(self.regions_of_interest)>0):
@@ -1219,11 +1302,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            # Process the image with SAM and update the second StaticBitmap
            global combineChannels
            imgCV  = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED
-           imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+           imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED) #This is to be used without changes by the classifier
+
+           if ((imgCV is None) or (imgPNM is None)):
+                  print("Could not load ",filepath)
+                  return 
+
            print("Raw image dims for ",filepath," ",imgCV.shape)
            self.viewedImageFullWidth  = imgCV.shape[1]
            self.viewedImageFullHeight = imgCV.shape[0] 
 
+           self.tenengrad_focus_measure = tenengrad_focus_measure(imgCV)
+           print("Focus : ",self.tenengrad_focus_measure)
            
            processingString = self.ProcessorComboBox.GetValue()
            if (processingString=="PolarizationRGB1"):
@@ -1257,10 +1347,21 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                     self.processingWay=0
                 #import ipdb; ipdb.set_trace()
                 #resize imgpnm 1/2
-                if self.useClassifierCheckbox.GetValue():
-                    imgClassifier = self.ClassifierPnm.forward(imgPNM,majorityVote=False)
-                    imgClassifier = self.rescaleCVMAT(convertPolarCVMATToRGB(imgClassifier,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
+
                 imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
+
+                if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
+                  if self.useClassifierCheckbox.GetValue():
+                    imgRGBFromClassifier, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=False)
+                    imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+                    processed_img = imgRGBFromClassifier
+                    self.sam_processor.image = imgRGBFromClassifier
+                else:
+                  #If we didn't trigger then show the raw image as processed image
+                  processed_img                  = imgCV
+                  self.sam_processor.image       = imgCV
+
+
                 
                 if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
                  print("We don't know Light Direction")
@@ -1269,8 +1370,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                    self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
 
                 if self.useClassifierCheckbox.GetValue():
-                    processed_img = imgClassifier
-                    self.sam_processor.image = imgClassifier
+                    #processed_img = imgRGBFromClassifier
+                    #self.sam_processor.image = imgRGBFromClassifier
+                    pass
                 else:
                     processed_img                  = imgCV
                     self.sam_processor.image       = imgCV
@@ -1280,8 +1382,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 self.sam_processor.image           = imgCV
                 self.sam_processor.foregroundImage = imgCV
   
-           self.tenengrad_focus_measure = tenengrad_focus_measure(processed_img)
-           print("Focus : ",self.tenengrad_focus_measure)
    
            self.width  = processed_img.shape[1]
            self.height = processed_img.shape[0]
@@ -1375,8 +1475,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         print("Combo box select changed")
         self.onRedrawData(event)
 
-    def onComboBoxSelect(self, event):
+    def onDefectComboBoxSelect(self, event):
       selected_option = self.defectComboBox.GetValue()
+      self.severityComboBox.SetValue("") #<- Cause Severity to be erased to make sure user picks it correctly 
       if selected_option == "Add Custom Option":
         # Handle custom option logic here
         custom_option = wx.GetTextFromUser("Enter custom option:")
@@ -1497,14 +1598,21 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 #This is not a defect we annotate it to make sure it is included
                 dc.SetPen(wx.Pen(wx.GREEN, 2))
                 dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 17)
+              elif pClass == "Clean":
+                #This is not a defect we annotate it to make sure it is included
+                dc.SetPen(wx.Pen(wx.GREEN, 2))
+                dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 17)
               else:
                 #Regular defect here 
                 if   "Class A" in pSever:  
                    dc.SetPen(wx.Pen(wx.YELLOW, 2))
                 elif "Class B" in pSever: 
-                   dc.SetPen(wx.Pen(wx.ORANGE, 2))
+                   wxColor = wx.NamedColour("orange")
+                   dc.SetPen(wx.Pen(wxColor, 2)) #wx.ORANGE
                 elif "Class C" in pSever: 
                    dc.SetPen(wx.Pen(wx.BLACK, 2))
+                elif "AI" in pSever: 
+                   dc.SetPen(wx.Pen(wx.WHITE, 2))
                 else:
                    print("Weird severity encountered (",pSever,")")
                    dc.SetPen(wx.Pen(wx.BLUE, 2))
@@ -1672,6 +1780,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.regionList.Set(self.formatRegions())
 
     def onLeftDown(self, event):
+       if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
         self.x, self.y = event.GetPosition()
         self.points_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
         selected_option = self.defectComboBox.GetValue()
@@ -1689,6 +1798,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.onRedrawData(event)
 
     def onRightDown(self, event):
+      if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
         self.x, self.y = event.GetPosition()
         self.regions_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
         self.updateRegionList()
@@ -1763,6 +1873,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     def onCreateDataset(self,event):
        os.system("python3 datasetCreator.py %s" % self.local_base_path) #<- Lazy
+
+    def onTileExplorer(self,event):
+       os.system("python3 tileExplorer.py %s" % self.local_base_path) #<- Lazy
+
+
 
     def onMouseMoveMagnifier(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():

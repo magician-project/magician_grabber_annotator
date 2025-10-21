@@ -1,3 +1,11 @@
+#!/usr/bin/python3
+
+""" 
+Author : "Ammar Qammaz"
+Copyright : "2025 Foundation of Research and Technology, Computer Science Department Greece, See license.txt"
+License : "FORTH" 
+"""
+
 import sys
 import os
 import gc
@@ -25,6 +33,9 @@ def checkIfPathIsDirectory(filename):
 
  
 
+"""
+Function under construction 
+"""
 def select_most_different_tiles(tiles, X, random_state=42):
     from sklearn.decomposition import PCA
     """
@@ -72,53 +83,6 @@ def select_most_different_tiles(tiles, X, random_state=42):
     return selected_tiles, selected_indices
 
 
-def highlightImage(image, json_file,tile_size=32,step=3):
-    point_clicks = list()
-    point_classes = list()
-
-    # Extract point clicks and classes from the JSON data
-    with open(json_file) as json_data:
-        data = json.load(json_data)
-        point_clicks = data.get("pointClicks", [])
-        point_classes = data.get("pointClasses", [])
-
-    # Get the dimensions of the image
-    height, width, channels = image.shape
-
-    # Calculate the number of tiles in each dimension
-    num_tiles_x = width // tile_size
-    num_tiles_y = height // tile_size
-
-    # Loop through the image and extract tiles
-    for y in range(0, height-tile_size, step):
-        start_y = y
-        end_y   = y + tile_size
-        for x in range(0, width-tile_size, step):
-          start_x = x
-          end_x   = x + tile_size
-            
-          # Calculate the coordinates for each tile
-          #print("(",start_x,",",end_x,") - (",start_y,",",end_y,")")
-          # Extract the tile from the image
-          if (end_x-start_x==tile_size) and (end_y-start_y==tile_size):  
-            tile_text = ""
-            i = 0 
-            for xFull,yFull in point_clicks:
-               xAct = xFull // 2
-               yAct = yFull // 2
-               if (start_x<=xAct) and (xAct<=end_x) and (start_y<=yAct) and (yAct<=end_y):
-                     #if (tile_text==""):
-                     #     tile_text = "_class"
-                     tile_text = tile_text + point_classes[i]
-               i = i+1
-
-            if (tile_text!=""):
-              image[start_y:end_y,start_x:end_x]=255
-          else:
-            print("")            
-
-    return image
-
 def check_threshold(array, threshold):
     # Check if any pixel in any channel is above the threshold
     return np.any(array > threshold)
@@ -136,64 +100,122 @@ def check_variation(tile, threshold):
     # Check if the standard deviation is greater than zero in any channel
     return np.any(std_dev > threshold)
 
-def tileImages(image, json_file,tile_size=32,border=0,step=3,low_value_tile_threshold=30,ignoreBackground=False):
-    # Initialize per-call lists (avoid mutable defaults)
-    tiles = []
-    tile_classes = []
+def tileImages(image, 
+               json_file, 
+               tile_size=32, 
+               border=0,
+               step=3, 
+               clean_step=None,
+               low_value_tile_threshold=30, 
+               ignoreBackground=False,
+               mergeSameKindOfDefectsRegardlessOfCount=True,
+               includeTilesAnnotatedByAI=True,
+               use_severity=False,
+               use_clean_class=True,
+               debug=False):
+    """
+    Extract tiles from an image, oversampling tiles containing defects and 
+    undersampling clean tiles to balance the dataset.
+    
+    defect_step: step size for tiles containing defects (smaller -> more tiles)
+    clean_step: step size for tiles without defects (larger -> fewer tiles)
+    """
 
-    point_clicks = list()
-    point_classes = list()
+    import json
+    import numpy as np
 
-    # Extract point clicks and classes from the JSON data
+    tiles                 = []
+    tile_classes          = []
+    tile_info             = []
+    tiles_annotated_by_ai = 0
+
+    # Load point clicks and their classes
     with open(json_file) as json_data:
         data = json.load(json_data)
-        point_clicks  = data.get("pointClicks", [])
-        point_classes = data.get("pointClasses", [])
+        point_clicks      = data.get("pointClicks", [])
+        point_classes     = data.get("pointClasses", [])
+        points_severities = data.get("pointSeverities", [])
 
-    # Get the dimensions of the image
     height, width, channels = image.shape
 
-    # Calculate the number of tiles in each dimension
-    num_tiles_x = width  // tile_size
-    num_tiles_y = height // tile_size
+    defect_step=step
+    if clean_step is None:
+          clean_step = tile_size
 
-    # Loop through the image and extract tiles
-    for y in range(border, height-tile_size-border, step):
-        start_y = y
-        end_y   = y + tile_size
-        for x in range(border, width-tile_size-border,step):
-          start_x = x
-          end_x   = x + tile_size
-            
-          # Calculate the coordinates for each tile
-          #print("(",start_x,",",end_x,") - (",start_y,",",end_y,")")
-          # Extract the tile from the image
-          tile = image[start_y:end_y,start_x:end_x] #<- Why is this the correct order ?
-          if (tile.shape[0]==tile_size) and (tile.shape[1]==tile_size):
-           threshold_count = check_threshold_count(tile,low_value_tile_threshold)
-           #if check_threshold(tile,30): #<- If there is any data in this tile
-           if threshold_count > 0: #<- If there is any data in this tile
-            tile_text = ""
-            i = 0 
-            for xFull,yFull in point_clicks:
-               xAct = xFull // 2
-               yAct = yFull // 2
-               if (start_x<=xAct) and (xAct<=end_x) and (start_y<=yAct) and (yAct<=end_y):
-                     #if (tile_text==""):
-                     #     tile_text = "_class"
-                     tile_text = tile_text + point_classes[i]
-               i = i+1
+    # Loop through the image
+    y = border
+    while y <= height - tile_size - border:
+        x = border
+        while x <= width - tile_size - border:
+            start_x, end_x = x, x + tile_size
+            start_y, end_y = y, y + tile_size
 
-            # Append the tile and info to the list
-            if (ignoreBackground) and (tile_text == ""):
-               #print("Skipping tile")
-               pass
+            tile = image[start_y:end_y, start_x:end_x]
+
+            if tile.shape[0] == tile_size and tile.shape[1] == tile_size:
+                threshold_count = check_threshold_count(tile, low_value_tile_threshold)
+                if threshold_count > 0:
+                    # Check if tile contains any defect points
+                    tile_text = ""
+                    tileAnnotatedByAI = 0
+
+                    for idx, (xFull, yFull) in enumerate(point_clicks):
+                        xAct, yAct = xFull // 2, yFull // 2  # <- keep your scaling
+                        if start_x <= xAct < end_x and start_y <= yAct < end_y:
+
+                            thisTileDescription = point_classes[idx]
+ 
+                            if (points_severities[idx]=="AI"):
+                               tileAnnotatedByAI = 1
+                               #points_severities[idx]="Class A" #<- Maybe package this with the rest ?
+
+                            #If we care about severities, this will make description of class:
+                            # PositiveDentClassA 
+                            if (use_severity):
+                               if (point_classes[idx]!="Clean"): #Clean tiles have no severity :P
+                                  thisTileDescription += points_severities[idx]
+
+                            #If we want we can consider different amounts of defects on a tile as different classes
+                            if not mergeSameKindOfDefectsRegardlessOfCount:
+                               tile_text += thisTileDescription
+                            else:
+                               if (tile_text == ""):
+                                    tile_text += thisTileDescription
+                               elif (tile_text == thisTileDescription):
+                                    pass #Merge descriptions for the same class appearing again and again
+                               else:
+                                    tile_text += thisTileDescription #Combinations of classes get a new class description
+
+                    if (not use_clean_class and tile_text == ""):
+                        pass #We dont want to use the class Clean so we ignore it!
+                    elif (tileAnnotatedByAI and not includeTilesAnnotatedByAI):
+                        pass #Ignore this tile that has been annotated by AI
+                    elif ignoreBackground and tile_text == "":
+                        # Skip background if requested
+                        step_size = clean_step
+                    else:
+                        #Register the processed tile to our lists
+                        tiles.append(tile)
+                        tile_classes.append(tile_text)
+                        if debug:
+                           #If debuging mode is on also produce tile_info data to identify where the tile came from
+                           AiAnnotationDebugString = ""
+                           if (tileAnnotatedByAI):
+                                AiAnnotationDebugString = "AIAnnotated "
+                                tiles_annotated_by_ai += 1
+                           tile_info.append("%s(%u,%u)"%(json_file,start_x,end_x))
+                        # Use smaller step if tile contains defect
+                        step_size = defect_step if tile_text != "" else clean_step
+                else:
+                    # Tile has too few pixels above threshold -> treat as background
+                    step_size = clean_step
             else:
-               tiles.append(tile)
-               tile_classes.append(tile_text)
+                step_size = clean_step
 
-    return tiles,tile_classes
+            x += step_size
+        y += step_size
 
+    return tiles, tile_classes, tile_info, tiles_annotated_by_ai
 
 def saveTiles(tiles,tile_classes):
     # Display or save the tiles as needed
@@ -206,15 +228,6 @@ def saveTiles(tiles,tile_classes):
          print(f'tiles/tile_{i}{tile_class}.png') 
 
 
-
-def debayerPolarImage(image): 
- # Split the A, B, C, and D values into separate monochrome images
- polarization_90_deg   = image[0::2, 0::2]
- polarization_45_deg   = image[0::2, 1::2]
- polarization_135_deg  = image[1::2, 0::2]
- polarization_0_deg    = image[1::2, 1::2]
- return polarization_0_deg,polarization_45_deg,polarization_90_deg,polarization_135_deg      
-
 def loadMoreClasses(filename,classes_dict):
     with open("%s.json"%filename) as json_data:
         data          = json.load(json_data)
@@ -225,15 +238,11 @@ def loadMoreClasses(filename,classes_dict):
            classes_dict[cl]=True 
     return classes_dict 
 
-
-
 def loadMoreClassesFromTiles(tile_classes,classes_dict):
     for cl in tile_classes:
            #print("Add `",cl,"` class ")
            classes_dict[cl]=True 
     return classes_dict 
-
-
 
 def convertClassDictToOneHotList(classes_dict,tile_classes):
     classToIndex = dict()
@@ -252,6 +261,13 @@ def convertClassDictToOneHotList(classes_dict,tile_classes):
      
     return onehot,numberOfClasses 
 
+def debayerPolarImage(image): 
+ # Split the A, B, C, and D values into separate monochrome images
+ polarization_90_deg   = image[0::2, 0::2]
+ polarization_45_deg   = image[0::2, 1::2]
+ polarization_135_deg  = image[1::2, 0::2]
+ polarization_0_deg    = image[1::2, 1::2]
+ return polarization_0_deg,polarization_45_deg,polarization_90_deg,polarization_135_deg      
 
 
 def readPolarPNMToRGBALive(image):
@@ -261,7 +277,6 @@ def readPolarPNMToRGBALive(image):
     height, width = image.shape
 
     # Split into polarization images
-    from readData import debayerPolarImage
     polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg = debayerPolarImage(image)
 
     # Create an RGBA image
@@ -274,8 +289,6 @@ def readPolarPNMToRGBALive(image):
     rgba_image[:, :, 3] = polarization_135_deg
     return rgba_image
 
-
-
 def readPolarPNMToRGBA(image_path):
     # Load the image
     image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
@@ -287,27 +300,46 @@ def readPolarPNMToRGBA(image_path):
     return readPolarPNMToRGBALive(image)
 
 
-def loadImage(filename,i,border=0,tile_size=32,step=4,low_value_tile_threshold=30,ignoreBackground=False):
+def loadImage(filename, 
+              i, 
+              border=0, 
+              tile_size=32,
+              step=4,
+              low_value_tile_threshold=30,
+              debug=False,
+              includeTilesAnnotatedByAI=True,
+              use_severity=False,
+              use_clean_class=True,
+              ignoreBackground=False):
   # Initialize per-call lists (avoid mutable defaults)
-  tiles = []
+  tiles        = []
   tile_classes = []
+  tile_info    = []
+  tiles_annotated_by_ai = 0
 
   if (".png" in filename) or (".pnm" in filename) or (".jpeg" in filename) or (".jpeg" in filename):
    rgba_image = readPolarPNMToRGBA(filename) 
    if rgba_image is None:
     print(filename," is not an image ")
-    return tiles,tile_classes # Return already acquired tiles 
+    return tiles, tile_classes, tile_info, tiles_annotated_by_ai # Return nothing
    else:
-    # Save the combined image
-    #output_filename = "sample_%05u.png" % i
-    #cv2.imwrite(output_filename, rgba_image)
-    #os.system("cp %s.json sample_%05u.json" % (filename,i))
-    tiles, tile_classes = tileImages(rgba_image,"%s.json"%filename,border=border,tile_size=tile_size,step=step,low_value_tile_threshold=low_value_tile_threshold,ignoreBackground=ignoreBackground)
+    #If we successfully read an image, cut it into tiles 
+    tiles, tile_classes, tile_info, tiles_annotated_by_ai = tileImages(rgba_image,
+                                                "%s.json"%filename,
+                                                border=border,
+                                                tile_size=tile_size,
+                                                step=step,
+                                                low_value_tile_threshold=low_value_tile_threshold,
+                                                debug=debug,
+                                                includeTilesAnnotatedByAI=includeTilesAnnotatedByAI,
+                                                use_severity=use_severity,
+                                                use_clean_class=use_clean_class,
+                                                ignoreBackground=ignoreBackground)
 
     #Remove RGBA image
     del rgba_image
 
-    return tiles, tile_classes
+    return tiles, tile_classes, tile_info, tiles_annotated_by_ai
 
 
 def count_class_appearances(onehot, num_classes):
@@ -357,8 +389,7 @@ if __name__ == '__main__':
 
   print("Do class update based on Tiles : ",len(tiles))
   class_dict = loadMoreClassesFromTiles(tile_classes,class_dict)
-         
-  #dump_dataset_to_keras_data_loader(tiles,tile_classes) # moved to dumpeKerasDataset.py
+          
  
 
   print("Tiles : ",len(tiles))

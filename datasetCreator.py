@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
+
+""" 
+Author : "Ammar Qammaz"
+Copyright : "2022 Foundation of Research and Technology, Computer Science Department Greece, See license.txt"
+License : "FORTH" 
+"""
+
 """
 wxPython GUI to select dataset directories and dump them into a Keras-style dataset layout.
 
@@ -83,8 +90,54 @@ def max_non_clean_entry(dictionary):
             max_value = value
     return max_value if max_value != float('-inf') else None
 # ------------------------------------------------------------------
+def count_files_with_extension(path, extension):
+    """
+    Counts how many files in the given folder have the specified extension.
+    
+    Args:
+        path (str): The directory path to search.
+        extension (str): The file extension to look for (e.g., '.txt' or 'txt').
+    
+    Returns:
+        int: Number of files matching the given extension.
+    """
+    # Normalize extension (ensure it starts with a dot)
+    if not extension.startswith('.'):
+        extension = '.' + extension
+
+    # Count matching files
+    count = sum(
+        1 for filename in os.listdir(path)
+        if os.path.isfile(os.path.join(path, filename)) and filename.lower().endswith(extension.lower())
+    )
+    return count
+# ------------------------------------------------------------------
+def add_png_comment(png_path: str, comment: str):
+    """
+    Adds or updates a 'Comment' metadata field in a PNG file.
+
+    Args:
+        png_path (str): Path to the PNG file.
+        comment (str): Comment string to add.
+    """
+    
+    from PIL import Image, PngImagePlugin
+    # Open the existing image
+    img = Image.open(png_path)
+    
+    # Create a copy of its metadata
+    meta = PngImagePlugin.PngInfo()
+    for k, v in img.info.items():
+        meta.add_text(k, v)
+
+    # Add or overwrite the 'Comment' field
+    meta.add_text("Comment", comment)
+    #print("Writing ",comment," to ",png_path)
+    # Save the image with updated metadata
+    img.save(png_path, "PNG", pnginfo=meta)
+
 #@profile
-def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_clean, outputDirectory, progress_callback=None):
+def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_clean, outputDirectory, tile_info=None, tiles_annotated_by_ai=0, progress_callback=None):
     """
     tiles, tile_classes: lists aligned
     occurances: dict to update
@@ -112,24 +165,32 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
         non_clean_sum = sum_non_clean_entries(occurances)
         clean_count   = occurances.get("clean", 0)
 
+        #Do not count tiles annotated by AI as clean
+        if (clean_count>tiles_annotated_by_ai):
+            clean_count-=tiles_annotated_by_ai
+        else:
+            clean_count=0
+
         target_clean_to_non_clean_ratio = ratio_clean  # 1.0 = target 1:1  of non-clean
 
         # Auto-balance clean samples
         # Determine probability to skip this clean tile
         skip_clean_prob = 0.0
-        if thisClass == "clean" and non_clean_sum > 0:
-            max_clean_allowed = target_clean_to_non_clean_ratio * non_clean_sum
-            if max_clean_allowed > 0:
-              ratio = clean_count / max_clean_allowed 
-            else: 
-              ratio = 1.0
-            # Smoothly increase skip probability as clean_count approaches max_clean_allowed
-            skip_clean_prob = min(1.0, max(0.0, ratio))
-
-        print("Tile ",tileID,"/",len(tiles)," | Clean ",clean_count," / Non-Clean ",non_clean_sum," | ",len(tiles)," tiles |  Skip Clean Prob " , skip_clean_prob,end="\r")
+        if thisClass == "clean":
+            if non_clean_sum == 0:
+                skip_clean_prob = 1.0
+            else:
+                max_clean_allowed = target_clean_to_non_clean_ratio * non_clean_sum
+                if max_clean_allowed > 0:
+                    ratio = clean_count / max_clean_allowed
+                    skip_clean_prob = min(1.0, max(0.0, ratio))
+ 
+        print("Tile ",tileID,"/",len(tiles)," | Clean ",clean_count," / Non-Clean ",non_clean_sum," / AI-Ann ",tiles_annotated_by_ai," | ",len(tiles)," tiles |  Accept Clean Prob % 0.2f      " % (1.0-skip_clean_prob),end="\r")
 
         thisClass = tile_classes[tileID]
         if (thisClass == ""):
+            thisClass = "clean"
+        elif (thisClass == "Clean"):
             thisClass = "clean"
 
         doDump = True
@@ -146,6 +207,10 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
             targetPath = os.path.join(class_dir, f"{thisClassNoSpace}_image_{occurances[thisClass]}.png")
             # write image
             cv2.imwrite(targetPath, tiles[tileID])
+            if tile_info is not None:
+                add_png_comment(targetPath,tile_info[tileID])
+                #To see this comment from linux shell: 
+                #      identify -verbose path/to/data/NegativeDent_image_XXXX.png | grep -A1 "Comment"
             occurances[thisClass] = occurances.get(thisClass, 1) + 1
 
         # progress callback
@@ -165,7 +230,7 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
 # Worker thread that actually processes selected directories
 # ------------------------------------------------------------------
 class ProcessorThread(threading.Thread):
-    def __init__(self, directories, target_dir, ui_callbacks, ratio_clean=1.0, threshold=0, border=0, step=32, tile_size=64):
+    def __init__(self, directories, target_dir, ui_callbacks, ratio_clean=1.0, threshold=0, border=0, step=32, tile_size=64, includeTilesAnnotatedByAI=True, use_severity=False, use_clean_class=True):
         super().__init__()
         self.directories = directories
         self.target_dir = target_dir
@@ -175,14 +240,26 @@ class ProcessorThread(threading.Thread):
         self.ratio_clean = ratio_clean
         self.border = border
         self.threshold = threshold
+        self.use_severity = use_severity
+        self.use_clean_class = use_clean_class
         self._stop = False
+        self.includeTilesAnnotatedByAI   = includeTilesAnnotatedByAI
+        self.total_tiles_annotated_by_ai = 0
   
     def process_a_file(self,file_index,file_path,occurances):
-                #print("File : ",file_path," index : ",file_index,end=" ")
                 print("File : ",file_path,end=" ")
-  
-                # load tiles using loadImage if available else try a simple fallback
-                tiles, tile_classes = loadImage(file_path, file_index, border=self.border, tile_size=self.tile_size, step=self.step, low_value_tile_threshold=self.threshold)
+
+                tiles, tile_classes, tile_info, tiles_annotated_by_ai = loadImage(file_path,
+                                                           file_index,
+                                                           border=self.border,
+                                                           tile_size=self.tile_size,
+                                                           step=self.step,
+                                                           low_value_tile_threshold=self.threshold,
+                                                           use_severity=self.use_severity,
+                                                           use_clean_class=self.use_clean_class,
+                                                           includeTilesAnnotatedByAI=self.includeTilesAnnotatedByAI,
+                                                           debug=True)
+                self.total_tiles_annotated_by_ai += tiles_annotated_by_ai
                 print("Tiles : ",len(tiles)," ")
                 # Create per-file output dir under target_dir -> maintain the same structure: one output root for everything
                 outdir = os.path.abspath(self.target_dir)
@@ -193,7 +270,7 @@ class ProcessorThread(threading.Thread):
                 #def progress_cb(info):
                 #    wx.CallAfter(self.ui_callbacks['on_progress_update'], info)
 
-                occurances, cleanThreshold = dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, self.ratio_clean, outdir, progress_callback=progress_cb)
+                occurances, cleanThreshold = dump_dataset_to_keras_data_loader(tiles, tile_classes,  occurances, self.ratio_clean, outdir, tile_info=tile_info, tiles_annotated_by_ai=self.total_tiles_annotated_by_ai, progress_callback=progress_cb)
 
                 #Empty memory occupied by tiles 
                 del tiles
@@ -307,7 +384,7 @@ class MainFrame(wx.Frame):
 
         # Border size control
         grid.Add(wx.StaticText(panel, label="Border safe-zone size:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.border_size_ctrl = wx.SpinCtrl(panel, min=0, max=16, initial=8)
+        self.border_size_ctrl = wx.SpinCtrl(panel, min=0, max=16, initial=0)
         grid.Add(self.border_size_ctrl, 1, wx.EXPAND)
 
         # Ratio control
@@ -321,10 +398,25 @@ class MainFrame(wx.Frame):
         grid.Add(self.threshold_ctrl, 1, wx.EXPAND)
 
         # Filtering checkbox
-        grid.Add(wx.StaticText(panel, label="Filtering:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.filter_checkbox = wx.CheckBox(panel, label="Enable filtering")
+        grid.Add(wx.StaticText(panel, label="Options:"), 0, wx.ALIGN_CENTER_VERTICAL)
+
+        self.filter_checkbox = wx.CheckBox(panel, label="Filtering")
         self.filter_checkbox.SetValue(True)
-        grid.Add(self.filter_checkbox, 1, wx.EXPAND)
+        self.severity_checkbox = wx.CheckBox(panel, label="Severities")
+        self.severity_checkbox.SetValue(True)
+        self.clean_class_checkbox = wx.CheckBox(panel, label="Clean Class")
+        self.clean_class_checkbox.SetValue(True)
+        comboButtons      = wx.BoxSizer(wx.HORIZONTAL)  
+        comboButtons.Add(self.filter_checkbox, 0, wx.ALL, 5)
+        comboButtons.Add(self.severity_checkbox, 0, wx.ALL, 5)
+        comboButtons.Add(self.clean_class_checkbox, 0, wx.ALL, 5)
+        grid.Add(comboButtons)
+
+        # AI Annotation checkbox
+        grid.Add(wx.StaticText(panel, label="Automatic Annotations:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.aiannotated_checkbox = wx.CheckBox(panel, label="Enable self-supervised annotations")
+        self.aiannotated_checkbox.SetValue(True)
+        grid.Add(self.aiannotated_checkbox, 1, wx.EXPAND)
 
         config_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 5)
         right_sizer.Add(config_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -423,7 +515,15 @@ class MainFrame(wx.Frame):
                         break
             except Exception:
                 pass
-            label = os.path.basename(p) + ("  [json]" if has_json else "")
+            #Create entry label 
+            #----------------------------------------------------------
+            label = os.path.basename(p)
+            if has_json:
+               jsonFilesCount  = count_files_with_extension(p,".json")
+               label           = label + " [%u json]" % jsonFilesCount
+            imageFilesCount = count_files_with_extension(p,".pnm")
+            label           = label + " [%u .img]" % imageFilesCount
+            #----------------------------------------------------------
             items.append(label)
             self.dataset_paths.append(p)
         if not items:
@@ -529,11 +629,14 @@ class MainFrame(wx.Frame):
             'on_all_done': self.on_all_done,
         }
         self.processor = ProcessorThread(selected_dirs, target_dir, ui_callbacks,
-                                         ratio_clean = self.ratio_ctrl.GetValue(), 
-                                         threshold   = self.threshold_ctrl.GetValue(),
-                                         border      = self.border_size_ctrl.GetValue(), 
-                                         step        = self.step_size_ctrl.GetValue(), 
-                                         tile_size   = self.tile_size_ctrl.GetValue())
+                                         ratio_clean     = self.ratio_ctrl.GetValue(), 
+                                         threshold       = self.threshold_ctrl.GetValue(),
+                                         border          = self.border_size_ctrl.GetValue(), 
+                                         step            = self.step_size_ctrl.GetValue(), 
+                                         tile_size       = self.tile_size_ctrl.GetValue(),
+                                         use_severity    = self.severity_checkbox.GetValue(),
+                                         use_clean_class = self.clean_class_checkbox.GetValue()
+                                         )
         self.processor.start()
         self.log(f"Started processing {len(selected_dirs)} datasets -> {target_dir}")
 
@@ -609,12 +712,13 @@ class MainFrame(wx.Frame):
         self.stop_btn.Disable()
 
         # ask to zip
-        dlg = wx.MessageDialog(self, f"Processing finished. Do you want to zip the output folder {target_dir}?", "Zip output?", wx.YES_NO | wx.ICON_QUESTION)
+        dlg = wx.MessageDialog(self, f"Processing finished. Do you want to zip the output folder {target_dir}?\n It will take a lot of time!", "Zip output?", wx.YES_NO | wx.ICON_QUESTION)
         res = dlg.ShowModal()
         dlg.Destroy()
         if res == wx.ID_YES:
             try:
                 base = os.path.abspath(target_dir)
+                print("Creating Zip Archive .. (this will take a lot of time..)")
                 archive_name = shutil.make_archive(base, 'zip', base_dir=base)
                 wx.MessageBox(f"Created archive: {archive_name}", "Zip created", wx.ICON_INFORMATION)
                 self.log(f"Created archive: {archive_name}")
@@ -630,6 +734,7 @@ def main():
     start_dir = os.path.join(os.getcwd(), './')
     if len(sys.argv) > 1:
         start_dir = sys.argv[1]
+
     app = wx.App(False)
     frame = MainFrame(start_dir=start_dir)
     frame.Show()
