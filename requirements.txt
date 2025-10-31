@@ -1,0 +1,15 @@
+wxPython
+opencv-python
+numpy
+numba
+torch
+torchvision
+torchmetrics
+pytorch-lightning
+pillow
+wandb
+numpy
+tensorflow
+matplotlib
+seaborn
+h5py
