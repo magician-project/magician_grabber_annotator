@@ -374,12 +374,12 @@ class MainFrame(wx.Frame):
 
         # Tile size control
         grid.Add(wx.StaticText(panel, label="Tile size:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.tile_size_ctrl = wx.SpinCtrl(panel, min=8, max=512, initial=32)
+        self.tile_size_ctrl = wx.SpinCtrl(panel, min=8, max=512, initial=48)
         grid.Add(self.tile_size_ctrl, 1, wx.EXPAND)
 
         # Step size control
         grid.Add(wx.StaticText(panel, label="Step size:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.step_size_ctrl = wx.SpinCtrl(panel, min=1, max=512, initial=8)
+        self.step_size_ctrl = wx.SpinCtrl(panel, min=1, max=512, initial=4)
         grid.Add(self.step_size_ctrl, 1, wx.EXPAND)
 
         # Border size control
@@ -389,7 +389,7 @@ class MainFrame(wx.Frame):
 
         # Ratio control
         grid.Add(wx.StaticText(panel, label="Clean/Non-clean ratio:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.ratio_ctrl = wx.SpinCtrl(panel, min=1, max=32, initial=2)
+        self.ratio_ctrl = wx.SpinCtrl(panel, min=1, max=32, initial=10)
         grid.Add(self.ratio_ctrl, 1, wx.EXPAND)
 
         # Threshold control

@@ -92,6 +92,8 @@ else:
         self.image = None
         self.foregroundMask  = None
         self.foregroundImage = None
+    def save_mask(self,path,mask):
+        pass
 #-------------------------------------------------------------------------------
 
 """
@@ -732,7 +734,7 @@ class PhotoCtrl(wx.App):
 
         if (screen_width>=1920):
           self.PhotoMaxSizeWidth   = 800
-          self.PhotoMaxSizeHeight  = 650
+          self.PhotoMaxSizeHeight  = 620
         else:
           self.PhotoMaxSizeWidth   = 475 #<- Small monitor
           self.PhotoMaxSizeHeight  = 400
@@ -848,9 +850,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         itemMagnify       = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
         itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
         itemTileExplorer  = toolsMenu.Append(wx.ID_FIND, "&Tile Explorer", "Tile Explorer")
+        itemStreamer      = toolsMenu.Append(wx.ID_FORWARD, "&Stream To Shared Memory", "Stream To Shared Memory")
         self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
         self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
         self.Bind(wx.EVT_MENU, self.onTileExplorer,itemTileExplorer)
+        self.Bind(wx.EVT_MENU, self.onStreamer,itemStreamer)
 
         # Add the File menu to the menu bar
         menuBar.Append(toolsMenu, "&Tools")
@@ -1058,8 +1062,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
         self.sideSizer.Add(self.maintainPointsCheckbox, 0, wx.ALL, 5)
         self.sideSizer.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.useClassifierCheckbox, 0, wx.ALL, 5)
         self.sideSizer.Add(self.guessLightingCheckbox, 0, wx.ALL, 5)
+        self.sideSizer.Add(self.useClassifierCheckbox, 0, wx.ALL, 5)
         #------------------------------------------------------------
 
         #Under Image
@@ -1352,7 +1356,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
                   if self.useClassifierCheckbox.GetValue():
-                    imgRGBFromClassifier, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=False)
+                    imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=True)
                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                     processed_img = imgRGBFromClassifier
                     self.sam_processor.image = imgRGBFromClassifier
@@ -1457,7 +1461,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.folderStreamer.select(0)
                print("Directory mode")
                #print("Directory mode : ",self.directoryList)
-               self.populateMetaData("%s/info.json"%self.filepath)
+               self.populateMetaData("%s/info.json" % self.filepath)
                #self.filepath = self.directoryList[self.directoryListIndex]
                self.filepath = self.folderStreamer.getImage()
                self.updateMinMaxSlider()
@@ -1509,7 +1513,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             #self.onNewInputPath(dlg.selectedDataset)
             from HTTPStream import HTTPFolderStreamer 
             self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
-            self.populateMetaData("%s/info.json" % dlg.selectedDirectory)
+            self.populateMetaData("%s/info.json" % selectedDirectory)
             self.onNext(event)
             self.onPrevious(event)
             app.photoTxt.SetValue(dlg.selectedDirectory)
@@ -1877,6 +1881,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     def onTileExplorer(self,event):
        os.system("python3 tileExplorer.py %s" % self.local_base_path) #<- Lazy
 
+    def onStreamer(self,event):
+       selectedDirectory = self.folderStreamer.local_dir
+       print("Streamer set directory : ",selectedDirectory)
+       os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
 
 
     def onMouseMoveMagnifier(self, event):

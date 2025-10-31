@@ -38,7 +38,7 @@ class DatasetSelector(wx.Dialog):
         vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         # Checkbox for annotation replacement
-        self.checkbox = wx.CheckBox(panel, label="Replace annotations with live snapshot")
+        self.checkbox = wx.CheckBox(panel, label="Overwrite/Replace local annotations with server annotations")
         vbox.Add(self.checkbox, flag=wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
 
