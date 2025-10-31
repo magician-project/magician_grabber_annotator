@@ -44,6 +44,10 @@ directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom
 processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "Sobel","Visible","SAM"]
 
 
+#classifier_relative_directory = "../classifier" #Old Name
+classifier_relative_directory = "../magician_vision_classifier"
+classifier_model_path         = "%s/last.pth"  % classifier_relative_directory
+classifier_cfg_path           = "%s/last.json" % classifier_relative_directory
 
 
 """
@@ -65,7 +69,7 @@ ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 # Make Classifier completely seperatable from the rest of the codebase
 #-------------------------------------------------------------------------------
 if useClassifier:
-  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../classifier'))
+  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
   from liveClassifierTorch import ClassifierPnm
 else:
@@ -723,7 +727,7 @@ class PhotoCtrl(wx.App):
         else:
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
-        self.ClassifierPnm = ClassifierPnm(model_path='../classifier/last.pth',cfg_path='../classifier/last.json')
+        self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
         wx.App.__init__(self, redirect, filename)
 
 

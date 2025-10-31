@@ -7,8 +7,12 @@ import cv2
 import numpy as np
 import sys
 
+
+#classifier_relative_directory = "../classifier" #Old Name
+classifier_relative_directory = "../magician_vision_classifier"
+
 try:
-  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../classifier'))
+  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
 except:
   print("Could not find classifier ..")
@@ -178,7 +182,7 @@ class StreamerFrame(wx.Frame):
         channels = 1 if len(frame.shape) == 2 else frame.shape[2]
 
     
-        #os.system("ln -s ../classifier/libSharedMemoryVideoBuffers.so")
+        #os.system("ln -s %s/libSharedMemoryVideoBuffers.so" % classifier_relative_directory)
         #os.system("git clone https://github.com/AmmarkoV/SharedMemoryVideoBuffers")
         #os.system("cd SharedMemoryVideoBuffers && make && cd .. && SharedMemoryVideoBuffers/server --nokb&")
 
