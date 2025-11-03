@@ -34,7 +34,7 @@ import threading
 Configurations in one central place
 """
 
-version         = "0.24"
+version         = "0.28"
 useSAM          = False
 useClassifier   = True #<- Switch classifier off
 combineChannels = True
@@ -718,7 +718,7 @@ class MagnifierFrame(wx.Frame):
 
 
 class PhotoCtrl(wx.App):
-    def __init__(self, redirect=False, filename=None):
+   def __init__(self, redirect=False, filename=None):
         if (useSAM):
           if (slowPC):
             self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_b_01ec64.pth", model_type="vit_b", device="cpu")
@@ -791,8 +791,9 @@ class PhotoCtrl(wx.App):
         self.scrollStep  = 10
 
         self.local_base_path = "./"
+        self.maintainPoints = False  # Initial state
 
-    """
+        """
 ['ID_ABORT', 'ID_ABOUT', 'ID_ADD', 'ID_ANY', 'ID_APPLY', 'ID_BACKWARD', 'ID_BOLD
 ', 'ID_CANCEL', 'ID_CLEAR', 'ID_CLOSE', 'ID_CLOSE_ALL', 'ID_CONTEXT_HELP', 'ID_C
 OPY', 'ID_CUT', 'ID_DEFAULT', 'ID_DELETE', 'ID_DOWN', 'ID_DUPLICATE', 'ID_EDIT',
@@ -814,7 +815,7 @@ NE', 'ID_UNDO', 'ID_UNINDENT', 'ID_UP', 'ID_VIEW_DETAILS', 'ID_VIEW_LARGEICONS',
 ID_VIEW_SORTSIZE', 'ID_VIEW_SORTTYPE', 'ID_YES', 'ID_YESTOALL', 'ID_ZOOM_100', '
 ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
-    def createWidgets(self):
+   def createWidgetsOLD(self):
         # Create the File menu-----------------------------------------------------
         menuBar = wx.MenuBar()
 
@@ -1113,9 +1114,352 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.frame.Bind(wx.EVT_CHAR_HOOK, self.onKeyPress)
 
         self.panel.Layout()
+
+
+   def createWidgets(self):
+    # ----- Menus (unchanged) -------------------------------------------------
+    menuBar = wx.MenuBar()
+
+    fileMenu = wx.Menu()
+    itemOpen    = fileMenu.Append(wx.ID_OPEN, "&Open Image", "Open an image file")
+    itemOpenDir = fileMenu.Append(wx.ID_OPEN, "Open &Directory", "Open a directory")
+    itemOpenNet = fileMenu.Append(wx.ID_OPEN, "Open &Network", "Open network server")
+    itemUpload  = fileMenu.Append(wx.ID_UP, "Upload &Annotations", "Upload annotations to server")
+    self.Bind(wx.EVT_MENU, self.onUploadAnnotations, itemUpload)
+    itemBatch   = fileMenu.Append(wx.ID_DOWN, "Download &All Frames", "Process multiple files automatically")
+    self.Bind(wx.EVT_MENU, self.onRunBatch, itemBatch)
+
+    itemSave    = fileMenu.Append(wx.ID_SAVE, "&Save", "Save the current file")
+    fileMenu.AppendSeparator()
+    itemGen     = fileMenu.Append(wx.ID_NEW, "&Generate JSON", "Generate JSON for all files")
+    itemDebug   = fileMenu.Append(wx.ID_MORE, "Debug", "Debug GUI")
+    fileMenu.AppendSeparator()
+    itemExit    = fileMenu.Append(wx.ID_EXIT, "E&xit", "Exit the application")
+
+    self.Bind(wx.EVT_MENU, self.onBrowse, itemOpen)
+    self.Bind(wx.EVT_MENU, self.onOpenDirectory, itemOpenDir)
+    self.Bind(wx.EVT_MENU, self.onOpenNetwork, itemOpenNet)
+    self.Bind(wx.EVT_MENU, self.onGenerateJSON, itemGen)
+    self.Bind(wx.EVT_MENU, self.onSave, itemSave)
+    self.Bind(wx.EVT_MENU, self.onDebug, itemDebug)
+    self.Bind(wx.EVT_MENU, self.onExit, itemExit)
+
+    menuBar.Append(fileMenu, "&File")
+
+    toolsMenu = wx.Menu()
+    itemMagnify       = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
+    itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
+    itemTileExplorer  = toolsMenu.Append(wx.ID_FIND, "&Tile Explorer", "Tile Explorer")
+    itemStreamer      = toolsMenu.Append(wx.ID_FORWARD, "&Stream To Shared Memory", "Stream To Shared Memory")
+    self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
+    self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
+    self.Bind(wx.EVT_MENU, self.onTileExplorer,itemTileExplorer)
+    self.Bind(wx.EVT_MENU, self.onStreamer,itemStreamer)
+    menuBar.Append(toolsMenu, "&Tools")
+
+    helpMenu = wx.Menu()
+    itemAbout = helpMenu.Append(wx.ID_ABOUT, "&About", "Information about this application")
+    self.Bind(wx.EVT_MENU, self.onAbout, itemAbout)
+    menuBar.Append(helpMenu, "&Help")
+
+    self.frame.SetMenuBar(menuBar)
+
+    # ----- Main image views ---------------------------------------------------
+    img = wx.Image(self.PhotoMaxSizeWidth,self.PhotoMaxSizeHeight)
+    self.imageCtrl = wx.StaticBitmap(self.panel, wx.ID_ANY, wx.Bitmap(img))
+    self.secondaryImageCtrl = wx.StaticBitmap(self.panel, wx.ID_ANY, wx.Bitmap(img))
+
+    self.instructLbl = wx.StaticText(self.panel, label='Magician Annotator')
+    self.photoTxt = wx.TextCtrl(self.panel, size=(200, -1),style=wx.TE_PROCESS_ENTER)
+    self.photoTxt.Bind(wx.EVT_TEXT_ENTER, self.onPhotoTxtEnter)
+
+    browseBtn = wx.Button(self.panel, label='Browse')
+    browseBtn.Bind(wx.EVT_BUTTON, self.onBrowse)
+    self.rescanBtn = wx.Button(self.panel, label='Rescan')
+    self.rescanBtn.Bind(wx.EVT_BUTTON, self.onRescan)
+
+    # Horizontal “timeline” slider
+    self.scrollBar = wx.Slider(self.panel, value=0, minValue=0, maxValue=1000, size=(400, -1), style=wx.SL_HORIZONTAL)
+    self.scrollBar.SetTickFreq(50)
+    self.scrollBar.Bind(wx.EVT_SLIDER, self.onScroll)
+
+    # Brightness controls
+    self.minusButton = wx.Button(self.panel, label="-", size=(40, 30))
+    self.minusButton.Bind(wx.EVT_BUTTON, self.decrease_brightness)
+    self.brightnessLabel = wx.StaticText(self.panel, label="Br.")
+    self.brightnessText = wx.TextCtrl(self.panel, value="0", size=(50, 30), style=wx.TE_CENTER)
+    self.brightnessText.Bind(wx.EVT_TEXT, self.on_brightness_change)
+    self.plusButton = wx.Button(self.panel, label="+", size=(40, 30))
+    self.plusButton.Bind(wx.EVT_BUTTON, self.increase_brightness)
+
+    # Contrast controls
+    self.minusContrastButton = wx.Button(self.panel, label="-", size=(40, 30))
+    self.minusContrastButton.Bind(wx.EVT_BUTTON, self.decrease_contrast)
+    self.contrastLabel = wx.StaticText(self.panel, label="Co.")
+    self.contrastText = wx.TextCtrl(self.panel, value="0", size=(50, 30), style=wx.TE_CENTER)
+    self.contrastText.Bind(wx.EVT_TEXT, self.on_contrast_change)
+    self.plusContrastButton = wx.Button(self.panel, label="+", size=(40, 30))
+    self.plusContrastButton.Bind(wx.EVT_BUTTON, self.increase_contrast)
+
+    # Under-image navigation
+    self.prevBtn = wx.Button(self.panel, label='<')
+    self.prevBtn.Bind(wx.EVT_BUTTON, self.onPrevious)
+    self.nextBtn = wx.Button(self.panel, label='>')
+    self.nextBtn.Bind(wx.EVT_BUTTON, self.onNext)
+    self.cameraSettingsBtn = wx.Button(self.panel, label='Camera')
+    self.cameraSettingsBtn.Bind(wx.EVT_BUTTON, self.onCameraSettings)
+
+    global processors
+    self.ProcessorComboBox = wx.ComboBox(self.panel, choices=processors, style=wx.CB_DROPDOWN)
+    self.ProcessorComboBox.Bind(wx.EVT_COMBOBOX, self.onProcessorComboBoxSelect)
+    self.ProcessorComboBox.SetValue(processors[0])
+
+    # ----- Layout roots -------------------------------------------------------
+    self.mainSizer  = wx.BoxSizer(wx.VERTICAL)
+    self.sizer      = wx.BoxSizer(wx.HORIZONTAL)  # holds (left images) + (right tabs)
+    self.underImage = wx.BoxSizer(wx.HORIZONTAL)
+
+    self.mainSizer.Add(wx.StaticLine(self.panel, wx.ID_ANY), 0, wx.ALL | wx.EXPAND, 5)
+    self.mainSizer.Add(self.instructLbl, 0, wx.ALL, 5)
+
+    # Left: two image panes
+    imagesSizer = wx.BoxSizer(wx.HORIZONTAL)
+    imagesSizer.Add(self.imageCtrl, 0, wx.ALL, 5)
+    imagesSizer.Add(self.secondaryImageCtrl, 0, wx.ALL, 5)
+    self.sizer.Add(imagesSizer, 0, wx.ALL, 5)
+
+    # Right: Notebook with two tabs
+    self.rightBook = wx.Notebook(self.panel, style=wx.NB_TOP)
+
+    # --- Annotator tab (contains everything up to "Guess lighting direction") ---
+    annotatorPanel = wx.Panel(self.rightBook)
+    self._buildAnnotatorTab(annotatorPanel)
+    self.rightBook.AddPage(annotatorPanel, "Annotator")
+
+    # --- Classifier tab (model, threshold, majority voting, tile size, two-stage) ---
+    classifierPanel = wx.Panel(self.rightBook)
+    self._buildClassifierTab(classifierPanel)
+    self.rightBook.AddPage(classifierPanel, "Classifier")
+
+    # Add notebook to the right side
+    self.sizer.Add(self.rightBook, 1, wx.ALL | wx.EXPAND, 5)
+
+    # Add top row to main
+    self.mainSizer.Add(self.sizer, 1, wx.ALL | wx.EXPAND, 5)
+
+    # Under-image controls row
+    self.underImage.Add(self.prevBtn, 0, wx.ALL, 5)
+    self.underImage.Add(self.nextBtn, 0, wx.ALL, 5)
+    self.underImage.Add(self.photoTxt, 0, wx.ALL, 5)
+    self.underImage.Add(browseBtn, 0, wx.ALL, 5)
+    self.underImage.Add(self.rescanBtn, 0, wx.ALL, 5)
+    self.underImage.Add(self.scrollBar, 1, wx.ALL | wx.EXPAND, 5)
+    self.underImage.Add(self.cameraSettingsBtn, 0, wx.ALL, 5)
+    self.underImage.Add(self.ProcessorComboBox, 0, wx.ALL, 5)
+
+    self.underImage.Add(self.minusButton, 0, wx.ALL, 5)
+    self.underImage.Add(self.brightnessLabel, 0, wx.ALL, 5)
+    self.underImage.Add(self.brightnessText, 0, wx.ALL, 5)
+    self.underImage.Add(self.plusButton, 0, wx.ALL, 5)
+
+    self.underImage.Add(self.minusContrastButton, 0, wx.ALL, 5)
+    self.underImage.Add(self.contrastLabel, 0, wx.ALL, 5)
+    self.underImage.Add(self.contrastText, 0, wx.ALL, 5)
+    self.underImage.Add(self.plusContrastButton, 0, wx.ALL, 5)
+
+    self.mainSizer.Add(self.underImage, 0, wx.ALL | wx.EXPAND, 5)
+
+    # Finalize
+    self.panel.SetSizer(self.mainSizer)
+    self.mainSizer.Fit(self.frame)
+
+    # Mouse + keys bindings on the images/panel
+    self.imageCtrl.Bind(wx.EVT_LEFT_DOWN, self.onLeftDown)
+    self.secondaryImageCtrl.Bind(wx.EVT_LEFT_DOWN, self.onLeftDown)
+    self.imageCtrl.Bind(wx.EVT_MIDDLE_DOWN, self.onMiddleDown)
+    self.secondaryImageCtrl.Bind(wx.EVT_MIDDLE_DOWN, self.onMiddleDown)
+    self.imageCtrl.Bind(wx.EVT_RIGHT_DOWN, self.onRightDown)
+    self.secondaryImageCtrl.Bind(wx.EVT_RIGHT_DOWN, self.onRightDown)
+    self.panel.Bind(wx.EVT_MOUSEWHEEL, self.onMouseWheel)
+    self.frame.Bind(wx.EVT_CHAR_HOOK, self.onKeyPress)
+    self.panel.Layout()
+
+
+   def _buildAnnotatorTab(self, parent):
+    """Builds the right-side Annotator tab with the original right panel controls
+       up to and including 'Guess lighting direction'."""
+    s = wx.BoxSizer(wx.VERTICAL)
+
+    # Processor (kept in top bar previously, but we leave it there; not duplicated here)
+
+    # Dataset Information
+    self.datasetLabel = wx.StaticText(parent, label="Dataset Information")
+    datasetListSize = wx.Size(-1, 80)
+    self.datasetList  = wx.ListBox(parent, size=datasetListSize, choices=[], style=wx.LB_SINGLE)
+
+    # Image Regions
+    self.regionLabel = wx.StaticText(parent, label="Image Regions")
+    regionListSize = wx.Size(-1, 40)
+    self.regionList = wx.ListBox(parent, size=regionListSize, choices=[], style=wx.LB_SINGLE)
+    self.regionList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
+    self.removeRegionBtn = wx.Button(parent, label='Remove Selected Point')
+    self.removeRegionBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
+
+    # Classification + Severity (combo row)
+    self.defectLabel = wx.StaticText(parent, label="Defect Classification")
+    global options, severities, directions
+    self.defectComboBox = wx.ComboBox(parent, choices=options, style=wx.CB_DROPDOWN)
+    self.defectComboBox.Append("Add Custom Option")
+    self.defectComboBox.Bind(wx.EVT_COMBOBOX, self.onDefectComboBoxSelect)
+    self.defectComboBox.SetValue(options[0])
+
+    self.severityComboBox = wx.ComboBox(parent, choices=severities, style=wx.CB_DROPDOWN)
+
+    comboClass = wx.BoxSizer(wx.HORIZONTAL)
+    comboClass.Add(self.defectComboBox, 1, wx.ALL | wx.EXPAND, 5)
+    comboClass.Add(self.severityComboBox, 1, wx.ALL | wx.EXPAND, 5)
+
+    # Light Direction
+    self.lightLabel = wx.StaticText(parent, label="Light Direction")
+    self.lightComboBox = wx.ComboBox(parent, choices=directions, style=wx.CB_DROPDOWN)
+
+    # Points
+    self.pointLabel = wx.StaticText(parent, label="Image Points")
+    self.pointList = wx.ListBox(parent, choices=[], style=wx.LB_SINGLE)
+    self.pointList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
+    self.removePointBtn = wx.Button(parent, label='Remove Selected Point')
+    self.removePointBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
+
+    # Action buttons
+    self.autoBtn = wx.Button(parent, label='Auto')
+    self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
+    self.saveBtn = wx.Button(parent, label='Save')
+    self.saveBtn.Bind(wx.EVT_BUTTON, self.onSave)
+    self.deleteMetadataBtn = wx.Button(parent, label='Delete')
+    self.deleteMetadataBtn.Bind(wx.EVT_BUTTON, self.ondeleteMetadata)
+
+    comboButtons = wx.BoxSizer(wx.HORIZONTAL)
+    comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
+    comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
+    comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
+
+    # Checkboxes (up to Guess lighting direction)
+    self.maintainPointsCheckbox = wx.CheckBox(parent, label="Maintain Points for next image")
+    self.maintainPoints = False  # Initial state
+    self.maintainPointsCheckbox.SetValue(self.maintainPoints)
+
+    self.incrementFrameAfterAnAdditionCheckbox = wx.CheckBox(parent, label="Increment frame after defect annotation")        
+    self.incrementFrameAfterAnAddition=True
+    self.incrementFrameAfterAnAdditionCheckbox.SetValue(self.incrementFrameAfterAnAddition)
+    self.guessLightingCheckbox = wx.CheckBox(parent, label="Guess lighting direction")
+    self.guessLightingCheckbox.SetValue(True)
+
+    # Layout stack for Annotator tab
+    s.Add(self.datasetLabel, 0, wx.ALL | wx.EXPAND, 5)
+    s.Add(self.datasetList, 0, wx.ALL | wx.EXPAND, 5)
+
+    s.Add(self.regionLabel, 0, wx.ALL | wx.EXPAND, 5)
+    s.Add(self.regionList, 0, wx.ALL | wx.EXPAND, 5)
+    s.Add(self.removeRegionBtn, 0, wx.ALL, 5)
+
+    s.Add(wx.StaticLine(parent), 0, wx.ALL | wx.EXPAND, 5)
+
+    s.Add(self.defectLabel, 0, wx.ALL, 5)
+    s.Add(comboClass, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 5)
+
+    s.Add(self.lightLabel, 0, wx.ALL, 5)
+    s.Add(self.lightComboBox, 0, wx.ALL | wx.EXPAND, 5)
+
+    s.Add(self.pointLabel, 0, wx.ALL | wx.EXPAND, 5)
+    s.Add(self.pointList, 1, wx.ALL | wx.EXPAND, 5)
+    s.Add(self.removePointBtn, 0, wx.ALL, 5)
+
+    s.Add(comboButtons, 0, wx.ALL, 5)
+
+    s.Add(self.maintainPointsCheckbox, 0, wx.ALL, 5)
+    s.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
+    s.Add(self.guessLightingCheckbox, 0, wx.ALL, 5)
+
+    parent.SetSizer(s)
+
+
+   def _buildClassifierTab(self, parent):
+    """Builds the Classifier tab with model select, threshold, majority voting,
+       tile size (4..128), and two-stage classification toggle."""
+    s = wx.BoxSizer(wx.VERTICAL)
+
+    # Model dropdown
+    # Try to pull available models from your classifier object, else use fallback list.
+    try:
+        available_models = list(getattr(self.ClassifierPnm, "available_models", []))
+    except Exception:
+        available_models = []
+    if not available_models:
+        available_models = ["Default"]
+
+    modelRow = wx.BoxSizer(wx.HORIZONTAL)
+    modelLbl = wx.StaticText(parent, label="Model")
+    self.classifierModelCombo = wx.ComboBox(parent, choices=available_models, style=wx.CB_READONLY)
+    self.classifierModelCombo.SetValue(available_models[0])
+    # You can Bind to a handler if desired:
+    # self.classifierModelCombo.Bind(wx.EVT_COMBOBOX, self.onClassifierModelChanged)
+    modelRow.Add(modelLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    modelRow.Add(self.classifierModelCombo, 1, wx.EXPAND)
+
+    # Threshold slider (0..100 -> 0.00..1.00 shown in a label)
+    thrRow = wx.BoxSizer(wx.HORIZONTAL)
+    thrLbl = wx.StaticText(parent, label="Threshold")
+    self.classifierThreshold = wx.Slider(parent, value=50, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
+    self.classifierThresholdValue = wx.StaticText(parent, label="0.50")
+    def _on_thr(evt):
+        self.classifierThresholdValue.SetLabel(f"{self.classifierThreshold.GetValue()/100.0:.2f}")
+        evt.Skip()
+    self.classifierThreshold.Bind(wx.EVT_SLIDER, _on_thr)
+    thrRow.Add(thrLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    thrRow.Add(self.classifierThreshold, 1, wx.RIGHT, 8)
+    thrRow.Add(self.classifierThresholdValue, 0, wx.ALIGN_CENTER_VERTICAL)
+
+    # Majority voting checkbox
+    self.classifierMajorityVoting = wx.CheckBox(parent, label="Use majority voting")
+
+    # Tile size slider 4..128 (powers of two suggested; slider gives integers)
+    tileRow = wx.BoxSizer(wx.HORIZONTAL)
+    tileLbl = wx.StaticText(parent, label="Tile size")
+    self.classifierTileSize = wx.Slider(parent, value=32, minValue=4, maxValue=128, style=wx.SL_HORIZONTAL)
+    self.classifierTileSizeValue = wx.StaticText(parent, label="32")
+    def _on_tile(evt):
+        self.classifierTileSizeValue.SetLabel(str(self.classifierTileSize.GetValue()))
+        evt.Skip()
+    self.classifierTileSize.Bind(wx.EVT_SLIDER, _on_tile)
+    tileRow.Add(tileLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    tileRow.Add(self.classifierTileSize, 1, wx.RIGHT, 8)
+    tileRow.Add(self.classifierTileSizeValue, 0, wx.ALIGN_CENTER_VERTICAL)
+
+    # Two-stage classification checkbox
+    self.classifierTwoStage = wx.CheckBox(parent, label="Enable two-stage classification")
+
+    # (Optional) Keep your original "Use NN Classifier" checkbox here if you want it tied to this tab,
+    # otherwise leave it where it was. Uncomment to move it here:
+    self.useClassifierCheckbox = wx.CheckBox(parent, label="Use NN Classifier")
+    self.useClassifierCheckbox.SetValue(useClassifier)
+
+    # Layout for Classifier tab
+    s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
+    s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+    s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+    s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+    # Spacer to push content up
+    s.AddStretchSpacer(1)
+
+    parent.SetSizer(s)
+
+
  
     # Add this method to your PhotoCtrl class
-    def restoreFromJSON(self, filepath):
+   def restoreFromJSON(self, filepath):
       if checkIfFileExists(filepath):
         with open(filepath, 'r') as json_file:
             data = json.load(json_file)
@@ -1147,7 +1491,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.updatePointList()
             self.updateRegionList()
 
-    def onGenerateJSON(self,event):
+   def onGenerateJSON(self,event):
         print("on generate called!")
         if (self.filePathIsDirectory):
                #self.onSave(None)
@@ -1158,12 +1502,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                  print("NEXT")   
                  self.onNext(event) 
 
-    def onDebug(self, event):
+   def onDebug(self, event):
         print("Debug")
         import wx.lib.inspection
         wx.lib.inspection.InspectionTool().Show()
 
-    def ondeleteMetadata(self, event):
+   def ondeleteMetadata(self, event):
         print("Deleting metadata for active image")
         self.cleanThisFrameMetaData()
         jsonFile = "%s.json" % self.filepath
@@ -1171,7 +1515,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         os.system("rm %s"%jsonFile)
         self.onRedrawData(event)
 
-    def onAuto(self, event): 
+   def onAuto(self, event): 
       print("Automatically retrieved annotations")
       print(self.AIAnnotations)
       print("User Submitted annotations")
@@ -1237,7 +1581,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       return new_points, new_classes
         
 
-    def onSave(self, event):
+   def onSave(self, event):
         print("Save")
         if (len(self.regions_of_interest)>0):
            self.sam_processor.save_mask("%s_foreground.png"%self.filepath , self.sam_processor.foregroundMask )
@@ -1277,7 +1621,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.folderStreamer.saveJSON()
 
 
-    def cleanThisFrameMetaData(self):
+   def cleanThisFrameMetaData(self):
                self.pointList.Clear()
                self.regionList.Clear()
                self.points_classes      = []
@@ -1287,7 +1631,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.lightComboBox.SetValue("Unknown")
 
 
-    def onProcessNewImageSample(self,filepath):
+   def onProcessNewImageSample(self,filepath):
            if (self.maintainPointsCheckbox.GetValue()):
                print("Maintaining previous point lists")
            else:
@@ -1417,7 +1761,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.magnifier.refreshZoom()
 
 
-    def onCameraSettings(self, event):
+   def onCameraSettings(self, event):
         #Deactivated
         """
         dlg = CameraSettingsDialog(self.frame, title='Camera Settings')
@@ -1429,13 +1773,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.onProcessNewImageSample(self.filepath)
         """
         
-    def onAbout(self, event):
+   def onAbout(self, event):
         wx.MessageBox("Made by Ammar Qammaz a.k.a. AmmarkoV\nhttp://ammar.gr/\nVersion %s"%version, "About", wx.OK | wx.ICON_INFORMATION)
 
-    def onRescan(self, newPath):
+   def onRescan(self, newPath):
         self.onProcessNewImageSample(self.filepath)
 
-    def populateMetaData(self,path):
+   def populateMetaData(self,path):
          self.metadata = None
          if (checkIfFileExists(path)):
               with open(path) as json_data:
@@ -1453,7 +1797,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
          return self.metadata
 
 
-    def onNewInputPath(self, newPath):
+   def onNewInputPath(self, newPath):
         print("\n\n\n\nNew Input Path Received : ",newPath)
         self.filepath = newPath
         if (self.filepath!=""):
@@ -1473,17 +1817,17 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
            self.onProcessNewImageSample(self.filepath)
 
-    def onPhotoTxtEnter(self, event):
+   def onPhotoTxtEnter(self, event):
         self.onNewInputPath(self.photoTxt.GetValue())
 
-    def onExit(self, event):
+   def onExit(self, event):
         sys.exit(0)
 
-    def onProcessorComboBoxSelect(self, event):
+   def onProcessorComboBoxSelect(self, event):
         print("Combo box select changed")
         self.onRedrawData(event)
 
-    def onDefectComboBoxSelect(self, event):
+   def onDefectComboBoxSelect(self, event):
       selected_option = self.defectComboBox.GetValue()
       self.severityComboBox.SetValue("") #<- Cause Severity to be erased to make sure user picks it correctly 
       if selected_option == "Add Custom Option":
@@ -1496,7 +1840,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             # Handle case where user cancels the input
             pass
 
-    def onOpenDirectory(self, event):
+   def onOpenDirectory(self, event):
         dialog = wx.DirDialog(None, "Choose a directory:", style=wx.DD_DEFAULT_STYLE | wx.DD_NEW_DIR_BUTTON)
 
         if dialog.ShowModal() == wx.ID_OK:
@@ -1506,7 +1850,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
         dialog.Destroy()
 
-    def onOpenNetwork(self, event):
+   def onOpenNetwork(self, event):
         from datasetSelector import DatasetSelector
         dlg = DatasetSelector(local_base_path=self.local_base_path)
         if dlg.ShowModal() == wx.ID_OK:
@@ -1523,7 +1867,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             app.photoTxt.SetValue(dlg.selectedDirectory)
         dlg.Destroy()
 
-    def onBrowse(self, event):
+   def onBrowse(self, event):
         wildcard = "JPEG files (*.jpg)|*.jpg"
         dialog   = wx.FileDialog(None, "Choose a file",wildcard=wildcard,style=wx.FD_OPEN)
         if dialog.ShowModal() == wx.ID_OK:
@@ -1531,7 +1875,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         dialog.Destroy()
         self.onNewInputPath(self.photoTxt.GetValue())
 
-    def processImageWithSAM(self, img):
+   def processImageWithSAM(self, img):
         global useSAM
         if not useSAM:
           print("Deactivated SAM")
@@ -1549,7 +1893,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         return wx_processed_img
 
 
-    def rescaleAnything(self,width,height):
+   def rescaleAnything(self,width,height):
         W = width
         H = height
         NewW  = self.PhotoMaxSizeWidth
@@ -1564,16 +1908,16 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         #print("Rescaled ",W,"x",H," to ",NewW,"x",NewH)
         return NewW,NewH
 
-    def rescaleBitmap(self,img):
+   def rescaleBitmap(self,img):
         NewW,NewH = self.rescaleAnything(img.GetWidth(),img.GetHeight())
         img = img.Scale(int(NewW),int(NewH))
         return img
 
-    def rescaleCVMAT(self,img):
+   def rescaleCVMAT(self,img):
         NewW,NewH = self.rescaleAnything(img.shape[1],img.shape[0])
         return cv2.resize(img, dsize=(int(NewW),int(NewH)), interpolation=cv2.INTER_CUBIC)
  
-    def onView(self):
+   def onView(self):
         processed_img = self.sam_processor.foregroundImage
         processed_img = self.rescaleCVMAT(processed_img)
 
@@ -1639,12 +1983,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
         self.panel.Refresh()
 
-    def onSelectPoint(self, event):
+   def onSelectPoint(self, event):
         selected_index = self.pointList.GetSelection()
         #if selected_index != -1:
         #    wx.MessageBox(f"Selected Point: {self.points_of_interest[selected_index]}")
 
-    def updateMinMaxSlider(self):
+   def updateMinMaxSlider(self):
         cur      = self.folderStreamer.current()
         maxim    = self.folderStreamer.max()
         percent  = 100.0 * (cur/maxim) 
@@ -1654,7 +1998,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         print("setScrollbar Value/Max ( ",cur,",",maxim,")")
         self.instructLbl.SetLabel("Sample %u/%u - %0.2f%%  - Focus %0.2f" % (cur,maxim,percent,self.tenengrad_focus_measure) )
 
-    def onScroll(self, event):
+   def onScroll(self, event):
         # Handle scroll events here
         #scroll_position = self.scrollBar.GetThumbPosition()
         scroll_position = self.scrollBar.GetValue()
@@ -1671,19 +2015,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.onView()
               
 
-    def increase_brightness(self, event):
+   def increase_brightness(self, event):
         if self.brightness_offset < 5:
             self.brightness_offset += 1
             self.brightnessText.SetValue(str(self.brightness_offset))
         self.onRedrawData(event) 
 
-    def decrease_brightness(self, event):
+   def decrease_brightness(self, event):
         if self.brightness_offset > 0:
             self.brightness_offset -= 1
             self.brightnessText.SetValue(str(self.brightness_offset))
         self.onRedrawData(event)
 
-    def on_brightness_change(self, event):
+   def on_brightness_change(self, event):
         value = self.brightnessText.GetValue()
         if value.isdigit():  # Check if input is a number
             brightness_offset = int(value)
@@ -1695,19 +2039,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.brightnessText.SetValue(str(self.brightness_offset))  # Reset if input is invalid
         self.onRedrawData(event) 
 
-    def increase_contrast(self, event):
+   def increase_contrast(self, event):
         if self.contrast_offset < 5:
             self.contrast_offset += 1
             self.contrastText.SetValue(str(self.contrast_offset))
         self.onRedrawData(event) 
 
-    def decrease_contrast(self, event):
+   def decrease_contrast(self, event):
         if self.contrast_offset > 0:
             self.contrast_offset -= 1
             self.contrastText.SetValue(str(self.contrast_offset))
         self.onRedrawData(event)
 
-    def on_contrast_change(self, event):
+   def on_contrast_change(self, event):
         value = self.contrastText.GetValue()
         if value.isdigit():  # Check if input is a number
             contrast_offset = int(value)
@@ -1719,13 +2063,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.contrastText.SetValue(str(self.contrast_offset))  # Reset if input is invalid
         self.onRedrawData(event) 
 
-    def onRedrawData(self, event):
+   def onRedrawData(self, event):
         print("Asked to redraw data")
         #Next 2 lines work but are a lazy solution ->
         self.onNext(event) 
         self.onPrevious(event)
 
-    def onPrevious(self, event):
+   def onPrevious(self, event):
         print("Previous")
         self.folderStreamer.previous()
         if (self.filePathIsDirectory):
@@ -1735,7 +2079,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.onProcessNewImageSample(self.filepath)
                self.onView()
 
-    def onNext(self, event):
+   def onNext(self, event):
         print("Next")
         self.folderStreamer.next()
         if (self.filePathIsDirectory):
@@ -1745,7 +2089,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.onProcessNewImageSample(self.filepath)
                self.onView()
 
-    def onRemovePoint(self, event):
+   def onRemovePoint(self, event):
         selected_index = self.pointList.GetSelection()
         if selected_index != -1:
             del self.points_of_interest[selected_index]
@@ -1753,13 +2097,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             del self.points_severities[selected_index]
             self.updatePointList()
 
-    def onRemoveRegion(self, event):
+   def onRemoveRegion(self, event):
         selected_index = self.regionList.GetSelection()
         if selected_index != -1:
             del self.regions_of_interest[selected_index]
             self.updateRegionList()
 
-    def formatPoints(self):
+   def formatPoints(self):
         result = list()
         if len(self.points_of_interest) != len(self.points_severities):
             print("Points without severities, this should never happen!")
@@ -1775,19 +2119,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                                                   self.points_severities[i])    )
         return result
 
-    def updatePointList(self):
+   def updatePointList(self):
         self.pointList.Set(self.formatPoints())
 
-    def formatRegions(self):
+   def formatRegions(self):
         result = list()
         for i in range(0,len(self.regions_of_interest)):            
                result.append("%u,%u" % (self.regions_of_interest[i][0],self.regions_of_interest[i][1]))
         return result
 
-    def updateRegionList(self):
+   def updateRegionList(self):
         self.regionList.Set(self.formatRegions())
 
-    def onLeftDown(self, event):
+   def onLeftDown(self, event):
        if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
         self.x, self.y = event.GetPosition()
         self.points_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
@@ -1805,7 +2149,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                print("Forcing Redraw")
                self.onRedrawData(event)
 
-    def onRightDown(self, event):
+   def onRightDown(self, event):
       if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
         self.x, self.y = event.GetPosition()
         self.regions_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
@@ -1818,10 +2162,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           print("Error ",e)
         self.onView()
 
-    def onMiddleDown(self, event):
+   def onMiddleDown(self, event):
         self.onNext(event)
 
-    def onMouseWheel(self, event):
+   def onMouseWheel(self, event):
         """Handle mouse wheel events."""
         rotation = event.GetWheelRotation()  # Positive for up, negative for down
         if rotation > 0:
@@ -1833,7 +2177,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onNext(event)
             #self.handleZoomOut()  # Call a zoom-out method or similar action
 
-    def onKeyPress(self, event):
+   def onKeyPress(self, event):
         keycode = event.GetKeyCode()
         if keycode == wx.WXK_LEFT:
             self.onPrevious(event)
@@ -1844,7 +2188,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             event.Skip()
 
-    def onUploadAnnotations(self, event):
+   def onUploadAnnotations(self, event):
       print("Local Dir: ",self.folderStreamer.local_dir)
       zip_path = "./upload.zip"  # replace with your real file path
       zipCommand = "zip %s -b %s %s/color*.json "% (zip_path, self.local_base_path, self.folderStreamer.local_dir) 
@@ -1855,12 +2199,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       dlg.Destroy()
       os.system("rm upload.zip")
 
-    def onRunBatch(self, event):
+   def onRunBatch(self, event):
         dlg = BatchProcessDialog(self.frame, self.folderStreamer)
         dlg.ShowModal()
         dlg.Destroy()
 
-    def onOpenMagnifier(self, event):
+   def onOpenMagnifier(self, event):
      """Open a magnifier window."""
      if hasattr(self, 'magnifier') and self.magnifier:
         self.magnifier.Raise()
@@ -1879,19 +2223,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
      self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
      self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
 
-    def onCreateDataset(self,event):
+   def onCreateDataset(self,event):
        os.system("python3 datasetCreator.py %s" % self.local_base_path) #<- Lazy
 
-    def onTileExplorer(self,event):
+   def onTileExplorer(self,event):
        os.system("python3 tileExplorer.py %s" % self.local_base_path) #<- Lazy
 
-    def onStreamer(self,event):
+   def onStreamer(self,event):
        selectedDirectory = self.folderStreamer.local_dir
        print("Streamer set directory : ",selectedDirectory)
        os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
 
 
-    def onMouseMoveMagnifier(self, event):
+   def onMouseMoveMagnifier(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
         x, y = event.GetX(), event.GetY()
         self.magnifier.updateMagnifier(x, y)
