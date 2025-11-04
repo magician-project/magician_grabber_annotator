@@ -79,6 +79,10 @@ else:
         pass
     def load_model(self):
         return None
+    def model_scan(directoryPath):
+        return ['Disabled']
+    def reload_model(self, directoryPath, name):
+        return False
     def forward(self, image, majorityVote=True):
         return None
 #-------------------------------------------------------------------------------
@@ -815,306 +819,6 @@ NE', 'ID_UNDO', 'ID_UNINDENT', 'ID_UP', 'ID_VIEW_DETAILS', 'ID_VIEW_LARGEICONS',
 ID_VIEW_SORTSIZE', 'ID_VIEW_SORTTYPE', 'ID_YES', 'ID_YESTOALL', 'ID_ZOOM_100', '
 ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
-   def createWidgetsOLD(self):
-        # Create the File menu-----------------------------------------------------
-        menuBar = wx.MenuBar()
-
-        fileMenu = wx.Menu()
-
-        # Add items to the File menu
-        itemOpen    = fileMenu.Append(wx.ID_OPEN, "&Open Image", "Open an image file")
-        itemOpenDir = fileMenu.Append(wx.ID_OPEN, "Open &Directory", "Open a directory")
-        itemOpenNet = fileMenu.Append(wx.ID_OPEN, "Open &Network", "Open network server")
-        itemUpload  = fileMenu.Append(wx.ID_UP, "Upload &Annotations", "Upload annotations to server")
-        self.Bind(wx.EVT_MENU, self.onUploadAnnotations, itemUpload)
-        itemBatch   = fileMenu.Append(wx.ID_DOWN, "Download &All Frames", "Process multiple files automatically")
-        self.Bind(wx.EVT_MENU, self.onRunBatch, itemBatch)
-
-        itemSave    = fileMenu.Append(wx.ID_SAVE, "&Save", "Save the current file")
-        fileMenu.AppendSeparator()
-        itemGen     = fileMenu.Append(wx.ID_NEW, "&Generate JSON", "Generate JSON for all files")
-        itemDebug   = fileMenu.Append(wx.ID_MORE, "Debug", "Debug GUI")
-        fileMenu.AppendSeparator()
-        itemExit    = fileMenu.Append(wx.ID_EXIT, "E&xit", "Exit the application")
-
-        # Bind events to the menu items
-        self.Bind(wx.EVT_MENU, self.onBrowse, itemOpen)
-        self.Bind(wx.EVT_MENU, self.onOpenDirectory, itemOpenDir)  # Bind to the new option
-        self.Bind(wx.EVT_MENU, self.onOpenNetwork, itemOpenNet)  # Bind to the new option 
-        self.Bind(wx.EVT_MENU, self.onGenerateJSON, itemGen)  # Bind to the new option
-        self.Bind(wx.EVT_MENU, self.onSave, itemSave)
-        self.Bind(wx.EVT_MENU, self.onDebug, itemDebug)
-        self.Bind(wx.EVT_MENU, self.onExit, itemExit)
-
-
-        # Add the File menu to the menu bar
-        menuBar.Append(fileMenu, "&File")
-
-
-        toolsMenu = wx.Menu()
-        itemMagnify       = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
-        itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
-        itemTileExplorer  = toolsMenu.Append(wx.ID_FIND, "&Tile Explorer", "Tile Explorer")
-        itemStreamer      = toolsMenu.Append(wx.ID_FORWARD, "&Stream To Shared Memory", "Stream To Shared Memory")
-        self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
-        self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
-        self.Bind(wx.EVT_MENU, self.onTileExplorer,itemTileExplorer)
-        self.Bind(wx.EVT_MENU, self.onStreamer,itemStreamer)
-
-        # Add the File menu to the menu bar
-        menuBar.Append(toolsMenu, "&Tools")
-
-        # Create the Help menu-----------------------------------------------------
-        helpMenu = wx.Menu()
-
-        # Add items to the Help menu
-        itemAbout = helpMenu.Append(wx.ID_ABOUT, "&About", "Information about this application")
-
-        # Bind events to the menu items in the Help menu
-        self.Bind(wx.EVT_MENU, self.onAbout, itemAbout)
-
-        # Add the Help menu to the menu bar
-        menuBar.Append(helpMenu, "&Help")
-
-        # Set the menu bar for the frame
-        self.frame.SetMenuBar(menuBar)
-
-        img = wx.Image(self.PhotoMaxSizeWidth,self.PhotoMaxSizeHeight)
-        self.imageCtrl = wx.StaticBitmap(self.panel, wx.ID_ANY,wx.Bitmap(img))
-
-        # Add a secondary StaticBitmap
-        self.secondaryImageCtrl = wx.StaticBitmap(self.panel, wx.ID_ANY, wx.Bitmap(img))
-
-        self.instructLbl   = wx.StaticText(self.panel, label='Magician Annotator')
-        self.photoTxt = wx.TextCtrl(self.panel, size=(200, -1),style=wx.TE_PROCESS_ENTER)
-        self.photoTxt.Bind(wx.EVT_TEXT_ENTER, self.onPhotoTxtEnter)
-
-        browseBtn = wx.Button(self.panel, label='Browse')
-        browseBtn.Bind(wx.EVT_BUTTON, self.onBrowse)
-        self.rescanBtn = wx.Button(self.panel, label='Rescan')
-        self.rescanBtn.Bind(wx.EVT_BUTTON, self.onRescan)
-
- 
-        #self.scrollBar = wx.ScrollBar(self.panel, size=(600, -1),style=wx.SB_HORIZONTAL)
-        #self.scrollBar.SetScrollbar(0, 100, 1500, 99 )  # Set the range from 0 to 1000 with 100 visible
-        #self.scrollBar.Bind(wx.EVT_SCROLL, self.onScroll)
-        #self.scrollBar.Bind(wx.EVT_SCROLL_THUMBTRACK, self.onScroll) #<- ? is this needed ? 
-        #self.scrollBar.Bind(wx.EVT_SCROLL_CHANGED, self.onScroll)    #<- ? is this needed ?
-        
-        # Replace ScrollBar with Slider
-        self.scrollBar = wx.Slider(self.panel, value=0, minValue=0, maxValue=1000, size=(400, -1), style=wx.SL_HORIZONTAL)
-        self.scrollBar.SetTickFreq(50) 	
-        self.scrollBar.Bind(wx.EVT_SLIDER, self.onScroll)
-
-
-        #Brightness Control 
-        #-------------------------------------------------------------------------------------------
-        # Minus button
-        self.minusButton = wx.Button(self.panel, label="-", size=(40, 30))
-        self.minusButton.Bind(wx.EVT_BUTTON, self.decrease_brightness)
-        # Text field
-        self.brightnessLabel = wx.StaticText(self.panel, label = "Br.")
-        self.brightnessText = wx.TextCtrl(self.panel, value="0", size=(50, 30), style=wx.TE_CENTER)
-        #self.brightnessText.SetEditable(False)  # Make it read-only      
-        self.brightnessText.Bind(wx.EVT_TEXT, self.on_brightness_change)
-        # Plus button
-        self.plusButton = wx.Button(self.panel, label="+", size=(40, 30))
-        self.plusButton.Bind(wx.EVT_BUTTON, self.increase_brightness)
-        #-------------------------------------------------------------------------------------------
-
-        #Brightness Control 
-        #-------------------------------------------------------------------------------------------
-        # Minus button
-        self.minusContrastButton = wx.Button(self.panel, label="-", size=(40, 30))
-        self.minusContrastButton.Bind(wx.EVT_BUTTON, self.decrease_contrast)
-        # Text field
-        self.contrastLabel = wx.StaticText(self.panel, label = "Co.")
-        self.contrastText = wx.TextCtrl(self.panel, value="0", size=(50, 30), style=wx.TE_CENTER)
-        #self.brightnessText.SetEditable(False)  # Make it read-only      
-        self.contrastText.Bind(wx.EVT_TEXT, self.on_contrast_change)
-        # Plus button
-        self.plusContrastButton = wx.Button(self.panel, label="+", size=(40, 30))
-        self.plusContrastButton.Bind(wx.EVT_BUTTON, self.increase_contrast)
-        #-------------------------------------------------------------------------------------------
-
- 
-        # Add a checkbox
-        self.maintainPointsCheckbox = wx.CheckBox(self.panel, label="Maintain Points for next image")
-        self.maintainPoints = False  # Initial state
-        self.maintainPointsCheckbox.SetValue(self.maintainPoints)   
-        
-        # Add a checkbox
-        self.incrementFrameAfterAnAdditionCheckbox = wx.CheckBox(self.panel, label="Increment frame after defect annotation")
-        self.incrementFrameAfterAnAddition=True
-        self.incrementFrameAfterAnAdditionCheckbox.SetValue(self.incrementFrameAfterAnAddition)
-        
-        #Add a checkbox for classifier
-        self.useClassifierCheckbox = wx.CheckBox(self.panel, label="Use NN Classifier")
-        self.useClassifierCheckbox.SetValue(useClassifier)
-
-        # Add a checkbox
-        self.guessLightingCheckbox = wx.CheckBox(self.panel, label="Guess lighting direction")
-        self.guessLightingCheckbox.SetValue(True)   
-
-        global processors
-        self.ProcessorComboBox = wx.ComboBox(self.panel, choices=processors, style=wx.CB_DROPDOWN)
-        self.ProcessorComboBox.Bind(wx.EVT_COMBOBOX, self.onProcessorComboBoxSelect)
-        self.ProcessorComboBox.SetValue(processors[0])
-
-        # Add a wxComboBox
-        self.defectLabel = wx.StaticText(self.panel, label = "Defect Classification")
-        global options
-        self.defectComboBox = wx.ComboBox(self.panel, choices=options, style=wx.CB_DROPDOWN)
-        self.defectComboBox.Append("Add Custom Option")
-        self.defectComboBox.Bind(wx.EVT_COMBOBOX, self.onDefectComboBoxSelect)
-        self.defectComboBox.SetValue(options[0])
-
-        #self.severityLabel = wx.StaticText(self.panel, label = "Defect Severity")
-        global severities
-        self.severityComboBox = wx.ComboBox(self.panel, choices=severities, style=wx.CB_DROPDOWN)
-
-        self.lightLabel = wx.StaticText(self.panel, label = "Light Direction")
-        global directions
-        self.lightComboBox = wx.ComboBox(self.panel, choices=directions, style=wx.CB_DROPDOWN)
-
-        self.datasetLabel = wx.StaticText(self.panel, label = "Dataset Information")
-
-        datasetListSize = wx.Size(-1,80) 
-        self.datasetList  = wx.ListBox(self.panel, size=datasetListSize, choices=[], style=wx.LB_SINGLE)
-
-        #Side buttons
-        self.regionLabel = wx.StaticText(self.panel, label = "Image Regions")
-        regionListSize = wx.Size(-1,40) 
-        self.regionList = wx.ListBox(self.panel, size=regionListSize, choices=[], style=wx.LB_SINGLE)
-        self.regionList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
-        self.removeRegionBtn = wx.Button(self.panel, label='Remove Selected Point')
-        self.removeRegionBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
-        #---------------------------------------------------------------------------
-        self.line = wx.StaticLine(self.panel)
-        #---------------------------------------------------------------------------
-        self.pointLabel = wx.StaticText(self.panel, label = "Image Points")
-        self.pointList = wx.ListBox(self.panel, choices=[], style=wx.LB_SINGLE)
-        self.pointList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
-        self.removePointBtn = wx.Button(self.panel, label='Remove Selected Point')
-        self.removePointBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
-        #---------------------------------------------------------------------------
-        self.autoBtn = wx.Button(self.panel, label='Auto')
-        self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
-        self.saveBtn = wx.Button(self.panel, label='Save')
-        self.saveBtn.Bind(wx.EVT_BUTTON, self.onSave)
-        self.deleteMetadataBtn = wx.Button(self.panel, label='Delete')
-        self.deleteMetadataBtn.Bind(wx.EVT_BUTTON, self.ondeleteMetadata)
-
-        #Under Buttons
-        self.prevBtn = wx.Button(self.panel, label='<')
-        self.prevBtn.Bind(wx.EVT_BUTTON, self.onPrevious)
-        self.nextBtn = wx.Button(self.panel, label='>')
-        self.nextBtn.Bind(wx.EVT_BUTTON, self.onNext)
-
-        # Add a button for camera settings
-        self.cameraSettingsBtn = wx.Button(self.panel, label='Camera')
-        self.cameraSettingsBtn.Bind(wx.EVT_BUTTON, self.onCameraSettings)
-
-        self.mainSizer  = wx.BoxSizer(wx.VERTICAL)
-        self.sizer      = wx.BoxSizer(wx.HORIZONTAL)
-        self.sideSizer  = wx.BoxSizer(wx.VERTICAL)
-        self.underImage = wx.BoxSizer(wx.HORIZONTAL)
-
-        self.mainSizer.Add(wx.StaticLine(self.panel, wx.ID_ANY), 0, wx.ALL | wx.EXPAND, 5)
-        self.mainSizer.Add(self.instructLbl, 0, wx.ALL, 5)
-
-
-        # Add both StaticBitmaps to a horizontal sizer
-        self.sizer.Add(self.imageCtrl, 0, wx.ALL, 5)
-        self.sizer.Add(self.secondaryImageCtrl, 0, wx.ALL, 5)
-
-        self.mainSizer.Add(self.sizer, 0, wx.ALL, 5)
-        self.sizer.Add(self.sideSizer, 0, wx.ALL, 5)
-
-        #Side bar
-        self.sideSizer.Add(self.datasetLabel, 0, wx.ALL | wx.EXPAND, 5)
-        self.sideSizer.Add(self.datasetList, 0, wx.ALL | wx.EXPAND, 5)
-
-        self.sideSizer.Add(self.regionLabel, 0, wx.ALL | wx.EXPAND, 5)
-        self.sideSizer.Add(self.regionList, 0, wx.ALL | wx.EXPAND, 5)
-        self.sideSizer.Add(self.removeRegionBtn, 0, wx.ALL, 5)
-        #------------------------------------------------------------
-        self.sideSizer.Add(self.line , 0, wx.ALL, 5)
-        #------------------------------------------------------------
-        self.sideSizer.Add(self.defectLabel, 0, wx.ALL, 5)
-        #self.sideSizer.Add(self.defectComboBox, 0, wx.ALL, 5)
-
-        #self.sideSizer.Add(self.severityLabel, 0, wx.ALL, 5)
-        #self.sideSizer.Add(self.severityComboBox, 0, wx.ALL, 5) 
-
-        comboClass      = wx.BoxSizer(wx.HORIZONTAL)  
-        comboClass.Add(self.defectComboBox, 0, wx.ALL, 5)
-        comboClass.Add(self.severityComboBox, 0, wx.ALL, 5)
-        self.sideSizer.Add(comboClass)
-
-        self.sideSizer.Add(self.lightLabel, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.lightComboBox, 0, wx.ALL, 5)  
-
-        self.sideSizer.Add(self.pointLabel, 0, wx.ALL | wx.EXPAND, 5)
-        self.sideSizer.Add(self.pointList, 0, wx.ALL | wx.EXPAND, 5)
-        self.sideSizer.Add(self.removePointBtn, 0, wx.ALL, 5)
-        #------------------------------------------------------------
-        comboButtons      = wx.BoxSizer(wx.HORIZONTAL)  
-        comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
-        comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
-        comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
-        self.sideSizer.Add(comboButtons)
-
-        self.sideSizer.Add(self.maintainPointsCheckbox, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.guessLightingCheckbox, 0, wx.ALL, 5)
-        self.sideSizer.Add(self.useClassifierCheckbox, 0, wx.ALL, 5)
-        #------------------------------------------------------------
-
-        #Under Image
-        self.underImage.Add(self.prevBtn, 0, wx.ALL, 5)
-        self.underImage.Add(self.nextBtn, 0, wx.ALL, 5)
-        self.underImage.Add(self.photoTxt, 0, wx.ALL, 5)
-        self.underImage.Add(browseBtn, 0, wx.ALL, 5)
-        self.underImage.Add(self.rescanBtn, 0, wx.ALL, 5)
-        self.underImage.Add(self.scrollBar, 0, wx.ALL | wx.EXPAND, 5)
-        self.underImage.Add(self.cameraSettingsBtn, 0, wx.ALL | wx.EXPAND, 5)
-        self.underImage.Add(self.ProcessorComboBox, 0, wx.ALL | wx.EXPAND, 5)
-
-        #self.underImage.Add(self.brightnessScrollBar, 0, wx.ALL | wx.EXPAND, 5) 
-        # Add to sizer
-        self.underImage.Add(self.minusButton, 0, wx.ALL, 5) 
-        self.underImage.Add(self.brightnessLabel, 0, wx.ALL, 5)
-        self.underImage.Add(self.brightnessText, 0, wx.ALL, 5)
-        self.underImage.Add(self.plusButton, 0, wx.ALL, 5)
-
-        self.underImage.Add(self.minusContrastButton, 0, wx.ALL, 5) 
-        self.underImage.Add(self.contrastLabel, 0, wx.ALL, 5)
-        self.underImage.Add(self.contrastText, 0, wx.ALL, 5)
-        self.underImage.Add(self.plusContrastButton, 0, wx.ALL, 5)
-
-        self.mainSizer.Add(self.underImage)       
-
-        self.panel.SetSizer(self.mainSizer)
-        self.mainSizer.Fit(self.frame)
-
-        self.imageCtrl.Bind(wx.EVT_LEFT_DOWN, self.onLeftDown)  # Bind to image control
-        self.secondaryImageCtrl.Bind(wx.EVT_LEFT_DOWN, self.onLeftDown)  # Bind to image control
-
-        self.imageCtrl.Bind(wx.EVT_MIDDLE_DOWN, self.onMiddleDown)  # Bind to image control
-        self.secondaryImageCtrl.Bind(wx.EVT_MIDDLE_DOWN, self.onMiddleDown)  # Bind to image control
-
-        self.imageCtrl.Bind(wx.EVT_RIGHT_DOWN, self.onRightDown)  # Bind to image control
-        self.secondaryImageCtrl.Bind(wx.EVT_RIGHT_DOWN, self.onRightDown)  # Bind to image control
-
-        # Bind the mouse wheel event to the panel
-        self.panel.Bind(wx.EVT_MOUSEWHEEL, self.onMouseWheel)
-
-        # Bind left and right arrow keys to onNext and onPrevious methods
-        self.frame.Bind(wx.EVT_CHAR_HOOK, self.onKeyPress)
-
-        self.panel.Layout()
-
 
    def createWidgets(self):
     # ----- Menus (unchanged) -------------------------------------------------
@@ -1383,7 +1087,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     parent.SetSizer(s)
 
 
-   def _buildClassifierTab(self, parent):
+   def _buildClassifierTabOLD(self, parent):
     """Builds the Classifier tab with model select, threshold, majority voting,
        tile size (4..128), and two-stage classification toggle."""
     s = wx.BoxSizer(wx.VERTICAL)
@@ -1409,8 +1113,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # Threshold slider (0..100 -> 0.00..1.00 shown in a label)
     thrRow = wx.BoxSizer(wx.HORIZONTAL)
     thrLbl = wx.StaticText(parent, label="Threshold")
-    self.classifierThreshold = wx.Slider(parent, value=50, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
-    self.classifierThresholdValue = wx.StaticText(parent, label="0.50")
+    self.classifierThreshold = wx.Slider(parent, value=0, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
+    self.classifierThresholdValue = wx.StaticText(parent, label="0.00")
     def _on_thr(evt):
         self.classifierThresholdValue.SetLabel(f"{self.classifierThreshold.GetValue()/100.0:.2f}")
         evt.Skip()
@@ -1421,12 +1125,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # Majority voting checkbox
     self.classifierMajorityVoting = wx.CheckBox(parent, label="Use majority voting")
+    self.classifierMajorityVoting.SetValue(True)
 
     # Tile size slider 4..128 (powers of two suggested; slider gives integers)
     tileRow = wx.BoxSizer(wx.HORIZONTAL)
-    tileLbl = wx.StaticText(parent, label="Tile size")
-    self.classifierTileSize = wx.Slider(parent, value=32, minValue=4, maxValue=128, style=wx.SL_HORIZONTAL)
-    self.classifierTileSizeValue = wx.StaticText(parent, label="32")
+    tileLbl = wx.StaticText(parent, label="Step size")
+    self.classifierTileSize = wx.Slider(parent, value=16, minValue=4, maxValue=128, style=wx.SL_HORIZONTAL)
+    self.classifierTileSizeValue = wx.StaticText(parent, label="16")
     def _on_tile(evt):
         self.classifierTileSizeValue.SetLabel(str(self.classifierTileSize.GetValue()))
         evt.Skip()
@@ -1452,6 +1157,94 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
     # Spacer to push content up
+    s.AddStretchSpacer(1)
+
+    parent.SetSizer(s)
+
+   def _buildClassifierTab(self, parent):
+    """Builds the Classifier tab with model select, threshold, majority voting,
+       tile size (4..128), and two-stage classification toggle."""
+    s = wx.BoxSizer(wx.VERTICAL)
+
+    # --- 1. Get available models from directory ---
+    model_dir = classifier_relative_directory
+    available_models = self.ClassifierPnm.model_scan(model_dir)
+    if not available_models:
+        available_models = ["Default"]
+
+    # --- 2. Model selection combo box ---
+    modelRow = wx.BoxSizer(wx.HORIZONTAL)
+    modelLbl = wx.StaticText(parent, label="Model")
+    self.classifierModelCombo = wx.ComboBox(
+        parent, 
+        choices=available_models, 
+        style=wx.CB_READONLY
+    )
+    self.classifierModelCombo.SetValue(available_models[0])
+    modelRow.Add(modelLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    modelRow.Add(self.classifierModelCombo, 1, wx.EXPAND)
+
+    # --- 3. Callback to reload model when changed ---
+    def onClassifierModelChanged(evt):
+        model_name = self.classifierModelCombo.GetValue()
+        print(f"[INFO] Changing classifier model to: {model_name}")
+        if useClassifier:
+            success = self.ClassifierPnm.reload_model(model_dir, model_name)
+            if success:
+                #wx.MessageBox(f"Successfully reloaded model: {model_name}", "Model Reloaded", wx.OK | wx.ICON_INFORMATION)
+                print(f"Successfully reloaded model: {model_name}")
+            else:
+                wx.MessageBox(f"Failed to reload model: {model_name}", "Error", wx.OK | wx.ICON_ERROR)
+        else:
+            print("[WARN] No classifier_instance found on self.")
+        evt.Skip()
+
+    self.classifierModelCombo.Bind(wx.EVT_COMBOBOX, onClassifierModelChanged)
+
+    # --- 4. Threshold slider ---
+    thrRow = wx.BoxSizer(wx.HORIZONTAL)
+    thrLbl = wx.StaticText(parent, label="Threshold")
+    self.classifierThreshold = wx.Slider(parent, value=0, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
+    self.classifierThresholdValue = wx.StaticText(parent, label="0.00")
+    def _on_thr(evt):
+        self.classifierThresholdValue.SetLabel(f"{self.classifierThreshold.GetValue()/100.0:.2f}")
+        evt.Skip()
+    self.classifierThreshold.Bind(wx.EVT_SLIDER, _on_thr)
+    thrRow.Add(thrLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    thrRow.Add(self.classifierThreshold, 1, wx.RIGHT, 8)
+    thrRow.Add(self.classifierThresholdValue, 0, wx.ALIGN_CENTER_VERTICAL)
+
+    # --- 5. Majority voting checkbox ---
+    self.classifierMajorityVoting = wx.CheckBox(parent, label="Use majority voting")
+    self.classifierMajorityVoting.SetValue(True)
+
+    # --- 6. Tile size slider ---
+    tileRow = wx.BoxSizer(wx.HORIZONTAL)
+    tileLbl = wx.StaticText(parent, label="Step size")
+    self.classifierTileSize = wx.Slider(parent, value=16, minValue=4, maxValue=128, style=wx.SL_HORIZONTAL)
+    self.classifierTileSizeValue = wx.StaticText(parent, label="16")
+    def _on_tile(evt):
+        self.classifierTileSizeValue.SetLabel(str(self.classifierTileSize.GetValue()))
+        evt.Skip()
+    self.classifierTileSize.Bind(wx.EVT_SLIDER, _on_tile)
+    tileRow.Add(tileLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    tileRow.Add(self.classifierTileSize, 1, wx.RIGHT, 8)
+    tileRow.Add(self.classifierTileSizeValue, 0, wx.ALIGN_CENTER_VERTICAL)
+
+    # --- 7. Two-stage classification checkbox ---
+    self.classifierTwoStage = wx.CheckBox(parent, label="Enable two-stage classification")
+
+    # --- 8. "Use NN Classifier" checkbox ---
+    self.useClassifierCheckbox = wx.CheckBox(parent, label="Use NN Classifier")
+    self.useClassifierCheckbox.SetValue(True)
+
+    # --- 9. Layout ---
+    s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
+    s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+    s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+    s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.AddStretchSpacer(1)
 
     parent.SetSizer(s)
@@ -1704,7 +1497,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
                   if self.useClassifierCheckbox.GetValue():
-                    imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=True)
+                    self.ClassifierPnm.step = self.classifierTileSize.GetValue()
+                    self.ClassifierPnm.maxProbabilityThreshold = self.classifierThreshold.GetValue()
+                    imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                     processed_img = imgRGBFromClassifier
                     self.sam_processor.image = imgRGBFromClassifier
