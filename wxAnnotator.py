@@ -22,6 +22,7 @@ python3 wxAnnotator.py --from /path/to/dataset/here/
 
 import wx
 import cv2
+import csv
 import json
 import os
 import sys
@@ -796,6 +797,7 @@ class PhotoCtrl(wx.App):
 
         self.local_base_path = "./"
         self.maintainPoints = False  # Initial state
+        self.controlsData = []
 
         """
 ['ID_ABORT', 'ID_ABOUT', 'ID_ADD', 'ID_ANY', 'ID_APPLY', 'ID_BACKWARD', 'ID_BOLD
@@ -945,6 +947,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self._buildClassifierTab(classifierPanel)
     self.rightBook.AddPage(classifierPanel, "Classifier")
 
+    # --- Sensor / Controls tab (model, threshold, majority voting, tile size, two-stage) ---
+    controlsPanel = wx.Panel(self.rightBook)
+    self._buildControlsTab(controlsPanel)
+    self.rightBook.AddPage(controlsPanel, "Sensor")
+
+
+
     # Add notebook to the right side
     self.sizer.Add(self.rightBook, 1, wx.ALL | wx.EXPAND, 5)
 
@@ -1087,79 +1096,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     parent.SetSizer(s)
 
 
-   def _buildClassifierTabOLD(self, parent):
-    """Builds the Classifier tab with model select, threshold, majority voting,
-       tile size (4..128), and two-stage classification toggle."""
-    s = wx.BoxSizer(wx.VERTICAL)
-
-    # Model dropdown
-    # Try to pull available models from your classifier object, else use fallback list.
-    try:
-        available_models = list(getattr(self.ClassifierPnm, "available_models", []))
-    except Exception:
-        available_models = []
-    if not available_models:
-        available_models = ["Default"]
-
-    modelRow = wx.BoxSizer(wx.HORIZONTAL)
-    modelLbl = wx.StaticText(parent, label="Model")
-    self.classifierModelCombo = wx.ComboBox(parent, choices=available_models, style=wx.CB_READONLY)
-    self.classifierModelCombo.SetValue(available_models[0])
-    # You can Bind to a handler if desired:
-    # self.classifierModelCombo.Bind(wx.EVT_COMBOBOX, self.onClassifierModelChanged)
-    modelRow.Add(modelLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-    modelRow.Add(self.classifierModelCombo, 1, wx.EXPAND)
-
-    # Threshold slider (0..100 -> 0.00..1.00 shown in a label)
-    thrRow = wx.BoxSizer(wx.HORIZONTAL)
-    thrLbl = wx.StaticText(parent, label="Threshold")
-    self.classifierThreshold = wx.Slider(parent, value=0, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
-    self.classifierThresholdValue = wx.StaticText(parent, label="0.00")
-    def _on_thr(evt):
-        self.classifierThresholdValue.SetLabel(f"{self.classifierThreshold.GetValue()/100.0:.2f}")
-        evt.Skip()
-    self.classifierThreshold.Bind(wx.EVT_SLIDER, _on_thr)
-    thrRow.Add(thrLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-    thrRow.Add(self.classifierThreshold, 1, wx.RIGHT, 8)
-    thrRow.Add(self.classifierThresholdValue, 0, wx.ALIGN_CENTER_VERTICAL)
-
-    # Majority voting checkbox
-    self.classifierMajorityVoting = wx.CheckBox(parent, label="Use majority voting")
-    self.classifierMajorityVoting.SetValue(True)
-
-    # Tile size slider 4..128 (powers of two suggested; slider gives integers)
-    tileRow = wx.BoxSizer(wx.HORIZONTAL)
-    tileLbl = wx.StaticText(parent, label="Step size")
-    self.classifierTileSize = wx.Slider(parent, value=16, minValue=4, maxValue=128, style=wx.SL_HORIZONTAL)
-    self.classifierTileSizeValue = wx.StaticText(parent, label="16")
-    def _on_tile(evt):
-        self.classifierTileSizeValue.SetLabel(str(self.classifierTileSize.GetValue()))
-        evt.Skip()
-    self.classifierTileSize.Bind(wx.EVT_SLIDER, _on_tile)
-    tileRow.Add(tileLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-    tileRow.Add(self.classifierTileSize, 1, wx.RIGHT, 8)
-    tileRow.Add(self.classifierTileSizeValue, 0, wx.ALIGN_CENTER_VERTICAL)
-
-    # Two-stage classification checkbox
-    self.classifierTwoStage = wx.CheckBox(parent, label="Enable two-stage classification")
-
-    # (Optional) Keep your original "Use NN Classifier" checkbox here if you want it tied to this tab,
-    # otherwise leave it where it was. Uncomment to move it here:
-    self.useClassifierCheckbox = wx.CheckBox(parent, label="Use NN Classifier")
-    self.useClassifierCheckbox.SetValue(useClassifier)
-
-    # Layout for Classifier tab
-    s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
-    s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
-    s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-    s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
-    s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-    s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-
-    # Spacer to push content up
-    s.AddStretchSpacer(1)
-
-    parent.SetSizer(s)
 
    def _buildClassifierTab(self, parent):
     """Builds the Classifier tab with model select, threshold, majority voting,
@@ -1249,6 +1185,46 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     parent.SetSizer(s)
 
+   def _buildControlsTab(self, parent):
+    """Builds the Controls tab showing real-time sensor data from CSV."""
+    s = wx.BoxSizer(wx.VERTICAL)
+
+    # --- Titles ---
+    self.controlsLabel = wx.StaticText(parent, label="Sensor & Control Status")
+    s.Add(self.controlsLabel, 0, wx.ALL | wx.EXPAND, 5)
+
+    grid = wx.FlexGridSizer(rows=0, cols=4, vgap=5, hgap=10)
+    grid.AddGrowableCol(1, 1)
+    grid.AddGrowableCol(3, 1)
+
+    # Helper to make static text pairs
+    def label_pair(label_text):
+        label = wx.StaticText(parent, label=label_text)
+        value = wx.TextCtrl(parent, value="", style=wx.TE_READONLY, size=(30,-1))
+        return label, value
+
+    # --- Create all fields ---
+    labels = [
+        "timestamp", "dev_timestamp", "Button1",
+        "Distance1", "Distance2", "Distance3",
+        "Light1", "Light2", "Light3", "Light4", "Light5", "Light6"
+    ]
+
+    self.controlsFields = {}
+
+    for lbl in labels:
+        l, v = label_pair(lbl)
+        self.controlsFields[lbl] = v
+        grid.Add(l, 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 5)
+        grid.Add(v, 1, wx.EXPAND | wx.RIGHT, 5)
+
+    s.Add(grid, 0, wx.ALL | wx.EXPAND, 10)
+
+    # --- CSV Info ---
+    self.csvInfo = wx.StaticText(parent, label="No CSV loaded.")
+    s.Add(self.csvInfo, 0, wx.ALL | wx.EXPAND, 5)
+
+    parent.SetSizer(s)
 
  
     # Add this method to your PhotoCtrl class
@@ -1439,6 +1415,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.restoreFromJSON(jsonPath)
            
 
+           if hasattr(self, 'controlsData'):
+                   frame_idx = self.scrollBar.GetValue()
+                   if 0 <= frame_idx < len(self.controlsData):
+                       self.updateControlsTab(self.controlsData[frame_idx])
+
+
            #self.filehash = get_md5(filepath) 
            #img = wx.Image(self.filepath, wx.BITMAP_TYPE_ANY)
            #img = self.rescaleBitmap(img)
@@ -1605,12 +1587,24 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                print("Directory mode")
                #print("Directory mode : ",self.directoryList)
                self.populateMetaData("%s/info.json" % self.filepath)
+               self.loadControlsCSV("%s/controller.csv" % self.filepath)
                #self.filepath = self.directoryList[self.directoryListIndex]
                self.filepath = self.folderStreamer.getImage()
                self.updateMinMaxSlider()
 
 
            self.onProcessNewImageSample(self.filepath)
+
+   def loadControlsCSV(self, path):
+    """Load control/sensor CSV file."""
+    try:
+        with open(path, newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            self.controlsData = list(reader)
+        self.csvInfo.SetLabel(f"Loaded {len(self.controlsData)} entries from {path}")
+    except Exception as e:
+        self.csvInfo.SetLabel(f"Failed to load CSV ({path}): {e}")
+        self.controlsData = []
 
    def onPhotoTxtEnter(self, event):
         self.onNewInputPath(self.photoTxt.GetValue())
@@ -1657,6 +1651,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             from HTTPStream import HTTPFolderStreamer 
             self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
             self.populateMetaData("%s/info.json" % selectedDirectory)
+            self.loadControlsCSV("%s/controller.csv" % selectedDirectory)
             self.onNext(event)
             self.onPrevious(event)
             app.photoTxt.SetValue(dlg.selectedDirectory)
@@ -1863,6 +1858,22 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         #Next 2 lines work but are a lazy solution ->
         self.onNext(event) 
         self.onPrevious(event)
+
+   def updateControlsTab(self, data_row):
+    """
+    Update the Controls tab UI fields with a row dict from the CSV.
+    Example row:
+      {"timestamp": 308239, "dev_timestamp": 4, "Button1": 0, "Distance1": "F", ...}
+    """
+    print("Controller : ",data_row)
+    for key, ctrl in self.controlsFields.items():
+        if key in data_row:
+            value = data_row[key]
+            if isinstance(value, float):
+                ctrl.SetValue("%0.1f" % value)
+            else:
+                ctrl.SetValue(str(value))
+
 
    def onPrevious(self, event):
         print("Previous")

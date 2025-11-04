@@ -89,6 +89,8 @@ class HTTPFolderStreamer:
         if self.base_url:
             self.loadNewDataset(self.base_url)
             self.getInfo()
+            self.getControllerInfo()
+            self.getCameraInfo()
             if (retrieve_zip):
                retrieve_annotation_zips("http://ammar.gr/magician/uploads/", local_dir, local_dir)
 
@@ -170,6 +172,20 @@ class HTTPFolderStreamer:
             return self._download_file("info.json")
         except RuntimeError:
             print(f"There is no Info file for dataset (this is weird)")
+            return None
+
+    def getControllerInfo(self):
+        try:
+            return self._download_file("controller.csv")
+        except RuntimeError:
+            print(f"There is no Controller file for dataset (this is weird)")
+            return None
+
+    def getCameraInfo(self):
+        try:
+            return self._download_file("camera.csv")
+        except RuntimeError:
+            print(f"There is no Controller file for dataset (this is weird)")
             return None
 
     def getImageSimple(self):
