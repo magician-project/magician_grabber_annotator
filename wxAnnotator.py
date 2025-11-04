@@ -1480,7 +1480,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
                   if self.useClassifierCheckbox.GetValue():
                     self.ClassifierPnm.step = self.classifierTileSize.GetValue()
-                    self.ClassifierPnm.maxProbabilityThreshold = self.classifierThreshold.GetValue()
+                    self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
                     imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                     processed_img = imgRGBFromClassifier
