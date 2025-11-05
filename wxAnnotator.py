@@ -73,6 +73,7 @@ if useClassifier:
   parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
   from liveClassifierTorch import ClassifierPnm
+  from EnsembleClassifier  import EnsembleClassifierPnm
 else:
   class ClassifierPnm:
     def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
@@ -733,6 +734,8 @@ class PhotoCtrl(wx.App):
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
         self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
+        self.EnsembleClassifierPnm = EnsembleClassifierPnm(model_cfg_list=[("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
+                                                                           ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
         wx.App.__init__(self, redirect, filename)
 
 
@@ -1181,6 +1184,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+
+    self.classifierInfo = wx.StaticText(parent, label="No classifier run yet.")
+    s.Add(self.classifierInfo, 0, wx.ALL | wx.EXPAND, 5)
+
+
     s.AddStretchSpacer(1)
 
     parent.SetSizer(s)
@@ -1479,12 +1488,23 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
                   if self.useClassifierCheckbox.GetValue():
-                    self.ClassifierPnm.step = self.classifierTileSize.GetValue()
-                    self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
-                    imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
-                    imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
-                    processed_img = imgRGBFromClassifier
-                    self.sam_processor.image = imgRGBFromClassifier
+
+                    if self.classifierTwoStage.GetValue():
+                       print("Route through 2-stage classifier here")
+                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
+                       imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+                       processed_img = imgRGBFromClassifier
+                       self.sam_processor.image = imgRGBFromClassifier
+                       self.classifierInfo.SetLabel("2-stage: %0.2f Hz" % self.EnsembleClassifierPnm.hz)
+                    else:
+                       print("Regular 1-stage classifier here")
+                       self.ClassifierPnm.step = self.classifierTileSize.GetValue()
+                       self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
+                       imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+                       processed_img = imgRGBFromClassifier
+                       self.sam_processor.image = imgRGBFromClassifier
+                       self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
                 else:
                   #If we didn't trigger then show the raw image as processed image
                   processed_img                  = imgCV
