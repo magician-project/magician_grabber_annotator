@@ -91,6 +91,8 @@ class HTTPFolderStreamer:
             self.getInfo()
             self.getControllerInfo()
             self.getCameraInfo()
+            self.getTactileData()
+            
             if (retrieve_zip):
                retrieve_annotation_zips("http://ammar.gr/magician/uploads/", local_dir, local_dir)
 
@@ -187,6 +189,51 @@ class HTTPFolderStreamer:
         except RuntimeError:
             print(f"There is no Controller file for dataset (this is weird)")
             return None
+
+    def getTactileData(self):
+        """
+        Retrieves all tactile CSV files from the tactile/ subdirectory of the HTTP dataset repository.
+        Files: acceleration_psd.csv, acceleration_spikeness.csv, accelerometer.csv,
+               force.csv, force_psd.csv, friction.csv
+        """
+        tactile_files = [
+            "acceleration_psd.csv",
+            "acceleration_spikeness.csv",
+            "accelerometer.csv",
+            "force.csv",
+            "force_psd.csv",
+            "friction.csv"
+        ]
+
+        tactile_base_url = self.base_url + "tactile/"
+        tactile_local_dir = os.path.join(self.local_dir, "tactile")
+        os.makedirs(tactile_local_dir, exist_ok=True)
+
+        downloaded_files = []
+
+        for fname in tactile_files:
+            remote_url = tactile_base_url + fname
+            local_path = os.path.join(tactile_local_dir, fname)
+            if not os.path.isfile(local_path):
+                print(f"Downloading tactile file: {remote_url}")
+                resp = requests.get(remote_url)
+                if resp.status_code == 200:
+                    with open(local_path, "wb") as f:
+                        f.write(resp.content)
+                    downloaded_files.append(local_path)
+                else:
+                    print(f"Warning: could not download {remote_url} (HTTP {resp.status_code})")
+            else:
+                downloaded_files.append(local_path)
+
+        if len(downloaded_files) == 0:
+            print("No tactile data files were downloaded.")
+            os.system("rmdir %s " % tactile_local_dir)
+        else:
+            print(f"Downloaded {len(downloaded_files)} tactile files to {tactile_local_dir}")
+
+        return downloaded_files
+
 
     def getImageSimple(self):
         img_name = self.file_list[self.index]

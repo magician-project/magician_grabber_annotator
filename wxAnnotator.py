@@ -734,8 +734,13 @@ class PhotoCtrl(wx.App):
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
         self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
-        self.EnsembleClassifierPnm = EnsembleClassifierPnm(model_cfg_list=[("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
-                                                                           ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
+        self.EnsembleClassifierPnm = EnsembleClassifierPnm(
+                                                            initial_model_cfg = ("../magician_vision_classifier/binary_custom.pth","../magician_vision_classifier/binary_custom.json"),
+                                                            model_cfg_list=[("../magician_vision_classifier/allclass_custom.pth","../magician_vision_classifier/allclass_custom.json"),
+                                                                            ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
+                                                                            ("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
+                                                                            ("../magician_vision_classifier/allclass_efficientnet_v2_s.pth","../magician_vision_classifier/allclass_efficientnet_v2_s.json"),
+                                                                            ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
         wx.App.__init__(self, redirect, filename)
 
 
@@ -1172,6 +1177,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # --- 7. Two-stage classification checkbox ---
     self.classifierTwoStage = wx.CheckBox(parent, label="Enable two-stage classification")
+    self.parallellTwoStage  = wx.CheckBox(parent, label="Two-stage parallelism (VRAM intensive)")
 
     # --- 8. "Use NN Classifier" checkbox ---
     self.useClassifierCheckbox = wx.CheckBox(parent, label="Use NN Classifier")
@@ -1183,6 +1189,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(self.parallellTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
 
@@ -1491,7 +1498,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                     if self.classifierTwoStage.GetValue():
                        print("Route through 2-stage classifier here")
-                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
+                       self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
+                       self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue())
                        imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                        processed_img = imgRGBFromClassifier
                        self.sam_processor.image = imgRGBFromClassifier

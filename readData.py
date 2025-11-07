@@ -299,6 +299,28 @@ def readPolarPNMToRGBA(image_path):
 
     return readPolarPNMToRGBALive(image)
 
+def averagePolarRGBAtoGray(rgba_image):
+    """
+    Converts a 4-channel polarization RGBA image into a single-channel
+    averaged grayscale image.
+
+    Parameters:
+        rgba_image (numpy.ndarray): 3D array (H x W x 4) representing the 4-channel polarization image.
+
+    Returns:
+        gray_image (numpy.ndarray): 2D array (H x W) representing the averaged grayscale image.
+    """
+    if rgba_image is None or rgba_image.ndim != 3 or rgba_image.shape[2] != 4:
+        raise ValueError("Input must be a 4-channel (H x W x 4) image")
+
+    # Compute the mean across the 4 polarization channels
+    gray_image = np.mean(rgba_image.astype(np.float32), axis=2)
+
+    # Convert back to uint8 (if original image is in that range)
+    gray_image = np.clip(gray_image, 0, 255).astype(np.uint8)
+
+    return gray_image
+
 
 def loadImage(filename, 
               i, 
