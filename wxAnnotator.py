@@ -1500,7 +1500,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                        print("Route through 2-stage classifier here")
                        self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
                        self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
-                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue())
+                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue(), multimodel=self.parallellTwoStage.GetValue())
                        imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                        processed_img = imgRGBFromClassifier
                        self.sam_processor.image = imgRGBFromClassifier
