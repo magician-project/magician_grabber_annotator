@@ -956,9 +956,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.rightBook.AddPage(classifierPanel, "Classifier")
 
     # --- Sensor / Controls tab (model, threshold, majority voting, tile size, two-stage) ---
-    controlsPanel = wx.Panel(self.rightBook)
-    self._buildControlsTab(controlsPanel)
-    self.rightBook.AddPage(controlsPanel, "Sensor")
+    self.controlsPanel = wx.Panel(self.rightBook)
+    self._buildControlsTab(self.controlsPanel)
+    self.rightBook.AddPage(self.controlsPanel, "Sensors")
 
 
 
@@ -1004,8 +1004,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.panel.Bind(wx.EVT_MOUSEWHEEL, self.onMouseWheel)
     self.frame.Bind(wx.EVT_CHAR_HOOK, self.onKeyPress)
     self.panel.Layout()
-
-
+#===============================================================================
+#===============================================================================
+#===============================================================================
    def _buildAnnotatorTab(self, parent):
     """Builds the right-side Annotator tab with the original right panel controls
        up to and including 'Guess lighting direction'."""
@@ -1102,9 +1103,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(self.guessLightingCheckbox, 0, wx.ALL, 5)
 
     parent.SetSizer(s)
-
-
-
+#===============================================================================
+#===============================================================================
+#===============================================================================
    def _buildClassifierTab(self, parent):
     """Builds the Classifier tab with model select, threshold, majority voting,
        tile size (4..128), and two-stage classification toggle."""
@@ -1200,7 +1201,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.AddStretchSpacer(1)
 
     parent.SetSizer(s)
-
+#===============================================================================
+#===============================================================================
+#===============================================================================
    def _buildControlsTab(self, parent):
     """Builds the Controls tab showing real-time sensor data from CSV."""
     s = wx.BoxSizer(wx.VERTICAL)
@@ -1240,9 +1243,109 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.csvInfo = wx.StaticText(parent, label="No CSV loaded.")
     s.Add(self.csvInfo, 0, wx.ALL | wx.EXPAND, 5)
 
+    # --- Small Sensor Plots Section ---
+    plot_box   = wx.StaticBoxSizer(wx.StaticBox(parent, label="Tactile Sensor Plots"), wx.HORIZONTAL)
+    grid_plots = wx.GridSizer(rows=2, cols=3, vgap=5, hgap=5)
+
+    # Create placeholders for the 6 CSV plot images
+    self.sensorPlotImages = {}
+    plot_names = [
+        "acceleration_psd", "acceleration_spikeness", "accelerometer",
+        "force", "force_psd", "friction"
+    ]
+
+    for name in plot_names:
+        bmp = wx.StaticBitmap(parent, bitmap=wx.Bitmap(100, 100))
+        self.sensorPlotImages[name] = bmp
+        grid_plots.Add(bmp, 0, wx.ALL | wx.ALIGN_CENTER, 5)
+
+    plot_box.Add(grid_plots, 1, wx.ALL | wx.EXPAND, 5)
+    s.Add(plot_box, 0, wx.ALL | wx.EXPAND, 5)
+
     parent.SetSizer(s)
 
- 
+    # --- Load the CSV plots initially ---
+    self._initializeSensorPlotPlaceholders(parent=parent)
+#===============================================================================
+#===============================================================================
+#===============================================================================
+   def _initializeSensorPlotPlaceholders(self, parent, width=100, height=100):
+    """Fills existing wx.StaticBitmap controls with 'Not Loaded' placeholder images."""
+    plot_names = [
+        "acceleration_psd",
+        "acceleration_spikeness",
+        "accelerometer",
+        "force",
+        "force_psd",
+        "friction",
+    ]
+
+    for name in plot_names:
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        text = "No Data"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.2
+        color = (180, 180, 180)
+        thickness = 1
+        tsize = cv2.getTextSize(text, font, font_scale, thickness)[0]
+        tx, ty = (width - tsize[0]) // 2, (height + tsize[1]) // 2
+        cv2.putText(img, text, (tx, ty), font, font_scale, color, thickness, cv2.LINE_AA)
+
+        bmp = wx.Bitmap.FromBuffer(width, height, cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+        # ✅ Only update bitmap of already existing control
+        if name in self.sensorPlotImages:
+            self.sensorPlotImages[name].SetBitmap(bmp)
+
+    parent.Layout()
+
+#===============================================================================
+#===============================================================================
+#===============================================================================
+   def _loadSensorPlots(self, sample_number=100, directory = "./"):
+    """Load CSVs, render small plots, and update existing wx.StaticBitmap controls."""
+    from tactilePlotter import SensorVisualizer, load_csv_with_headers, load_csv_without_headers
+
+    
+    vis = SensorVisualizer()
+    
+    vis.add_dataset("acceleration_psd",       load_csv_without_headers(os.path.join(directory, "acceleration_psd.csv"), "freq", "power"))
+    vis.add_dataset("acceleration_spikeness", load_csv_without_headers(os.path.join(directory, "acceleration_spikeness.csv"), "time", "spike"))
+    vis.add_dataset("force_psd",              load_csv_without_headers(os.path.join(directory, "force_psd.csv"), "freq", "power"))
+    vis.add_dataset("friction",               load_csv_without_headers(os.path.join(directory, "friction.csv"), "time", "value"))
+    vis.add_dataset("accelerometer",          load_csv_with_headers(os.path.join(directory, "accelerometer.csv")))
+    vis.add_dataset("force",                  load_csv_with_headers(os.path.join(directory, "force.csv")))
+
+    #Make plots less spam
+    vis.drop_column("acceleration_psd","freq")
+    vis.drop_column("acceleration_spikeness","time")
+    vis.drop_column("force_psd","freq")
+    vis.drop_column("friction","time")
+    vis.drop_column("accelerometer","timestamp")
+    vis.drop_column("accelerometer","dev_timestamp")
+    vis.drop_column("force","timestamp")
+    vis.drop_column("force","tX")
+    vis.drop_column("force","tY")
+    vis.drop_column("force","tZ")
+
+    # Small plots for UI
+    images = vis.plot_window(sample_number=sample_number, window_size=100, width=100, height=100)
+
+    for name, img in images.items():
+        if name in self.sensorPlotImages:
+            h, w = img.shape[:2]
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            bmp = wx.Bitmap.FromBuffer(w, h, img_rgb)
+            # 🔧 Update existing control instead of creating new one
+            self.sensorPlotImages[name].SetBitmap(bmp)
+
+    self.csvInfo.SetLabel(f"CSV plots loaded for sample {sample_number}.")
+    self.controlsLabel.GetParent().Layout()  # ensure refresh in grid
+
+#===============================================================================
+#===============================================================================
+#===============================================================================
+
     # Add this method to your PhotoCtrl class
    def restoreFromJSON(self, filepath):
       if checkIfFileExists(filepath):
@@ -1434,7 +1537,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            if hasattr(self, 'controlsData'):
                    frame_idx = self.scrollBar.GetValue()
                    if 0 <= frame_idx < len(self.controlsData):
-                       self.updateControlsTab(self.controlsData[frame_idx])
+                       self.updateControlsTab(self.controlsData[frame_idx],sample_number = frame_idx)
 
 
            #self.filehash = get_md5(filepath) 
@@ -1620,6 +1723,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                #self.filepath = self.directoryList[self.directoryListIndex]
                self.filepath = self.folderStreamer.getImage()
                self.updateMinMaxSlider()
+               self._initializeSensorPlotPlaceholders(parent=self.controlsPanel)
 
 
            self.onProcessNewImageSample(self.filepath)
@@ -1888,7 +1992,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.onNext(event) 
         self.onPrevious(event)
 
-   def updateControlsTab(self, data_row):
+   def updateControlsTab(self, data_row,sample_number = 0):
     """
     Update the Controls tab UI fields with a row dict from the CSV.
     Example row:
@@ -1902,6 +2006,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 ctrl.SetValue("%0.1f" % value)
             else:
                 ctrl.SetValue(str(value))
+
+    self._loadSensorPlots(sample_number=sample_number,directory = "%s/tactile/" %  self.folderStreamer.local_dir ) #self.filepath
 
 
    def onPrevious(self, event):
