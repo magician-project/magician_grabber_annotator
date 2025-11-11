@@ -735,7 +735,7 @@ class PhotoCtrl(wx.App):
 
         self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
         self.EnsembleClassifierPnm = EnsembleClassifierPnm(
-                                                            initial_model_cfg = ("../magician_vision_classifier/binary_custom.pth","../magician_vision_classifier/binary_custom.json"),
+                                                            initial_model_cfg = ("../magician_vision_classifier/binary_custom_small.pth","../magician_vision_classifier/binary_custom_small.json"),
                                                             model_cfg_list=[("../magician_vision_classifier/allclass_custom.pth","../magician_vision_classifier/allclass_custom.json"),
                                                                             ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
                                                                             ("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
