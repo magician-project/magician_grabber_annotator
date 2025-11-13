@@ -49,7 +49,7 @@ else
      git clone git@github.com:magician-project/magician_vision_classifier.git
      cd magician_vision_classifier
 
-     items="allclass_convnext_tiny allclass_custom allclass_efficientnet_v2_s allclass_resnet18 allclass_resnext50 binary_custom binary_resnet18"
+     items="allclass_convnext_tiny allclass_verysmall_cnn allclass_efficientnet_v2_s allclass_resnet18 allclass_resnext50 binary_small_cnn binary_resnet18"
      files=""
      for item in $items; do
          files="$files ${item}.pth ${item}.json"

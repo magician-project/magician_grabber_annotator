@@ -135,17 +135,27 @@ class HTTPFolderStreamer:
         if 0 <= item < len(self.file_list):
             self.index = item
 
-    def _download_file(self, remote_name):
-        local_path = os.path.join(self.local_dir, remote_name)
-        if not os.path.isfile(local_path):
-            url = self.base_url + remote_name
-            print(f"Downloading: {url}")
-            resp = requests.get(url)
-            if resp.status_code != 200:
-                raise RuntimeError(f"Failed to download {url}")
-            with open(local_path, "wb") as f:
-                f.write(resp.content)
+    def _download_file(self, remote_name, overwrite=False):
+     local_path = os.path.join(self.local_dir, remote_name)
+
+     # Skip download if file exists and not overwriting
+     if not overwrite and os.path.isfile(local_path):
+        # Optionally print a message or stay silent
+        # print(f"Skipping download, file exists: {local_path}")
         return local_path
+
+     url = self.base_url + remote_name
+     print(f"Downloading: {url}")
+     resp = requests.get(url)
+
+     if resp.status_code != 200:
+        raise RuntimeError(f"Failed to download {url}")
+
+     with open(local_path, "wb") as f:
+        f.write(resp.content)
+
+     return local_path
+
 
 
     def _prefetch_next(self):
