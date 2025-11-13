@@ -8,7 +8,11 @@ License : "FORTH"
 
 """
 
-In a machine using Ubuntu 22.04.5 with Python 3.10 
+In a machine using :
+ Ubuntu 22.04.5 with Python 3.10 
+  or
+ Ubuntu 24.04.3 with Python 3.12.3
+
 
 python3 -m venv venv
 source venv/bin/activate
@@ -35,7 +39,7 @@ import threading
 Configurations in one central place
 """
 
-version         = "0.28"
+version         = "0.32"
 useSAM          = False
 useClassifier   = True #<- Switch classifier off
 combineChannels = True
@@ -725,22 +729,7 @@ class MagnifierFrame(wx.Frame):
 
 class PhotoCtrl(wx.App):
    def __init__(self, redirect=False, filename=None):
-        if (useSAM):
-          if (slowPC):
-            self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_b_01ec64.pth", model_type="vit_b", device="cpu")
-          else:
-            self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_l_0b3195.pth", model_type="vit_l", device="cuda")
-        else:
-            self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
-
-        self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
-        self.EnsembleClassifierPnm = EnsembleClassifierPnm(
-                                                            initial_model_cfg = ("../magician_vision_classifier/binary_custom_small.pth","../magician_vision_classifier/binary_custom_small.json"),
-                                                            model_cfg_list=[("../magician_vision_classifier/allclass_custom.pth","../magician_vision_classifier/allclass_custom.json"),
-                                                                            ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
-                                                                            ("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
-                                                                            ("../magician_vision_classifier/allclass_efficientnet_v2_s.pth","../magician_vision_classifier/allclass_efficientnet_v2_s.json"),
-                                                                            ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
+        
         wx.App.__init__(self, redirect, filename)
 
 
@@ -829,6 +818,23 @@ NE', 'ID_UNDO', 'ID_UNINDENT', 'ID_UP', 'ID_VIEW_DETAILS', 'ID_VIEW_LARGEICONS',
 ID_VIEW_SORTSIZE', 'ID_VIEW_SORTTYPE', 'ID_YES', 'ID_YESTOALL', 'ID_ZOOM_100', '
 ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
+   def initializeModels(self):
+        if (useSAM):
+          if (slowPC):
+            self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_b_01ec64.pth", model_type="vit_b", device="cpu")
+          else:
+            self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_l_0b3195.pth", model_type="vit_l", device="cuda")
+        else:
+            self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
+
+        self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
+        self.EnsembleClassifierPnm = EnsembleClassifierPnm(
+                                                            initial_model_cfg = ("../magician_vision_classifier/binary_custom_small.pth","../magician_vision_classifier/binary_custom_small.json"),
+                                                            model_cfg_list=[#("../magician_vision_classifier/allclass_custom.pth","../magician_vision_classifier/allclass_custom.json"),
+                                                                            ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
+                                                                            ("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
+                                                                            ("../magician_vision_classifier/allclass_efficientnet_v2_s.pth","../magician_vision_classifier/allclass_efficientnet_v2_s.json"),
+                                                                            ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
 
    def createWidgets(self):
     # ----- Menus (unchanged) -------------------------------------------------
@@ -865,10 +871,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
     itemTileExplorer  = toolsMenu.Append(wx.ID_FIND, "&Tile Explorer", "Tile Explorer")
     itemStreamer      = toolsMenu.Append(wx.ID_FORWARD, "&Stream To Shared Memory", "Stream To Shared Memory")
+    itemBenchmark     = toolsMenu.Append(wx.ID_FORWARD, "&Benchmark loaded NN configuration", "Benchmark Classifier")
     self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
     self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
     self.Bind(wx.EVT_MENU, self.onTileExplorer,itemTileExplorer)
     self.Bind(wx.EVT_MENU, self.onStreamer,itemStreamer)
+    self.Bind(wx.EVT_MENU, self.onBenchmark,itemBenchmark)
     menuBar.Append(toolsMenu, "&Tools")
 
     helpMenu = wx.Menu()
@@ -1113,9 +1121,16 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # --- 1. Get available models from directory ---
     model_dir = classifier_relative_directory
-    available_models = self.ClassifierPnm.model_scan(model_dir)
+    available_models = ClassifierPnm.model_scan(model_dir)
     if not available_models:
         available_models = ["Default"]
+    else:
+        global classifier_model_path 
+        classifier_model_path         = "%s/%s.pth"  % (classifier_relative_directory,available_models[0])
+        global classifier_cfg_path 
+        classifier_cfg_path           = "%s/%s.json" % (classifier_relative_directory,available_models[0])
+
+    self.initializeModels() #<- initialize models here
 
     # --- 2. Model selection combo box ---
     modelRow = wx.BoxSizer(wx.HORIZONTAL)
@@ -1302,34 +1317,40 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 #===============================================================================
 #===============================================================================
 #===============================================================================
-   def _loadSensorPlots(self, sample_number=100, directory = "./"):
+
+   def _loadSensorPlotsNewDataset(self, directory = "./"):
     """Load CSVs, render small plots, and update existing wx.StaticBitmap controls."""
     from tactilePlotter import SensorVisualizer, load_csv_with_headers, load_csv_without_headers
 
     
-    vis = SensorVisualizer()
+    self.vis = SensorVisualizer()
     
-    vis.add_dataset("acceleration_psd",       load_csv_without_headers(os.path.join(directory, "acceleration_psd.csv"), "freq", "power"))
-    vis.add_dataset("acceleration_spikeness", load_csv_without_headers(os.path.join(directory, "acceleration_spikeness.csv"), "time", "spike"))
-    vis.add_dataset("force_psd",              load_csv_without_headers(os.path.join(directory, "force_psd.csv"), "freq", "power"))
-    vis.add_dataset("friction",               load_csv_without_headers(os.path.join(directory, "friction.csv"), "time", "value"))
-    vis.add_dataset("accelerometer",          load_csv_with_headers(os.path.join(directory, "accelerometer.csv")))
-    vis.add_dataset("force",                  load_csv_with_headers(os.path.join(directory, "force.csv")))
+    self.vis.add_dataset("acceleration_psd",       load_csv_without_headers(os.path.join(directory, "acceleration_psd.csv"), "freq", "power"))
+    self.vis.add_dataset("acceleration_spikeness", load_csv_without_headers(os.path.join(directory, "acceleration_spikeness.csv"), "time", "spike"))
+    self.vis.add_dataset("force_psd",              load_csv_without_headers(os.path.join(directory, "force_psd.csv"), "freq", "power"))
+    self.vis.add_dataset("friction",               load_csv_without_headers(os.path.join(directory, "friction.csv"), "time", "value"))
+    self.vis.add_dataset("accelerometer",          load_csv_with_headers(os.path.join(directory, "accelerometer.csv")))
+    self.vis.add_dataset("force",                  load_csv_with_headers(os.path.join(directory, "force.csv")))
 
     #Make plots less spam
-    vis.drop_column("acceleration_psd","freq")
-    vis.drop_column("acceleration_spikeness","time")
-    vis.drop_column("force_psd","freq")
-    vis.drop_column("friction","time")
-    vis.drop_column("accelerometer","timestamp")
-    vis.drop_column("accelerometer","dev_timestamp")
-    vis.drop_column("force","timestamp")
-    vis.drop_column("force","tX")
-    vis.drop_column("force","tY")
-    vis.drop_column("force","tZ")
+    self.vis.drop_column("acceleration_psd","freq")
+    self.vis.drop_column("acceleration_spikeness","time")
+    self.vis.drop_column("force_psd","freq")
+    self.vis.drop_column("friction","time")
+    self.vis.drop_column("accelerometer","timestamp")
+    self.vis.drop_column("accelerometer","dev_timestamp")
+    self.vis.drop_column("force","timestamp")
+    self.vis.drop_column("force","tX")
+    self.vis.drop_column("force","tY")
+    self.vis.drop_column("force","tZ")
+
+
+
+   def _loadSensorPlotsNewSample(self, sample_number=100):
+    """Render small plots, and update existing wx.StaticBitmap controls."""
 
     # Small plots for UI
-    images = vis.plot_window(sample_number=sample_number, window_size=100, width=100, height=100)
+    images = self.vis.plot_window(sample_number=sample_number, window_size=100, width=100, height=100)
 
     for name, img in images.items():
         if name in self.sensorPlotImages:
@@ -1768,6 +1789,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if dialog.ShowModal() == wx.ID_OK:
             directory_path = dialog.GetPath()
             self.photoTxt.SetValue(directory_path)
+            self._loadSensorPlotsNewDataset(directory = "%s/tactile/" %  self.folderStreamer.local_dir)
             self.onNewInputPath(directory_path)
 
         dialog.Destroy()
@@ -1785,6 +1807,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
             self.populateMetaData("%s/info.json" % selectedDirectory)
             self.loadControlsCSV("%s/controller.csv" % selectedDirectory)
+            self._loadSensorPlotsNewDataset(directory = "%s/tactile/" %  self.folderStreamer.local_dir)
             self.onNext(event)
             self.onPrevious(event)
             app.photoTxt.SetValue(dlg.selectedDirectory)
@@ -1936,7 +1959,31 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.onProcessNewImageSample(self.filepath)
                self.updateMinMaxSlider()
                self.onView()
-              
+
+   def openJumpToFrameDialog(self):
+    dlg = wx.TextEntryDialog(
+                             self.frame,
+                             message="Enter frame number (Cur %u Max %u):" %(self.scrollBar.GetValue(),self.scrollBar.GetMax()),
+                             caption="Jump to Frame"
+                           )
+    if dlg.ShowModal() == wx.ID_OK:
+        value = dlg.GetValue()
+        try:
+            frame = int(value)
+
+            # Clamp within scrollbar limits
+            frame = max(0, min(frame, self.scrollBar.GetMax()))
+
+            # Update scrollbar
+            self.scrollBar.SetValue(frame)
+
+            # Trigger your normal scroll logic
+            self.onScroll(None)
+
+        except ValueError:
+            wx.MessageBox("Please enter a valid number.", "Error", wx.OK | wx.ICON_ERROR)
+    dlg.Destroy()
+
 
    def increase_brightness(self, event):
         if self.brightness_offset < 5:
@@ -2007,7 +2054,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             else:
                 ctrl.SetValue(str(value))
 
-    self._loadSensorPlots(sample_number=sample_number,directory = "%s/tactile/" %  self.folderStreamer.local_dir ) #self.filepath
+    self._loadSensorPlotsNewSample(sample_number=sample_number)
 
 
    def onPrevious(self, event):
@@ -2126,6 +2173,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onNext(event)
         elif keycode == wx.WXK_ESCAPE:
             self.onExit(event)
+        elif keycode == ord('J') or keycode == ord('j'):
+            self.openJumpToFrameDialog()
         else:
             event.Skip()
 
@@ -2175,6 +2224,35 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        print("Streamer set directory : ",selectedDirectory)
        os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
 
+   def onBenchmark(self,event):
+        dlg = wx.MessageDialog(
+            self.frame,
+            f"Make sure you have a correct NN configuration\n\n"
+            "The benchmark will take some time and the UI will become unresponsive",
+            "Are you sure you want to continue?",
+            wx.YES_NO | wx.ICON_QUESTION
+        )
+        res = dlg.ShowModal()
+        dlg.Destroy()
+
+        if res == wx.ID_YES:
+           print("Doing Benchmark")
+           self.scrollBar.SetValue(0) #Go To Start
+           self.onScroll(None)
+           totalFrames = self.scrollBar.GetMax()
+           stepSizeMinimumBenchmark = 14
+           stepSizeMaximumBenchmark = 32
+           stepSize = stepSizeMinimumBenchmark
+           for frameNumber in range(totalFrames):
+               print("Benchmark %u/%u" % (frameNumber,totalFrames))
+               stepSize = stepSize + 1 
+               if (stepSize>stepSizeMaximumBenchmark):
+                     stepSize = stepSizeMinimumBenchmark
+               self.classifierTileSize.SetValue(stepSize)
+               self.onNext(event)
+               wx.Yield()
+        else:
+           print("Doing Nothing")
 
    def onMouseMoveMagnifier(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
