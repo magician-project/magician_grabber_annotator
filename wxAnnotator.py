@@ -65,6 +65,7 @@ import sys
 import os
 
 from folderStream import FolderStreamer
+from classifierGrading import AnnotationCorrelationStats 
 
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
@@ -796,6 +797,9 @@ class PhotoCtrl(wx.App):
         self.maintainPoints = False  # Initial state
         self.controlsData = []
 
+        # Create global instance once
+        self.stats = AnnotationCorrelationStats(classifier_name=self.classifierModelCombo.GetValue(),hit_radius=40)
+
         """
 ['ID_ABORT', 'ID_ABOUT', 'ID_ADD', 'ID_ANY', 'ID_APPLY', 'ID_BACKWARD', 'ID_BOLD
 ', 'ID_CANCEL', 'ID_CLEAR', 'ID_CLOSE', 'ID_CLOSE_ALL', 'ID_CONTEXT_HELP', 'ID_C
@@ -868,15 +872,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     toolsMenu = wx.Menu()
     itemMagnify       = toolsMenu.Append(wx.ID_ZOOM_IN, "&Magnifier", "Magnifier")
-    itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Dataset", "Create Dataset")
+    itemRecordDataset = toolsMenu.Append(wx.ID_STOP, "&Record Raw Dataset", "Record Raw Dataset")
+    itemCreateDataset = toolsMenu.Append(wx.ID_EDIT, "&Create Training Dataset", "Create Training Dataset")
     itemTileExplorer  = toolsMenu.Append(wx.ID_FIND, "&Tile Explorer", "Tile Explorer")
     itemStreamer      = toolsMenu.Append(wx.ID_FORWARD, "&Stream To Shared Memory", "Stream To Shared Memory")
-    itemBenchmark     = toolsMenu.Append(wx.ID_FORWARD, "&Benchmark loaded NN configuration", "Benchmark Classifier")
+    itemBenchmarkPerf = toolsMenu.Append(wx.ID_UNINDENT, "&Benchmark Performance based on loaded NN", "Benchmark Perfomance Classifier")
+    itemBenchmarkAcc  = toolsMenu.Append(wx.ID_UNINDENT, "&Benchmark Accuracy based on loaded NN", "Benchmark Accuracy Classifier")
     self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
+    self.Bind(wx.EVT_MENU, self.onRecordDataset,itemRecordDataset)
     self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
     self.Bind(wx.EVT_MENU, self.onTileExplorer,itemTileExplorer)
     self.Bind(wx.EVT_MENU, self.onStreamer,itemStreamer)
-    self.Bind(wx.EVT_MENU, self.onBenchmark,itemBenchmark)
+    self.Bind(wx.EVT_MENU, self.onBenchmarkPerf,itemBenchmarkPerf)
+    self.Bind(wx.EVT_MENU, self.onBenchmarkAcc,itemBenchmarkAcc)
     menuBar.Append(toolsMenu, "&Tools")
 
     helpMenu = wx.Menu()
@@ -1191,6 +1199,35 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     tileRow.Add(self.classifierTileSize, 1, wx.RIGHT, 8)
     tileRow.Add(self.classifierTileSizeValue, 0, wx.ALIGN_CENTER_VERTICAL)
 
+
+    # --- Erode Kernel Size  ---
+    erodeKernelRow        = wx.BoxSizer(wx.HORIZONTAL)
+    erodeKernelLbl        = wx.StaticText(parent, label="Erode Kernel Size")
+    self.erodeKernelSize  = wx.Slider(parent, value=0, minValue=0, maxValue=8, style=wx.SL_HORIZONTAL)
+    self.erodeKernelValue = wx.StaticText(parent, label="0")
+    def _on_erodkrnthr(evt):
+        self.erodeKernelValue.SetLabel(f"{self.erodeKernelSize.GetValue()}")
+        evt.Skip()
+    self.erodeKernelSize.Bind(wx.EVT_SLIDER, _on_erodkrnthr)
+    erodeKernelRow.Add(erodeKernelLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    erodeKernelRow.Add(self.erodeKernelSize, 1, wx.RIGHT, 8)
+    erodeKernelRow.Add(self.erodeKernelValue, 0, wx.ALIGN_CENTER_VERTICAL)
+
+
+    # --- Erode Threshold Value ---
+    erodeThresholdRow        = wx.BoxSizer(wx.HORIZONTAL)
+    erodeThresholdLbl        = wx.StaticText(parent, label="Erode Min. Threshold to Keep")
+    self.erodeThreshold      = wx.Slider(parent, value=0, minValue=0, maxValue=8, style=wx.SL_HORIZONTAL)
+    self.erodeThresholdValue = wx.StaticText(parent, label="0")
+    def _on_erodthr(evt):
+        self.erodeThresholdValue.SetLabel(f"{self.erodeThreshold.GetValue()}")
+        evt.Skip()
+    self.erodeThreshold.Bind(wx.EVT_SLIDER, _on_erodthr)
+    erodeThresholdRow.Add(erodeThresholdLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    erodeThresholdRow.Add(self.erodeThreshold, 1, wx.RIGHT, 8)
+    erodeThresholdRow.Add(self.erodeThresholdValue, 0, wx.ALIGN_CENTER_VERTICAL)
+
+
     # --- 7. Two-stage classification checkbox ---
     self.classifierTwoStage = wx.CheckBox(parent, label="Enable two-stage classification")
     self.parallellTwoStage  = wx.CheckBox(parent, label="Two-stage parallelism (VRAM intensive)")
@@ -1204,6 +1241,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+
+    s.Add(erodeKernelRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(erodeThresholdRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
     s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.parallellTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
@@ -1619,12 +1660,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
                   if self.useClassifierCheckbox.GetValue():
-
+                    self.AIAnnotations=None
                     if self.classifierTwoStage.GetValue():
                        print("Route through 2-stage classifier here")
                        self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
                        self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
-                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue(), multimodel=self.parallellTwoStage.GetValue())
+                       imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue(), multimodel=self.parallellTwoStage.GetValue())
                        imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                        processed_img = imgRGBFromClassifier
                        self.sam_processor.image = imgRGBFromClassifier
@@ -1633,17 +1674,30 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                        print("Regular 1-stage classifier here")
                        self.ClassifierPnm.step = self.classifierTileSize.GetValue()
                        self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
-                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue())
+                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
                        imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                        processed_img = imgRGBFromClassifier
                        self.sam_processor.image = imgRGBFromClassifier
                        self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
+                    #print(" self.AIAnnotations: ",self.AIAnnotations)
+                    #self.AIAnnotations:  {'points': [(1424, 368), (1360, 400), (1392, 400), (1424, 400), (1360, 432), (1392, 432)], 'classes': ['class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA']}
+
+
                 else:
                   #If we didn't trigger then show the raw image as processed image
                   processed_img                  = imgCV
                   self.sam_processor.image       = imgCV
 
-
+                self.stats.update(
+                                   frame_id=self.filepath,
+                                   user_ann={
+                                             "points":     self.points_of_interest,
+                                             "classes":    self.points_classes,
+                                             "severities": self.points_severities,
+                                            }, 
+                                   ai_ann=self.AIAnnotations
+                                 )
+                self.stats.print_stats()
                 
                 if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
                  print("We don't know Light Direction")
@@ -2213,6 +2267,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
      self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
      self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
 
+   def onRecordDataset(self,event):
+       os.system("python3 magician_grabber_frontend.py %s" % self.local_base_path) #<- Lazy
+
    def onCreateDataset(self,event):
        os.system("python3 datasetCreator.py %s" % self.local_base_path) #<- Lazy
 
@@ -2224,7 +2281,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        print("Streamer set directory : ",selectedDirectory)
        os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
 
-   def onBenchmark(self,event):
+   def onBenchmarkGeneral(self,event,alterStep=False):
         dlg = wx.MessageDialog(
             self.frame,
             f"Make sure you have a correct NN configuration\n\n"
@@ -2236,23 +2293,38 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         dlg.Destroy()
 
         if res == wx.ID_YES:
-           print("Doing Benchmark")
+           print("Doing Perfomance Benchmark")
            self.scrollBar.SetValue(0) #Go To Start
            self.onScroll(None)
            totalFrames = self.scrollBar.GetMax()
            stepSizeMinimumBenchmark = 14
            stepSizeMaximumBenchmark = 32
            stepSize = stepSizeMinimumBenchmark
+
+           self.stats.reset()
            for frameNumber in range(totalFrames):
-               print("Benchmark %u/%u" % (frameNumber,totalFrames))
-               stepSize = stepSize + 1 
-               if (stepSize>stepSizeMaximumBenchmark):
-                     stepSize = stepSizeMinimumBenchmark
+               if (alterStep):
+                 print("Perfomance Benchmark %u/%u" % (frameNumber,totalFrames))
+                 stepSize = stepSize + 1 
+                 if (stepSize>stepSizeMaximumBenchmark):
+                      stepSize = stepSizeMinimumBenchmark
+               else:
+                 print("Accuracy Benchmark %u/%u" % (frameNumber,totalFrames))
+
                self.classifierTileSize.SetValue(stepSize)
                self.onNext(event)
                wx.Yield()
+           self.stats.print_stats()
+
         else:
            print("Doing Nothing")
+
+   def onBenchmarkPerf(self,event):
+        self.onBenchmarkGeneral(event,alterStep=True)
+
+   def onBenchmarkAcc(self,event):
+        self.onBenchmarkGeneral(event,alterStep=False)
+
 
    def onMouseMoveMagnifier(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():

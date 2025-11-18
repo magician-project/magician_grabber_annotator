@@ -45,11 +45,18 @@ def drawSinglePlot(history, plotNumber, itemName, image, x, y, w, h, minimumValu
     # Label the last value
     org = (x + len(history), calculateRelativeValue(0, h, history[-1][itemName], minimumValue, maximumValue))
     cv2.putText(image, f'{history[-1][itemName]:.2f}', org, font, fontScale, color, thickness, cv2.LINE_AA)
+
 # -------------------------------------------------------
 # CSV Loaders
 # -------------------------------------------------------
 def load_csv_with_headers(path):
     """Load a CSV that includes a header row."""
+
+    if not os.path.exists(path):
+        print("CSV without header ",path," does not exist")
+        return None
+
+
     with open(path, "r", newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
@@ -65,6 +72,11 @@ def load_csv_with_headers(path):
 # -------------------------------------------------------
 def load_csv_without_headers(path, x_label="x", y_label="y"):
     """Load a simple two-column CSV without headers."""
+
+    if not os.path.exists(path):
+        print("CSV without header ",path," does not exist")
+        return None
+
     x_vals, y_vals = [], []
     with open(path, "r", newline="") as f:
         reader = csv.reader(f)
@@ -82,7 +94,8 @@ class SensorVisualizer:
         self.images = {}  # per-plot CV mats
 
     def add_dataset(self, name, dataset):
-        self.data[name] = dataset
+        if dataset is not None:
+           self.data[name] = dataset
 
     def drop_column(self, dataset_name, column_name):
         """
