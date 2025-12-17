@@ -50,6 +50,7 @@ def drawSinglePlot(history, plotNumber, itemName, image, x, y, w, h, minimumValu
 # CSV Loaders
 # -------------------------------------------------------
 def load_csv_with_headers(path):
+  try:
     """Load a CSV that includes a header row."""
 
     if not os.path.exists(path):
@@ -69,8 +70,12 @@ def load_csv_with_headers(path):
     for k in data:
         data[k] = np.array(data[k], dtype=float)
     return data
+  except Exception as e:
+    print("Error ",e)
+    return None
 # -------------------------------------------------------
 def load_csv_without_headers(path, x_label="x", y_label="y"):
+  try:
     """Load a simple two-column CSV without headers."""
 
     if not os.path.exists(path):
@@ -85,6 +90,9 @@ def load_csv_without_headers(path, x_label="x", y_label="y"):
                 x_vals.append(float(row[0]))
                 y_vals.append(float(row[1]))
     return {x_label: np.array(x_vals, dtype=float), y_label: np.array(y_vals, dtype=float)}
+  except Exception as e:
+    print("Error ",e)
+    return None
 # -------------------------------------------------------
 # Main Visualization Class
 # -------------------------------------------------------

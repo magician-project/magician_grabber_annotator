@@ -1858,7 +1858,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             # You can pass this to your HTTPFolderStreamer
             #self.onNewInputPath(dlg.selectedDataset)
             from HTTPStream import HTTPFolderStreamer 
-            self.folderStreamer = HTTPFolderStreamer(base_url=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
+            self.folderStreamer = HTTPFolderStreamer(provider=dlg.selectedProvider, dataset=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
             self.populateMetaData("%s/info.json" % selectedDirectory)
             self.loadControlsCSV("%s/controller.csv" % selectedDirectory)
             self._loadSensorPlotsNewDataset(directory = "%s/tactile/" %  self.folderStreamer.local_dir)
