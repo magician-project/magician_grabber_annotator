@@ -837,7 +837,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                                                             model_cfg_list=[("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
                                                                             ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
                                                                             ("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
-                                                                            ("../magician_vision_classifier/allclass_efficientnet_v2_s.pth","../magician_vision_classifier/allclass_efficientnet_v2_s.json"),
+                                                                            #("../magician_vision_classifier/allclass_efficientnet_v2_s.pth","../magician_vision_classifier/allclass_efficientnet_v2_s.json"), #<- This is the slowest to run
                                                                             ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
 
    def createWidgets(self):
@@ -1658,11 +1658,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
 
-                if app.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
-                  if self.useClassifierCheckbox.GetValue():
+                if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots 
+                  if self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
                     self.AIAnnotations=None
                     if self.classifierTwoStage.GetValue():
-                       print("Route through 2-stage classifier here")
+                       print("Image classification done through 2-stage ensemble classifier")
                        self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
                        self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
                        imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue(), multimodel=self.parallellTwoStage.GetValue())
@@ -1671,7 +1671,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                        self.sam_processor.image = imgRGBFromClassifier
                        self.classifierInfo.SetLabel("2-stage: %0.2f Hz" % self.EnsembleClassifierPnm.hz)
                     else:
-                       print("Regular 1-stage classifier here")
+                       print("Image classification done through regular 1-stage classifier")
                        self.ClassifierPnm.step = self.classifierTileSize.GetValue()
                        self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
                        imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
@@ -1681,8 +1681,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                        self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
                     #print(" self.AIAnnotations: ",self.AIAnnotations)
                     #self.AIAnnotations:  {'points': [(1424, 368), (1360, 400), (1392, 400), (1424, 400), (1360, 432), (1392, 432)], 'classes': ['class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA']}
-
-
                 else:
                   #If we didn't trigger then show the raw image as processed image
                   processed_img                  = imgCV
