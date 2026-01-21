@@ -181,10 +181,15 @@ class StreamerFrame(wx.Frame):
         height = frame.shape[0]
         channels = 1 if len(frame.shape) == 2 else frame.shape[2]
 
-    
-        #os.system("ln -s %s/libSharedMemoryVideoBuffers.so" % classifier_relative_directory)
-        #os.system("git clone https://github.com/AmmarkoV/SharedMemoryVideoBuffers")
-        #os.system("cd SharedMemoryVideoBuffers && make && cd .. && SharedMemoryVideoBuffers/server --nokb&")
+        if checkIfFileExists("libSharedMemoryVideoBuffers.so"):
+            print("Found a shared memory video buffer library..!")
+        else:
+            print("Bootstrapping a new shared memory video buffer library")
+            #os.system("ln -s %s/libSharedMemoryVideoBuffers.so" % classifier_relative_directory)
+            os.system("git clone https://github.com/AmmarkoV/SharedMemoryVideoBuffers")
+            os.system("cd SharedMemoryVideoBuffers && make && cd ..")
+            os.system("ln -s SharedMemoryVideoBuffers/libSharedMemoryVideoBuffers.so" )
+            os.system("SharedMemoryVideoBuffers/server --nokb&")
 
         self.smm = SharedMemoryManager("libSharedMemoryVideoBuffers.so", 
                                        descriptor="video_frames.shm", 

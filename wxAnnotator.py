@@ -2275,9 +2275,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        os.system("python3 tileExplorer.py %s" % self.local_base_path) #<- Lazy
 
    def onStreamer(self,event):
-       selectedDirectory = self.folderStreamer.local_dir
-       print("Streamer set directory : ",selectedDirectory)
-       os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
+       try:
+          selectedDirectory = self.folderStreamer.local_dir
+          print("Streamer set directory : ",selectedDirectory)
+          os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
+       except AttributeError:
+          wx.MessageBox("Please open a network database before attempting to stream something", "Error", wx.OK | wx.ICON_ERROR)
+
 
    def onBenchmarkGeneral(self,event,alterStep=False):
         dlg = wx.MessageDialog(
