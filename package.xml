@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>magician_grabber_annotator</name>
+  <version>0.0.1</version>
+  <description>Non-ROS wxPython annotator wrapped as a catkin package for easy rosrun/roslaunch usage.</description>
+
+  <maintainer email="ammarkov@ics.forth.gr">Ammar Qammaz</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Minimal runtime dependency to ensure python3 is present on target machines -->
+  <exec_depend>python3</exec_depend>
+
+  <!-- Optional (only if you want rosdep to pull these; keep/remove as you like)
+       Note: wxPython rosdep keys vary by distro/OS, so it's omitted here on purpose. -->
+  <!-- <exec_depend>python3-opencv</exec_depend> -->
+  <!-- <exec_depend>python3-numpy</exec_depend> -->
+
+  <export/>
+</package>
+

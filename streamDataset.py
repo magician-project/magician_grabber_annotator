@@ -6,6 +6,7 @@ import sys
 import cv2
 import numpy as np
 import sys
+import time
 
 
 #classifier_relative_directory = "../classifier" #Old Name
@@ -208,22 +209,35 @@ class StreamerFrame(wx.Frame):
         self.thread.start()
 
     def stream_loop(self):
-        while not self.streamer.should_stop:
-            ret, frame = self.streamer.read()
-            if not ret:
-                break
+       target_fps = 30.0
+       frame_period = 1.0 / target_fps
+       next_frame_time = time.perf_counter()
 
-            self.smm.copy_numpy_to_shared_memory(frame)
+       while not self.streamer.should_stop:
+        now = time.perf_counter()
 
-            if len(frame.shape) == 3 and frame.shape[2] == 3:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            else:
-                frame_rgb = frame
+        # Sleep until next frame slot
+        if now < next_frame_time:
+            time.sleep(next_frame_time - now)
 
-            self.current_frame = frame_rgb
+        next_frame_time += frame_period
 
-            wx.CallAfter(self.update_gui)
-            cv2.waitKey(10)
+        ret, frame = self.streamer.read()
+        if not ret:
+            break
+
+        # Write to shared memory
+        self.smm.copy_numpy_to_shared_memory(frame)
+
+        # Convert for GUI
+        if len(frame.shape) == 3 and frame.shape[2] == 3:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            frame_rgb = frame
+
+        self.current_frame = frame_rgb
+
+        wx.CallAfter(self.update_gui)
 
   # ---------- Timer Trigger ----------
     def on_timer(self, event):
