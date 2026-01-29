@@ -1389,11 +1389,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def _loadSensorPlotsNewSample(self, sample_number=100):
     """Render small plots, and update existing wx.StaticBitmap controls."""
+    try:
+      # Small plots for UI
+      images = self.vis.plot_window(sample_number=sample_number, window_size=100, width=100, height=100)
 
-    # Small plots for UI
-    images = self.vis.plot_window(sample_number=sample_number, window_size=100, width=100, height=100)
-
-    for name, img in images.items():
+      for name, img in images.items():
         if name in self.sensorPlotImages:
             h, w = img.shape[:2]
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -1401,8 +1401,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             # 🔧 Update existing control instead of creating new one
             self.sensorPlotImages[name].SetBitmap(bmp)
 
-    self.csvInfo.SetLabel(f"CSV plots loaded for sample {sample_number}.")
-    self.controlsLabel.GetParent().Layout()  # ensure refresh in grid
+      self.csvInfo.SetLabel(f"CSV plots loaded for sample {sample_number}.")
+      self.controlsLabel.GetParent().Layout()  # ensure refresh in grid
+
+    except Exception as e:
+      print("_loadSensorPlotsNewSample failed")
 
 #===============================================================================
 #===============================================================================
