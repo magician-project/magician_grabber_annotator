@@ -746,7 +746,7 @@ class PhotoCtrl(wx.App):
           self.PhotoMaxSizeWidth   = 475 #<- Small monitor
           self.PhotoMaxSizeHeight  = 400
          
-        windowTitle = 'Segmentation Control Annotator Tool v%s'%version
+        windowTitle = 'Magician Annotator Tool v%s' % version
         windowPosition = wx.Point(10,10)
         windowSize = wx.Size(300+self.PhotoMaxSizeWidth*2,self.PhotoMaxSizeHeight+220)
         print("Set window frame to ",windowSize)
