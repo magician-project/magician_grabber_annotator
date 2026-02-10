@@ -75,7 +75,7 @@ Each channel represents a polarization angle:
 | B     | 90°          |
 | A     | 135°         |
 
-An example can be found in this [all-in-one setup script](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm) file
+An example can be found in this [example.pnm](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm) file
 
 
 Relevant code to use as template to unpack polarized data:
