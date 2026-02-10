@@ -8,7 +8,7 @@ It is intended for collaborators working on dataset preparation, model training,
 
 ## 1. Repository Overview
 
-The FORTH software stack can be fetched and installed using the official setup script:
+The FORTH software stack can be fetched and installed using an [https://github.com/magician-project/magician_grabber_annotator/blob/main/scripts/setup.sh](all-in-one setup script):
 
 ```bash
 https://github.com/magician-project/magician_grabber_annotator/blob/main/scripts/setup.sh
