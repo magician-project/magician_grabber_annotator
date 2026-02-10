@@ -231,7 +231,10 @@ Based on current results, prioritize:
 
 ## 8. Tactile Sensor Data
 
-Some datasets include tactile sensing:
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/tactile.jpg?raw=true" /> 
+
+The following datasets include tactile sensing data:
 
 ```
 NDA_*
@@ -245,7 +248,7 @@ PDC_*
 These contain:
 - Dent classes A / B / C
 - Positive & negative dents
-- Associated **tactile CSV data**
+- Associated **tactile CSV data** in the tactile/ subdirectory
 
 ---
 
