@@ -180,7 +180,7 @@ python3 trainClassifierTorch.py configs/bigmodel.json
 ```
 
 Training code reference:  
-https://github.com/magician-project/magician_vision_classifier/blob/main/trainClassifierTorch.py#L332
+https://github.com/magician-project/magician_vision_classifier/blob/main/trainClassifierTorch.py#L605
 
 ### Supported Models
 
@@ -267,7 +267,7 @@ Parsed via:
 restoreFromJSON
 ```
 
-https://github.com/magician-project/magician_grabber_annotator/blob/main/wxAnnotator.py#L1247
+https://github.com/magician-project/magician_grabber_annotator/blob/main/wxAnnotator.py#L1415
 
 ---
 
