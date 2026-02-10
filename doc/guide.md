@@ -95,9 +95,9 @@ After activating the classifier virtual environment:
 python3 wxAnnotator.py --db /path/to/dataset/storage
 ```
 
-<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/binary_verysmall_cnn.jpg?raw=true" height=200/> 
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/binary_verysmall_cnn.jpg?raw=true" height=400/> 
 
-<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/allclass_convnext_tiny.jpg?raw=true" height=200/> 
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/allclass_convnext_tiny.jpg?raw=true" height=250/> 
 
 
 <img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/allclass_convnext_tiny2.jpg?raw=true" height=200/> 
@@ -185,7 +185,7 @@ https://github.com/magician-project/magician_vision_classifier/blob/main/trainCl
 Depending on model and step of tiles there are different performance trade-offs
 
 
-<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/performance.jpg?raw=true" height=200/>  
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/performance.jpg?raw=true" />  
 
 > ⚠️ Tile size used for training **must match** tile size used during dataset generation.
 
