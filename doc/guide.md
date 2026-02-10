@@ -198,6 +198,9 @@ https://github.com/magician-project/magician_vision_classifier/blob/main/trainCl
 
 ### Model Strategy
 
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/confusion.png?raw=true" /> 
+
 There is **no single “correct” model**.
 
 Current direction:
@@ -269,6 +272,9 @@ https://github.com/magician-project/magician_grabber_annotator/blob/main/wxAnnot
 ---
 
 ## 10. PNG Files & Metadata
+
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/classwelding.jpg?raw=true" /> 
 
 PNG tiles are **training-ready**.
 
