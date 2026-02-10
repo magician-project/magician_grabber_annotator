@@ -132,6 +132,9 @@ Use:
 Tools → Create Dataset
 ```
 
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/dataset_creator.jpg?raw=true" /> 
+
+
 - Select output directory
 - Configure tiling & thresholds
 - Click **Start Dump**
@@ -145,6 +148,10 @@ This generates a `keras_dataset/` directory containing:
 ## 4. Dataset Structure & Classes
 
 Generated datasets follow this structure:
+
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/datasets.jpg?raw=true" /> 
+
 
 ```
 keras_dataset/
