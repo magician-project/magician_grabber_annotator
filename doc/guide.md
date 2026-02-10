@@ -61,20 +61,9 @@ https://arxiv.org/abs/2411.10334
 
 Pretrained model (`.keras` format):  
 http://ammar.gr/poseanddepth/archive/2d_pose_estimation_v180.zip
+ 
 
----
-
-## 2. Environment Setup Notes
-
-- Use **one Python venv** for:
-  - magician_grabber_annotator
-  - magician_vision_classifier
-- Use a **separate venv** for:
-  - magician_general_visual_perception
-
----
-
-## 3. PNM Format & Polarization Data
+## 2. PNM Format & Polarization Data
 
 The datasets use **PNM (Netpbm)** files:
 
@@ -110,13 +99,18 @@ https://github.com/magician-project/magician_grabber_annotator/blob/main/readDat
 
 ---
 
-## 4. Using the Annotation Tool
+## 3. Using the Annotation Tool
 
 After activating the classifier virtual environment:
 
 ```bash
 python3 wxAnnotator.py --db /path/to/dataset/storage
 ```
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/allclass_convnext_tiny.jpg?raw=true" height=200/> 
+
+
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/allclass_convnext_tiny2.jpg?raw=true" height=200/> 
 
 ### Workflow
 
@@ -148,7 +142,7 @@ This generates a `keras_dataset/` directory containing:
 
 ---
 
-## 5. Dataset Structure & Classes
+## 4. Dataset Structure & Classes
 
 Generated datasets follow this structure:
 
@@ -170,7 +164,7 @@ keras_dataset/
 
 ---
 
-## 6. Training the Classifier
+## 5. Training the Classifier
 
 Training script:
 
@@ -206,7 +200,7 @@ Current direction:
 
 ---
 
-## 7. Train / Validation Splits
+## 6. Train / Validation Splits
 
 Two supported strategies:
 
@@ -218,7 +212,7 @@ Two supported strategies:
 
 ---
 
-## 8. Defects to Focus On
+## 7. Defects to Focus On
 
 Based on current results, prioritize:
 
@@ -229,7 +223,7 @@ Based on current results, prioritize:
 
 ---
 
-## 9. Tactile Sensor Data
+## 8. Tactile Sensor Data
 
 Some datasets include tactile sensing:
 
@@ -249,7 +243,7 @@ These contain:
 
 ---
 
-## 10. Annotation JSON Files
+## 9. Annotation JSON Files
 
 Each frame has an accompanying `.json` file containing:
 
@@ -267,7 +261,7 @@ https://github.com/magician-project/magician_grabber_annotator/blob/main/wxAnnot
 
 ---
 
-## 11. PNG Files & Metadata
+## 10. PNG Files & Metadata
 
 PNG tiles are **training-ready**.
 
@@ -289,7 +283,7 @@ This allows:
 
 ---
 
-## 12. Final Notes
+## 11. Final Notes
 
 - The same toolchain can support **any local defect detection task**
 - As long as:
@@ -304,3 +298,4 @@ For further questions, feel free to reach out.
 **Author**  
 Ammar Qammaz  
 http://ammar.gr
+ammarkov@ics.forth.gr
