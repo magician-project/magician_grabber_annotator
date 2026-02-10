@@ -75,6 +75,8 @@ that will also try to create the environment for you:
 ./runAnnotator.sh --from /path/to/dataset/
 ```
 
+For more detailed information please check our [annotator guide documentation](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/annotator_guide.md)
+
 ### Supported inputs
 - **Single image file** (`.jpg`, `.jpeg`, `.png`, `.pnm`)  
 - **Dataset directory** containing images  
@@ -107,13 +109,12 @@ Foreground masks can also be saved if regions are selected.
 
 ---
 
-## ☁️ Uploading Annotations
+## ☁️ Downloading/Uploading Annotations
 
 Annotations can be uploaded to the project server directly from the GUI.  
 When selecting **File → Upload Annotations**, provide your credentials.  
 
-For access requests, contact:  
-📧 ammarkov@ics.forth.gr
+For Magician data access requests, please consult [our data access guide](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/data_access_guide.md)
 
 ---
 
