@@ -18,7 +18,7 @@ The script is interactive and allows you to install only the components you need
 
 ### Main Repositories
 
-#### A) Annotator Tool
+#### A) Annotator Tool (a.k.a. the repository you are in :) )
 **Purpose:** Data inspection, annotation, dataset creation  
 
 Repository:  
@@ -46,24 +46,9 @@ Use this to:
 > Shares the same Python virtual environment as the Annotator
 
 ---
-
-#### C) RGB → 3D Perception
-**Purpose:** 2D pose & depth estimation  
-
-Repository:  
-https://github.com/magician-project/magician_general_visual_perception
-
-- Uses **TensorFlow / Keras**
-- Requires a **separate virtual environment**
-
-Paper:  
-https://arxiv.org/abs/2411.10334
-
-Pretrained model (`.keras` format):  
-http://ammar.gr/poseanddepth/archive/2d_pose_estimation_v180.zip
  
 
-## 2. PNM Format & Polarization Data
+## 2. Polarization Data Format & PNM Files 
 
 The datasets use **PNM (Netpbm)** files:
 
@@ -77,7 +62,7 @@ https://en.wikipedia.org/wiki/Netpbm
 ### Polarization Encoding
 
 Raw `.pnm` frames are:
-- Read from the camera
+- Read/Dumped directly from the SONY XCG-CP510 Polarsense camera
 - De-bayered
 - Converted to **RGBA OpenCV images**
 
