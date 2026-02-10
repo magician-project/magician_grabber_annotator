@@ -31,7 +31,7 @@ Use this to:
 
 ---
 
-#### B) Vision Classifier
+#### B) Vision Classifier (a.k.a. the repository that uses the annotated data)
 **Purpose:** Defect classification training & inference  
 
 Repository:  
@@ -75,7 +75,10 @@ Each channel represents a polarization angle:
 | B     | 90°          |
 | A     | 135°         |
 
-Relevant code:
+An example can be found in this [all-in-one setup script](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm) file
+
+
+Relevant code to use as template to unpack polarized data:
 ```python
 readPolarPNMToRGBA
 ```
