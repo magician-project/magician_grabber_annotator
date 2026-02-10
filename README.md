@@ -33,8 +33,8 @@ The code is pretty low-dependency so it should be compatible with newer versions
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/YourOrg/MagicianAnnotator.git
-   cd MagicianAnnotator
+   git clone https://github.com/magician-project/magician_grabber_annotator
+   cd magician_grabber_annotator
    ```
 
 2. Create and activate a Python virtual environment:
@@ -44,10 +44,18 @@ The code is pretty low-dependency so it should be compatible with newer versions
    ```
 
 3. Install dependencies:
+
+   ```bash
+   sudo apt install python3-venv python3-pip zip wget curl
+   python3 -m pip install -r requirements.txt
+   ```
+ or
+
    ```bash
    sudo apt install python3-venv python3-pip zip wget curl
    python3 -m pip install wxPython opencv-python numpy
    ```
+
 
 ---
 
