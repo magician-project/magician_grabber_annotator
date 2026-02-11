@@ -77,8 +77,12 @@ ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 if useClassifier:
   parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
-  from liveClassifierTorch import ClassifierPnm
-  from EnsembleClassifier  import EnsembleClassifierPnm
+  try:
+    from liveClassifierTorch import ClassifierPnm
+    from EnsembleClassifier  import EnsembleClassifierPnm
+  except Exception as e:
+    print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in wxAnnotator.py")
+    sys.exit(1)
 else:
   class ClassifierPnm:
     def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
@@ -746,7 +750,7 @@ class PhotoCtrl(wx.App):
           self.PhotoMaxSizeWidth   = 475 #<- Small monitor
           self.PhotoMaxSizeHeight  = 400
          
-        windowTitle = 'Magician Annotator Tool v%s' % version
+        windowTitle = 'Magician Annotator Tool v%s'%version
         windowPosition = wx.Point(10,10)
         windowSize = wx.Size(300+self.PhotoMaxSizeWidth*2,self.PhotoMaxSizeHeight+220)
         print("Set window frame to ",windowSize)
@@ -831,8 +835,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
-        self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
-        self.EnsembleClassifierPnm = EnsembleClassifierPnm(
+        if useClassifier: 
+          self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
+          self.EnsembleClassifierPnm = EnsembleClassifierPnm(
                                                             initial_model_cfg = ("../magician_vision_classifier/binary_small_cnn.pth","../magician_vision_classifier/binary_small_cnn.json"),
                                                             model_cfg_list=[("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
                                                                             ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
@@ -1662,7 +1667,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
 
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots 
-                  if self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
+
+                  if useClassifier and self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
                     self.AIAnnotations=None
                     if self.classifierTwoStage.GetValue():
                        print("Image classification done through 2-stage ensemble classifier")
@@ -1689,7 +1695,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   processed_img                  = imgCV
                   self.sam_processor.image       = imgCV
 
-                self.stats.update(
+                if useClassifier and self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
+                  self.stats.update(
                                    frame_id=self.filepath,
                                    user_ann={
                                              "points":     self.points_of_interest,
@@ -1698,7 +1705,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                                             }, 
                                    ai_ann=self.AIAnnotations
                                  )
-                self.stats.print_stats()
+                  self.stats.print_stats()
                 
                 if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
                  print("We don't know Light Direction")
@@ -1706,7 +1713,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                    print("We will try to guess light direction")
                    self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
 
-                if self.useClassifierCheckbox.GetValue():
+                if useClassifier and self.useClassifierCheckbox.GetValue():
                     #processed_img = imgRGBFromClassifier
                     #self.sam_processor.image = imgRGBFromClassifier
                     pass
