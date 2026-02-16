@@ -39,14 +39,14 @@ import threading
 Configurations in one central place
 """
 
-version         = "0.32"
+version         = "0.36"
 useSAM          = False
 useClassifier   = True #<- Switch classifier off
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean"]
 severities      = ["Class A","Class B","Class C"]
 directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
-processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "Sobel","Visible","SAM"]
+processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible","SAM"]
 
 
 #classifier_relative_directory = "../classifier" #Old Name
@@ -361,6 +361,18 @@ def convertRGBCVMATToRGB(rgb_image,brightness=0,contrast=0):
     return rgb_image
 
 
+
+      
+# Normalize each independently to 0-255 for visibility
+def normalize_to_u8(img):
+              minv = np.min(img)
+              maxv = np.max(img)
+              if maxv > minv:
+                  img = (img - minv) / (maxv - minv)
+              else:
+                  img = np.zeros_like(img)
+              return (img * 255.0).astype(np.uint8)
+
 def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
     if image is None:
         print("Error: Unable to read the image.")
@@ -381,6 +393,8 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
 
     brightnessValue = 10* brightness
     contrastValue   = 1.0 + contrast/10
+
+    print("Image Visualization using: ",way)
 
     # Assign each polarization image to a specific channel
     if (way==0):
@@ -420,6 +434,180 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
       rgb_image[:, :, 0] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
       rgb_image[:, :, 1] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
       rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
+    elif (way>=9) and (way<=22):
+      # --- Polarization analysis / Stokes-based visualizations ---
+      # NOTE:
+      #   From a 4-angle DoFP sensor (0/45/90/135), we can compute s0,s1,s2.
+      #   s3 (circular component) normally requires additional measurements (e.g., a retarder),
+      #   so we set s3 = 0 here unless you later provide R/L (or QWP) channels.
+
+      I0   = polarization_0_deg.astype(np.float32)
+      I45  = polarization_45_deg.astype(np.float32)
+      I90  = polarization_90_deg.astype(np.float32)
+      I135 = polarization_135_deg.astype(np.float32)
+
+      # Linear Stokes (per-pixel)
+      S0 = I0 + I90
+      S1 = I0 - I90
+      S2 = I45 - I135
+      S3 = np.zeros_like(S0, dtype=np.float32)
+
+      eps = 1e-6
+
+      # Intensity (average of the 4 angles; stays in 0..255 domain)
+      intensity_f = (I0 + I45 + I90 + I135) / 4.0
+      intensity_u8 = np.clip(intensity_f + brightnessValue, 0, 255).astype(np.uint8)
+
+      # DoLP (linear) and DoP (total)
+      dolp = np.sqrt(S1*S1 + S2*S2) / (S0 + eps)
+      dolp = np.clip(dolp, 0.0, 1.0)
+      dop  = np.sqrt(S1*S1 + S2*S2 + S3*S3) / (S0 + eps)
+      dop  = np.clip(dop, 0.0, 1.0)
+
+      dolp_u8 = (dolp * 255.0).astype(np.uint8)
+      dop_u8  = (dop  * 255.0).astype(np.uint8)
+
+      # AoLP in radians [-pi/2, pi/2], map to OpenCV HSV hue [0..179]
+      aolp = 0.5 * np.arctan2(S2, S1)
+      hue = ((aolp + (np.pi/2.0)) / np.pi) * 179.0
+      hue = np.clip(hue, 0.0, 179.0).astype(np.uint8)
+
+      # Ellipticity angle chi in [-pi/4, pi/4]
+      # chi = 0.5 * atan2(S3, sqrt(S1^2 + S2^2))
+      chi = 0.5 * np.arctan2(S3, np.sqrt(S1*S1 + S2*S2) + eps)
+
+      # DoCP (degree of circular polarization) often defined as |S3|/S0
+      docp = np.abs(S3) / (S0 + eps)
+      docp = np.clip(docp, 0.0, 1.0)
+      docp_u8 = (docp * 255.0).astype(np.uint8)
+
+      # ToP (type of polarization): 0 = linear, 1 = circular (approx from |chi|)
+      top = np.abs(4.0 * chi / np.pi)  # chi in [-pi/4, pi/4] -> top in [0,1]
+      top = np.clip(top, 0.0, 1.0)
+      top_u8 = (top * 255.0).astype(np.uint8)
+
+      # --- Retardation-ish magnitude (assumption-dependent) ---
+      # If we (strongly) assume the light is fully polarized (DoP≈1), then:
+      #   S0^2 = S1^2 + S2^2 + S3^2  =>  |S3| = sqrt(max(S0^2 - S1^2 - S2^2, 0))
+      # This provides ONLY a magnitude for the circular component, not handedness.
+      S3_mag = np.sqrt(np.maximum(S0*S0 - S1*S1 - S2*S2, 0.0))
+      chi_mag = 0.5 * np.arctan2(S3_mag, np.sqrt(S1*S1 + S2*S2) + eps)  # in [0, pi/4]
+      retard_mag = np.clip((4.0 * chi_mag / np.pi), 0.0, 1.0)
+      retard_u8 = (retard_mag * 255.0).astype(np.uint8)
+
+      # Helpers for s0..s3 visualization
+      s0_u8 = np.clip((S0 * 0.5) + brightnessValue, 0, 255).astype(np.uint8)  # divide by 2 to fit in 8-bit
+      # s1,s2,s3 in ~[-255,255] -> map to [0,255] with mid=128
+      def _stokes_signed_to_u8(S):
+          S = np.clip(S, -255.0, 255.0)
+          return (S * 0.5 + 128.0).astype(np.uint8)
+
+      s1_u8 = _stokes_signed_to_u8(S1)
+      s2_u8 = _stokes_signed_to_u8(S2)
+      s3_u8 = _stokes_signed_to_u8(S3)
+
+      # --- Dispatch ---
+      if (way==11):
+         # Intensity (grayscale)
+         rgb_image[:, :, 0] = intensity_u8
+         rgb_image[:, :, 1] = intensity_u8
+         rgb_image[:, :, 2] = intensity_u8
+
+      elif (way==10):
+         # DoLP (false color)
+         rgb_image = cv2.applyColorMap(dolp_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==9):
+         # AoLP (HSV): Hue=AoLP, Sat=DoLP, Val=Intensity
+         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
+         hsv[:, :, 0] = hue
+         hsv[:, :, 1] = dolp_u8
+         hsv[:, :, 2] = intensity_u8
+         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+      elif (way==12):
+         # s0 (grayscale)
+         rgb_image[:, :, 0] = s0_u8
+         rgb_image[:, :, 1] = s0_u8
+         rgb_image[:, :, 2] = s0_u8
+
+      elif (way==13):
+         # s1
+         rgb_image = cv2.applyColorMap(s1_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==14):
+         # s2
+         rgb_image = cv2.applyColorMap(s2_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==15):
+         # s3 (will be ~0 with 4-angle DoFP input)
+         rgb_image = cv2.applyColorMap(s3_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==16):
+         # AoLP (light): Hue=AoLP, Sat=DoP, Val=255
+         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
+         hsv[:, :, 0] = hue
+         hsv[:, :, 1] = dop_u8
+         hsv[:, :, 2] = 255
+         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+      elif (way==17):
+         # AoLP (dark): Hue=AoLP, Sat=DoP, Val=Intensity
+         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
+         hsv[:, :, 0] = hue
+         hsv[:, :, 1] = dop_u8
+         hsv[:, :, 2] = intensity_u8
+         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+      elif (way==18):
+         # DoP (false color)
+         rgb_image = cv2.applyColorMap(dop_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==19):
+         # DoCP (false color)  (likely 0 with 4-angle DoFP input)
+         rgb_image = cv2.applyColorMap(docp_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==20):
+         # ToP (false color): 0=linear, 1=circular (approx; needs S3 for non-zero)
+         rgb_image = cv2.applyColorMap(top_u8, cv2.COLORMAP_TURBO)
+
+      elif (way==22):
+         # Retardation-ish magnitude (false color; magnitude-only, assumption-dependent)
+         rgb_image = cv2.applyColorMap(retard_u8, cv2.COLORMAP_TURBO)
+      else:
+         # CoP (chirality): Hue encodes chi sign/magnitude, shown at full value
+         # Map chi [-pi/4, pi/4] -> hue [0..179]
+         hue_chi = ((chi + (np.pi/4.0)) / (np.pi/2.0)) * 179.0
+         hue_chi = np.clip(hue_chi, 0.0, 179.0).astype(np.uint8)
+         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
+         hsv[:, :, 0] = hue_chi
+         hsv[:, :, 1] = 255
+         hsv[:, :, 2] = 255
+         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    elif way == 23:
+          # --- Max / Min / Avg visualization ---
+          # Convert to float32 to avoid overflow / clipping
+          I0   = polarization_0_deg.astype(np.float32)
+          I45  = polarization_45_deg.astype(np.float32)
+          I90  = polarization_90_deg.astype(np.float32)
+          I135 = polarization_135_deg.astype(np.float32)
+
+          # Stack safely
+          stack = np.stack([I0, I45, I90, I135], axis=2)
+      
+          max_img = np.max(stack, axis=2)
+          min_img = np.min(stack, axis=2)
+          avg_img = np.mean(stack, axis=2)
+      
+          max_u8 = normalize_to_u8(max_img)
+          min_u8 = normalize_to_u8(min_img)
+          avg_u8 = normalize_to_u8(avg_img)
+      
+          # OpenCV uses BGR
+          rgb_image[:, :, 0] = avg_u8   # B
+          rgb_image[:, :, 1] = min_u8   # G
+          rgb_image[:, :, 2] = max_u8   # R
+          print("\n\n\nMIN/MAX/AVG vis ",np.min(max_img), np.max(max_img), np.mean(avg_img) )
 
     if (contrastValue!=0.0):
            rgb_image = adjust_contrast(rgb_image,contrastValue)
@@ -788,17 +976,19 @@ class PhotoCtrl(wx.App):
         self.clickRatioX = 1.0
         self.clickRatioY = 1.0
 
+        self.datasetStartFrame = 0
+        self.datasetEndFrame   = -1   # will become max-1
+
         self.viewedImageFullWidth  = 0
         self.viewedImageFullHeight = 0
         self.viewedImageViewWidth  = 0
         self.viewedImageViewHeight = 0           
-        self.processingWay = 0
+        self.processingWay     = 0
         self.brightness_offset = 0
-        self.contrast_offset = 0
-        self.scrollStep  = 10
+        self.contrast_offset   = 0
+        self.scrollStep        = 10
 
         self.local_base_path = "./"
-        self.maintainPoints = False  # Initial state
         self.controlsData = []
 
         # Create global instance once
@@ -825,6 +1015,45 @@ NE', 'ID_UNDO', 'ID_UNINDENT', 'ID_UP', 'ID_VIEW_DETAILS', 'ID_VIEW_LARGEICONS',
  'ID_VIEW_LIST', 'ID_VIEW_SMALLICONS', 'ID_VIEW_SORTDATE', 'ID_VIEW_SORTNAME', '
 ID_VIEW_SORTSIZE', 'ID_VIEW_SORTTYPE', 'ID_YES', 'ID_YESTOALL', 'ID_ZOOM_100', '
 ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
+
+
+   def _clamp_range(self, start, end, total):
+       if total <= 0:
+           return 0, -1
+       start = 0 if start is None else int(start)
+       end   = (total - 1) if end is None else int(end)
+   
+       start = max(0, min(start, total - 1))
+       end   = max(0, min(end, total - 1))
+       if end < start:
+           end = start
+       return start, end
+
+   def _ui_max(self):
+       return max(0, self.datasetEndFrame - self.datasetStartFrame)
+
+   def _stream_from_ui(self, ui_idx):
+       return self.datasetStartFrame + ui_idx
+
+   def _ui_from_stream(self, stream_idx):
+       return stream_idx - self.datasetStartFrame
+
+   def _applyDatasetRangeFromMetadata(self):
+       total = self.folderStreamer.max()
+   
+       start = None
+       end   = None
+       if self.metadata:
+           start = self.metadata.get("startFrame", None)
+           end   = self.metadata.get("endFrame", None)
+   
+       start, end = self._clamp_range(start, end, total)
+
+       self.datasetStartFrame = start
+       self.datasetEndFrame   = end
+   
+       print("Dataset range:", self.datasetStartFrame, "..", self.datasetEndFrame, "total:", total)
+
 
    def initializeModels(self):
         if (useSAM):
@@ -1073,6 +1302,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.removePointBtn = wx.Button(parent, label='Remove Selected Point')
     self.removePointBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
 
+    # Copy points from previous frame
+    self.copyPrevPointsBtn = wx.Button(parent, label='Copy Previous Points')
+    self.copyPrevPointsBtn.Bind(wx.EVT_BUTTON, self.onCopyPreviousPoints)
+
     # Action buttons
     self.autoBtn = wx.Button(parent, label='Auto')
     self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
@@ -1087,10 +1320,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
 
     # Checkboxes (up to Guess lighting direction)
-    self.maintainPointsCheckbox = wx.CheckBox(parent, label="Maintain Points for next image")
-    self.maintainPoints = False  # Initial state
-    self.maintainPointsCheckbox.SetValue(self.maintainPoints)
-
     self.incrementFrameAfterAnAdditionCheckbox = wx.CheckBox(parent, label="Increment frame after defect annotation")        
     self.incrementFrameAfterAnAddition=True
     self.incrementFrameAfterAnAdditionCheckbox.SetValue(self.incrementFrameAfterAnAddition)
@@ -1115,11 +1344,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     s.Add(self.pointLabel, 0, wx.ALL | wx.EXPAND, 5)
     s.Add(self.pointList, 1, wx.ALL | wx.EXPAND, 5)
-    s.Add(self.removePointBtn, 0, wx.ALL, 5)
+
+    pointButtons = wx.BoxSizer(wx.HORIZONTAL)
+    pointButtons.Add(self.removePointBtn, 1, wx.ALL | wx.EXPAND, 5)
+    pointButtons.Add(self.copyPrevPointsBtn, 1, wx.ALL | wx.EXPAND, 5)
+    s.Add(pointButtons, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 0)
 
     s.Add(comboButtons, 0, wx.ALL, 5)
-
-    s.Add(self.maintainPointsCheckbox, 0, wx.ALL, 5)
     s.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
     s.Add(self.guessLightingCheckbox, 0, wx.ALL, 5)
 
@@ -1589,11 +1820,56 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.lightComboBox.SetValue("Unknown")
 
 
+   def openDataset(self, base_dir, streamer, is_directory=True):
+    """
+    base_dir: local path where info.json/controller.csv/tactile live
+              (for network: the cache dir, e.g. selectedDirectory)
+    streamer: FolderStreamer or HTTPFolderStreamer
+    is_directory: whether we should run directory-mode behaviors
+    """
+    self.folderStreamer = streamer
+    self.filePathIsDirectory = is_directory
+
+    # Load metadata/controls/sensors
+    self.populateMetaData(f"{base_dir}/info.json")
+    self.loadControlsCSV(f"{base_dir}/controller.csv")
+
+    # If tactile plots exist under base_dir/tactile/
+    self._loadSensorPlotsNewDataset(directory=f"{base_dir}/tactile/")
+
+    # Apply startFrame/endFrame
+    self._applyDatasetRangeFromMetadata()
+
+    # Configure slider to reflect range length (relative)
+    self.scrollBar.SetMin(0)
+    self.scrollBar.SetMax(self._ui_max())
+
+    # Jump to first visible frame in range
+    self.gotoFrameUI(0)
+
+    # Optional: reset placeholders
+    self._initializeSensorPlotPlaceholders(parent=self.controlsPanel)
+
+   def gotoFrameUI(self, ui_idx):
+    ui_idx = max(0, min(ui_idx, self._ui_max()))
+    self.scrollBar.SetValue(ui_idx)
+
+    stream_idx = self._stream_from_ui(ui_idx)
+    self.folderStreamer.select(stream_idx)
+
+    if self.filePathIsDirectory:
+        self.onSave(None)
+
+    self.filepath = self.folderStreamer.getImage()
+    self.onProcessNewImageSample(self.filepath)
+    self.updateMinMaxSlider()
+    self.onView()
+
+
+
    def onProcessNewImageSample(self,filepath):
-           if (self.maintainPointsCheckbox.GetValue()):
-               print("Maintaining previous point lists")
-           else:
-               self.cleanThisFrameMetaData()
+           # Always start from a clean frame; we may restore JSON or apply carried points below
+           self.cleanThisFrameMetaData()
 
            #if (checkIfFileExists("%s.json"%filepath)):
            #    print("There are saved data that need to be restored here")
@@ -1602,12 +1878,25 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            if (checkIfFileExists(jsonPath)):
                print("There are saved data that need to be restored here")
                self.restoreFromJSON(jsonPath)
-           
 
+           json_exists = checkIfFileExists(jsonPath)
+
+           # Keep json_exists used (debug/logic elsewhere)
+           _ = json_exists
+
+           
+           """
            if hasattr(self, 'controlsData'):
                    frame_idx = self.scrollBar.GetValue()
                    if 0 <= frame_idx < len(self.controlsData):
                        self.updateControlsTab(self.controlsData[frame_idx],sample_number = frame_idx)
+           """
+           ui_idx = self.scrollBar.GetValue()
+           stream_idx = self._stream_from_ui(ui_idx)
+
+           if hasattr(self, 'controlsData'):
+               if 0 <= stream_idx < len(self.controlsData):
+                   self.updateControlsTab(self.controlsData[stream_idx], sample_number=stream_idx)
 
 
            #self.filehash = get_md5(filepath) 
@@ -1646,6 +1935,36 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.processingWay=7
            elif (processingString=="Polarization_135_degree"):
                self.processingWay=8
+           elif (processingString=="AoLP"):
+               self.processingWay=9
+           elif (processingString=="DoLP"):
+               self.processingWay=10
+           elif (processingString=="Intensity"):
+               self.processingWay=11
+           elif (processingString=="s0"):
+               self.processingWay=12
+           elif (processingString=="s1"):
+               self.processingWay=13
+           elif (processingString=="s2"):
+               self.processingWay=14
+           elif (processingString=="s3"):
+               self.processingWay=15
+           elif (processingString=="AoLP (light)"):
+               self.processingWay=16
+           elif (processingString=="AoLP (dark)"):
+               self.processingWay=17
+           elif (processingString=="DoP"):
+               self.processingWay=18
+           elif (processingString=="DoCP"):
+               self.processingWay=19
+           elif (processingString=="ToP"):
+               self.processingWay=20
+           elif (processingString=="CoP"):
+               self.processingWay=21
+           elif (processingString=="RetardationMag"):
+               self.processingWay=22
+           elif (processingString=="MaxMinAvgRGB"):
+               self.processingWay=23
            elif (processingString=="Sobel"):
                self.processingWay=3
            elif (processingString=="Visible"):
@@ -1790,7 +2109,25 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
    def onNewInputPath(self, newPath):
-        print("\n\n\n\nNew Input Path Received : ",newPath)
+    print("\n\n\n\nNew Input Path Received : ", newPath)
+    self.filepath = newPath
+    if self.filepath != "":
+        self.filePathIsDirectory = checkIfPathIsDirectory(self.filepath)
+        if self.filePathIsDirectory:
+            self.folderStreamer.loadNewDataset(self.filepath)  # FolderStreamer
+            self.openDataset(
+                base_dir=self.filepath,
+                streamer=self.folderStreamer,
+                is_directory=True
+            )
+        else:
+            self.onProcessNewImageSample(self.filepath)
+
+
+
+
+   def onNewInputPathOLD(self, newPath):
+        print("\n\n\n\n   New Input Path Received : ",newPath)
         self.filepath = newPath
         if (self.filepath!=""):
            self.filePathIsDirectory = checkIfPathIsDirectory(self.filepath)
@@ -1798,6 +2135,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.folderStreamer.loadNewDataset(self.filepath)
                self.directoryList = list_image_files(self.filepath)
                #self.directoryListIndex = 0
+
+               """
                self.folderStreamer.select(0)
                print("Directory mode")
                #print("Directory mode : ",self.directoryList)
@@ -1806,6 +2145,38 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                #self.filepath = self.directoryList[self.directoryListIndex]
                self.filepath = self.folderStreamer.getImage()
                self.updateMinMaxSlider()
+               """
+
+               print("Directory mode")
+
+               # Load metadata first
+               self.populateMetaData("%s/info.json" % self.filepath)
+
+               # Determine starting frame
+               start_frame = 0
+               if self.metadata and "startFrame" in self.metadata:
+                   try:
+                       start_frame = int(self.metadata["startFrame"])
+                       print("Starting from frame:", start_frame)
+                   except Exception:
+                       start_frame = 0
+
+               # Clamp to valid range
+               start_frame = max(0, min(start_frame, self.folderStreamer.max()))
+
+               # Select frame
+               self.folderStreamer.select(start_frame)
+
+               self.loadControlsCSV("%s/controller.csv" % self.filepath)
+
+               self.filepath = self.folderStreamer.getImage()
+               self.updateMinMaxSlider()
+
+               # Also update slider UI position
+               self.scrollBar.SetValue(start_frame)
+
+
+
                self._initializeSensorPlotPlaceholders(parent=self.controlsPanel)
 
 
@@ -1844,7 +2215,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             # Handle case where user cancels the input
             pass
-
    def onOpenDirectory(self, event):
         dialog = wx.DirDialog(None, "Choose a directory:", style=wx.DD_DEFAULT_STYLE | wx.DD_NEW_DIR_BUTTON)
 
@@ -1867,13 +2237,26 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             #self.onNewInputPath(dlg.selectedDataset)
             from HTTPStream import HTTPFolderStreamer 
             self.folderStreamer = HTTPFolderStreamer(provider=dlg.selectedProvider, dataset=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
-            self.populateMetaData("%s/info.json" % selectedDirectory)
+
+
+            self.openDataset(
+                             base_dir=selectedDirectory,   # cache dir where info.json/controller.csv live
+                             streamer=self.folderStreamer,
+                             is_directory=True
+                            )
+            #self.onNewInputPath(selectedDirectory)
+  
+            #self.populateMetaData("%s/info.json" % selectedDirectory)
+            """
             self.loadControlsCSV("%s/controller.csv" % selectedDirectory)
             self._loadSensorPlotsNewDataset(directory = "%s/tactile/" %  self.folderStreamer.local_dir)
             self.onNext(event)
             self.onPrevious(event)
+            """
             app.photoTxt.SetValue(dlg.selectedDirectory)
         dlg.Destroy()
+
+
 
    def onBrowse(self, event):
         wildcard = "JPEG files (*.jpg)|*.jpg"
@@ -1996,6 +2379,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         #if selected_index != -1:
         #    wx.MessageBox(f"Selected Point: {self.points_of_interest[selected_index]}")
 
+   """
    def updateMinMaxSlider(self):
         cur      = self.folderStreamer.current()
         maxim    = self.folderStreamer.max()
@@ -2005,7 +2389,27 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.scrollBar.SetMax(maxim)
         print("setScrollbar Value/Max ( ",cur,",",maxim,")")
         self.instructLbl.SetLabel("Sample %u/%u - %0.2f%%  - Focus %0.2f" % (cur,maxim,percent,self.tenengrad_focus_measure) )
+   """
+   def updateMinMaxSlider(self):
+    stream_cur = self.folderStreamer.current()
+    ui_cur     = self._ui_from_stream(stream_cur)
+    ui_cur     = max(0, min(ui_cur, self._ui_max()))
 
+    ui_max = self._ui_max()
+    percent = 0.0 if ui_max == 0 else 100.0 * (ui_cur / ui_max)
+
+    self.scrollBar.SetValue(ui_cur)
+    self.scrollBar.SetMax(ui_max)
+
+    # Show absolute frame too (useful!)
+    abs_frame = self._stream_from_ui(ui_cur)
+    self.instructLbl.SetLabel(
+        "Sample %u/%u (abs %u) - %0.2f%%  - Focus %0.2f"
+        % (ui_cur, ui_max, abs_frame, percent, self.tenengrad_focus_measure)
+    )
+
+
+   """
    def onScroll(self, event):
         # Handle scroll events here
         #scroll_position = self.scrollBar.GetThumbPosition()
@@ -2021,6 +2425,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.onProcessNewImageSample(self.filepath)
                self.updateMinMaxSlider()
                self.onView()
+   """
+   def onScroll(self, event):
+    ui_idx = self.scrollBar.GetValue()
+    print("Scroll Position:", ui_idx, "/", self.scrollBar.GetMax())
+    self.gotoFrameUI(ui_idx)
+
+
+
 
    def openJumpToFrameDialog(self):
     dlg = wx.TextEntryDialog(
@@ -2119,6 +2531,17 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self._loadSensorPlotsNewSample(sample_number=sample_number)
 
 
+   def onNext(self, event):
+    ui = self.scrollBar.GetValue()
+    ui = 0 if ui >= self._ui_max() else (ui + 1)
+    self.gotoFrameUI(ui)
+
+   def onPrevious(self, event):
+    ui = self.scrollBar.GetValue()
+    ui = self._ui_max() if ui <= 0 else (ui - 1)
+    self.gotoFrameUI(ui)
+
+   """
    def onPrevious(self, event):
         print("Previous")
         self.folderStreamer.previous()
@@ -2138,6 +2561,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.filepath = self.folderStreamer.getImage()
                self.onProcessNewImageSample(self.filepath)
                self.onView()
+   """
 
    def onRemovePoint(self, event):
         selected_index = self.pointList.GetSelection()
@@ -2146,6 +2570,58 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             del self.points_classes[selected_index]
             del self.points_severities[selected_index]
             self.updatePointList()
+
+   def onCopyPreviousPoints(self, event):
+        """Copy points/classes/severities from the previous frame's JSON (if it exists) into the current frame."""
+        try:
+            cur_idx = self.folderStreamer.current()
+        except Exception:
+            wx.MessageBox("No dataset loaded.", "Copy Previous Points", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        prev_idx = cur_idx - 1
+        if prev_idx < 0:
+            wx.MessageBox("You are already on the first frame; there is no previous frame to copy from.",
+                         "Copy Previous Points", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        # Temporarily jump to previous to compute JSON path, then restore.
+        try:
+            self.folderStreamer.select(prev_idx)
+            prev_json = self.folderStreamer.getJSON()
+        finally:
+            self.folderStreamer.select(cur_idx)
+
+        if not checkIfFileExists(prev_json):
+            wx.MessageBox("Previous frame has no saved JSON annotations to copy from.",
+                         "Copy Previous Points", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        try:
+            with open(prev_json, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            wx.MessageBox(f"Failed to read previous JSON: {e}",
+                         "Copy Previous Points", wx.OK | wx.ICON_ERROR)
+            return
+
+        pts = list(data.get('pointClicks', []))
+        cls = list(data.get('pointClasses', []))
+        sev = list(data.get('pointSeverities', []))
+
+        # Normalize lengths
+        if len(cls) < len(pts):
+            cls.extend([options[0]] * (len(pts) - len(cls)))
+        if len(sev) < len(pts):
+            sev.extend([severities[0]] * (len(pts) - len(sev)))
+        cls = cls[:len(pts)]
+        sev = sev[:len(pts)]
+
+        self.points_of_interest = pts
+        self.points_classes = cls
+        self.points_severities = sev
+        self.updatePointList()
+        self.onNext(event)
 
    def onRemoveRegion(self, event):
         selected_index = self.regionList.GetSelection()

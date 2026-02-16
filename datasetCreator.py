@@ -38,6 +38,7 @@ import cv2
 import random
 
 
+import json
 #from memory_profiler import profile
 
 
@@ -298,11 +299,41 @@ class ProcessorThread(threading.Thread):
                 if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')) and os.path.exists(entry_path + '.json'):
                     file_list.append(entry_path)
 
+
+
+            # Apply optional frame limits from info.json (startFrame/endFrame)
+            start_frame = 0
+            end_frame = len(file_list) - 1
+            info_path = os.path.join(dataset_dir, "info.json")
+            if os.path.isfile(info_path):
+                try:
+                    with open(info_path, "r") as f:
+                        info = json.load(f)
+                    if "startFrame" in info:
+                        start_frame = int(info.get("startFrame", start_frame))
+                    if "endFrame" in info:
+                        end_frame = int(info.get("endFrame", end_frame))
+                except Exception as e:
+                    print("Warning: could not parse frame limits from", info_path, "->", e)
+
+            # Clamp + slice list (indices correspond to sorted file order)
+            if len(file_list) > 0:
+                start_frame = max(0, min(start_frame, len(file_list) - 1))
+                end_frame = max(0, min(end_frame, len(file_list) - 1))
+                if end_frame < start_frame:
+                    end_frame = start_frame
+                if start_frame != 0 or end_frame != len(file_list) - 1:
+                    print(f"Applying frame range {start_frame}..{end_frame} for {dataset_dir} (total {len(file_list)})")
+                file_list = file_list[start_frame:end_frame + 1]
+            else:
+                start_frame = 0
+                end_frame = -1
+
             # report start of dataset
             #wx.CallAfter(self.ui_callbacks['on_dataset_start'], dataset_dir, len(file_list), dir_index, total_dirs)
 
             files_processed = 0
-            for file_index, file_path in enumerate(file_list, start=1):
+            for file_index, file_path in enumerate(file_list, start=start_frame+1):
                 if self._stop:
                     break
  
