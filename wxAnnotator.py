@@ -39,9 +39,9 @@ import threading
 Configurations in one central place
 """
 
-version         = "0.36"
+version         = "0.42"
 useSAM          = False
-useClassifier   = True #<- Switch classifier off
+useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean"]
 severities      = ["Class A","Class B","Class C"]
@@ -70,7 +70,17 @@ from classifierGrading import AnnotationCorrelationStats
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
+from readData import debayerPolarImage,repackPolarToMosaic
 
+"""
+def debayerPolarImage(image): 
+ # Split the A, B, C, and D values into separate monochrome images
+ polarization_90_deg   = image[0::2, 0::2]
+ polarization_45_deg   = image[0::2, 1::2]
+ polarization_135_deg  = image[1::2, 0::2]
+ polarization_0_deg    = image[1::2, 1::2]
+ return polarization_0_deg,polarization_45_deg,polarization_90_deg,polarization_135_deg      
+"""
 #-------------------------------------------------------------------------------
 # Make Classifier completely seperatable from the rest of the codebase
 #-------------------------------------------------------------------------------
@@ -188,13 +198,6 @@ def list_image_files(directory):
 
     return image_files
 
-def debayerPolarImage(image): 
- # Split the A, B, C, and D values into separate monochrome images
- polarization_90_deg   = image[0::2, 0::2]
- polarization_45_deg   = image[0::2, 1::2]
- polarization_135_deg  = image[1::2, 0::2]
- polarization_0_deg    = image[1::2, 1::2]
- return polarization_0_deg,polarization_45_deg,polarization_90_deg,polarization_135_deg      
 
 def loadMoreClasses(filename,classes_dict):
     with open("%s.json"%filename) as json_data:
@@ -1913,6 +1916,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   print("Could not load ",filepath)
                   return 
 
+
+           # if we got a 4-channel PNG (p0,p45,p90,p135), repack to the original 2x2 mosaic
+           if (imgPNM.ndim == 3) and (imgPNM.shape[2] == 4):
+               p0   = imgPNM[:, :, 0]
+               p45  = imgPNM[:, :, 1]
+               p90  = imgPNM[:, :, 2]
+               p135 = imgPNM[:, :, 3]
+               print("Re-bayering .PNG file to transparently treat it as .PNM")
+               imgPNM = repackPolarToMosaic(p0, p45, p90, p135)   # now 2D, as classifier expects
+               imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])       # keep existing visualization logic happy
+
+
            print("Raw image dims for ",filepath," ",imgCV.shape)
            self.viewedImageFullWidth  = imgCV.shape[1]
            self.viewedImageFullHeight = imgCV.shape[0] 
@@ -2085,7 +2100,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         """
         
    def onAbout(self, event):
-        wx.MessageBox("Made by Ammar Qammaz a.k.a. AmmarkoV\nhttp://ammar.gr/\nVersion %s"%version, "About", wx.OK | wx.ICON_INFORMATION)
+        wx.MessageBox("Written by Ammar Qammaz a.k.a. AmmarkoV\nhttp://ammar.gr/\nVersion %s\nhttps://github.com/magician-project/magician_grabber_annotator\nPsalm 32:8"%version, "About", wx.OK | wx.ICON_INFORMATION)
 
    def onRescan(self, newPath):
         self.onProcessNewImageSample(self.filepath)

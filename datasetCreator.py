@@ -36,6 +36,7 @@ import time
 import shutil
 import cv2
 import random
+import re
 
 
 import json
@@ -375,9 +376,27 @@ class MainFrame(wx.Frame):
 
 
 
+
+        # --- Regex select + refresh row ---
+        regex_row = wx.BoxSizer(wx.HORIZONTAL)
+
+        regex_lbl = wx.StaticText(panel, label="Regex:")
+        regex_row.Add(regex_lbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+
+        self.regex_ctrl = wx.TextCtrl(panel, style=wx.TE_PROCESS_ENTER)
+        self.regex_ctrl.SetHint("e.g. ^2026_|(Altinay|iit)")
+        self.regex_ctrl.SetToolTip("Datasets matching this regex will be auto-selected (checked).")
+        self.regex_ctrl.Bind(wx.EVT_TEXT, self.on_regex_changed)
+        self.regex_ctrl.Bind(wx.EVT_TEXT_ENTER, self.on_regex_changed)
+        regex_row.Add(self.regex_ctrl, 1, wx.EXPAND | wx.RIGHT, 8)
+
         refresh_btn = wx.Button(panel, label="Refresh list")
         refresh_btn.Bind(wx.EVT_BUTTON, self.on_refresh)
-        left_sizer.Add(refresh_btn, 0, wx.ALIGN_RIGHT | wx.RIGHT | wx.BOTTOM, 5)
+        regex_row.Add(refresh_btn, 0)
+
+        left_sizer.Add(regex_row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
+
+
 
 
 
@@ -552,7 +571,7 @@ class MainFrame(wx.Frame):
             if has_json:
                jsonFilesCount  = count_files_with_extension(p,".json")
                label           = label + " [%u json]" % jsonFilesCount
-            imageFilesCount = count_files_with_extension(p,".pnm")
+            imageFilesCount = count_files_with_extension(p,".pnm") + count_files_with_extension(p,".png")
             label           = label + " [%u .img]" % imageFilesCount
             #----------------------------------------------------------
             items.append(label)
@@ -570,6 +589,12 @@ class MainFrame(wx.Frame):
             except Exception:
                 pass
 
+        # If user has a regex set, re-apply it after rebuilding the list
+        if hasattr(self, "regex_ctrl"):
+            self.apply_regex_selection()
+
+
+
     def on_merge(self, event):
         self.log("Executing merging application")
         os.system("python3 mergeDatasets.py %s" % self.dirpicker.GetPath())
@@ -578,6 +603,42 @@ class MainFrame(wx.Frame):
         self.populate_dataset_list()
         self.log("Refreshed dataset list")
 
+
+    def apply_regex_selection(self):
+        # If list is empty / placeholder, do nothing
+        if not hasattr(self, "dataset_paths") or self.checklist.GetCount() == 0:
+            return
+
+        pattern = ""
+        if hasattr(self, "regex_ctrl") and self.regex_ctrl is not None:
+            pattern = self.regex_ctrl.GetValue().strip()
+
+        # Empty pattern: do nothing (keeps user’s manual selection)
+        if pattern == "":
+            return
+
+        try:
+            rx = re.compile(pattern)
+            self.regex_ctrl.SetBackgroundColour(wx.NullColour)
+            self.regex_ctrl.SetToolTip("Datasets matching this regex will be auto-selected (checked).")
+        except re.error as e:
+            # Invalid regex: highlight field, don’t change selection
+            self.regex_ctrl.SetBackgroundColour(wx.Colour(255, 220, 220))
+            self.regex_ctrl.SetToolTip(f"Invalid regex: {e}")
+            self.regex_ctrl.Refresh()
+            return
+
+        # Check/uncheck items based on match against label OR folder name
+        for i in range(len(self.dataset_paths)):
+            label = self.checklist.GetString(i)
+            folder = os.path.basename(self.dataset_paths[i])
+
+            match = (rx.search(label) is not None) or (rx.search(folder) is not None)
+            self.checklist.Check(i, match)
+
+    def on_regex_changed(self, event):
+        self.apply_regex_selection()
+        event.Skip()
 
     def maybe_clear_target_dir(self, target_dir):
      # Check if target_dir exists and is not empty

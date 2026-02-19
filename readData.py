@@ -269,7 +269,17 @@ def debayerPolarImage(image):
  polarization_0_deg    = image[1::2, 1::2]
  return polarization_0_deg,polarization_45_deg,polarization_90_deg,polarization_135_deg      
 
+def repackPolarToMosaic(p0, p45, p90, p135):
+    h, w = p0.shape
+    mosaic = np.empty((h * 2, w * 2), dtype=p0.dtype)
+    mosaic[0::2, 0::2] = p90
+    mosaic[0::2, 1::2] = p45
+    mosaic[1::2, 0::2] = p135
+    mosaic[1::2, 1::2] = p0
+    return mosaic
 
+
+"""
 def readPolarPNMToRGBALive(image):
     # Load the image
     image = np.squeeze(image)
@@ -288,6 +298,46 @@ def readPolarPNMToRGBALive(image):
     rgba_image[:, :, 2] = polarization_90_deg
     rgba_image[:, :, 3] = polarization_135_deg
     return rgba_image
+"""
+
+
+def readPolarPNMToRGBALive(image):
+    """
+    Accepts either:
+      (A) DoFP mosaic single-channel image (H×W)  -> debayers to (H/2×W/2×4)
+      (B) Already-packed polarization image (H×W×4) -> returned as-is
+
+    Channel convention for already-packed PNGs (as written by cv2.imwrite on np.stack([p0,p45,p90,p135])):
+      ch0=p0, ch1=p45, ch2=p90, ch3=p135
+    """
+    image = np.squeeze(image)
+
+    # Case (B): already RGBA/polar packed
+    if (image.ndim == 3) and (image.shape[2] == 4):
+        return image
+
+    # Case (A): classic mosaic (must be 2D)
+    if image.ndim != 2:
+        raise ValueError(f"readPolarPNMToRGBALive: expected 2D mosaic or 4-channel image, got shape {image.shape}")
+
+    height, width = image.shape
+
+    # Split into polarization images
+    polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg = debayerPolarImage(image)
+
+    # Create an RGBA image (preserve dtype)
+    rgba_image = np.zeros((height // 2, width // 2, 4), dtype=image.dtype)
+
+    # Assign each polarization image to a specific channel
+    rgba_image[:, :, 0] = polarization_0_deg
+    rgba_image[:, :, 1] = polarization_45_deg
+    rgba_image[:, :, 2] = polarization_90_deg
+    rgba_image[:, :, 3] = polarization_135_deg
+    return rgba_image
+
+
+
+
 
 def readPolarPNMToRGBA(image_path):
     # Load the image
@@ -340,7 +390,9 @@ def loadImage(filename,
   tiles_annotated_by_ai = 0
 
   if (".png" in filename) or (".pnm" in filename) or (".jpeg" in filename) or (".jpeg" in filename):
+
    rgba_image = readPolarPNMToRGBA(filename) 
+
    if rgba_image is None:
     print(filename," is not an image ")
     return tiles, tile_classes, tile_info, tiles_annotated_by_ai # Return nothing
