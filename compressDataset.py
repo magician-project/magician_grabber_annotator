@@ -78,27 +78,82 @@ def copy_tree_and_convert_pnm(input_dir: str, output_dir: str) -> int:
 
     return converted
 
+def _atomic_replace_dir(src_new: str, dst_final: str):
+    """
+    Replace dst_final with src_new safely:
+      - move dst_final -> backup
+      - move src_new  -> dst_final
+      - delete backup
+    """
+    dst_final = os.path.abspath(dst_final)
+    src_new = os.path.abspath(src_new)
+
+    if not os.path.isdir(src_new):
+        raise RuntimeError(f"Temp output directory does not exist: {src_new}")
+
+    parent = os.path.dirname(dst_final)
+    base = os.path.basename(dst_final.rstrip(os.sep))
+    backup = os.path.join(parent, f".{base}.backup_old")
+
+    # Ensure no stale backup
+    if os.path.exists(backup):
+        shutil.rmtree(backup)
+
+    # Move original aside (if exists)
+    if os.path.exists(dst_final):
+        os.replace(dst_final, backup)
+
+    # Move new into place
+    os.replace(src_new, dst_final)
+
+    # Remove backup
+    if os.path.exists(backup):
+        shutil.rmtree(backup)
+
 
 def main():
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python convert.py <input_directory> <output_directory>")
+        print("  python compressDataset.py <input_directory> [output_directory]")
+        print("")
+        print("Behavior:")
+        print("  - If output_directory is given: copy+convert into output_directory")
+        print("  - If only input_directory is given: convert IN PLACE (safe swap)")
         sys.exit(1)
 
-    input_dir = sys.argv[1]
-    output_dir = sys.argv[2] if len(sys.argv) >= 3 else None
+    input_dir  = os.path.abspath(sys.argv[1])
+    output_dir = os.path.abspath(sys.argv[2]) if len(sys.argv) >= 3 else None
 
     if not os.path.isdir(input_dir):
         print(f"Error: {input_dir} is not a valid directory")
         sys.exit(1)
 
+    # --- In-place mode ---
     if output_dir is None:
-        print("Error: output_directory is required for safe copying (to avoid clobbering).")
-        print("Usage: python convert.py <input_directory> <output_directory>")
-        sys.exit(1)
+        parent = os.path.dirname(input_dir)
+        base = os.path.basename(input_dir.rstrip(os.sep))
+        temp_out = os.path.join(parent, f".{base}.tmp_compress")
 
+        if os.path.exists(temp_out):
+            print(f"Error: temp folder already exists: {temp_out}")
+            print("Delete it if it's leftover from a previous run.")
+            sys.exit(1)
+
+        print(f"Input directory (in-place): {input_dir}")
+        print(f"Temp output directory      : {temp_out}")
+
+        ensure_dir(temp_out)
+        num = copy_tree_and_convert_pnm(input_dir, temp_out)
+
+        print(f"\nConverted {num} .pnm files. Swapping temp into place...")
+        _atomic_replace_dir(temp_out, input_dir)
+
+        print("Done (in-place).")
+        return
+
+    # --- Two-path mode (copy) ---
     if os.path.abspath(input_dir) == os.path.abspath(output_dir):
-        print("Error: input_directory and output_directory must be different when copying the whole tree.")
+        print("Error: input_directory and output_directory must be different when using two-path mode.")
         sys.exit(1)
 
     ensure_dir(output_dir)
@@ -109,7 +164,6 @@ def main():
     num = copy_tree_and_convert_pnm(input_dir, output_dir)
 
     print(f"\nDone. Converted {num} .pnm files and copied everything else.")
-
 
 if __name__ == "__main__":
     main()
