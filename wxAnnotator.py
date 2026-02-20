@@ -46,7 +46,7 @@ combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean"]
 severities      = ["Class A","Class B","Class C"]
 directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
-processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible","SAM"]
+processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Normals", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible","SAM"]
 
 
 #classifier_relative_directory = "../classifier" #Old Name
@@ -587,6 +587,43 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
          hsv[:, :, 1] = 255
          hsv[:, :, 2] = 255
          rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+    elif (way==24):
+         # Surface Normal visualization (heuristic, from AoLP+DoLP)
+         # NOTE: This is NOT metric shape-from-polarization.
+         # We use AoLP as azimuth (shifted by +90deg for diffuse-reflection convention)
+         # and DoLP as a tilt magnitude proxy (mapped to [0, pi/2]).
+         I0   = polarization_0_deg.astype(np.float32)
+         I45  = polarization_45_deg.astype(np.float32)
+         I90  = polarization_90_deg.astype(np.float32)
+         I135 = polarization_135_deg.astype(np.float32)
+
+         S0 = I0 + I90
+         S1 = I0 - I90
+         S2 = I45 - I135
+         eps = 1e-6
+
+         dolp = np.sqrt(S1*S1 + S2*S2) / (S0 + eps)
+         dolp = np.clip(dolp, 0.0, 1.0)
+
+         aolp = 0.5 * np.arctan2(S2, S1)  # [-pi/2, pi/2]
+
+         # Heuristic mapping
+         az = aolp + (np.pi/2.0)
+         tilt = dolp * (np.pi/2.0)
+
+         nx = np.sin(tilt) * np.cos(az)
+         ny = np.sin(tilt) * np.sin(az)
+         nz = np.cos(tilt)
+
+         # Encode to normal-map colors in RGB, then write as BGR (OpenCV)
+         r = np.clip((nx * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
+         g = np.clip((ny * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
+         b = np.clip((nz * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
+
+         rgb_image[:, :, 2] = r
+         rgb_image[:, :, 1] = g
+         rgb_image[:, :, 0] = b
     elif way == 23:
           # --- Max / Min / Avg visualization ---
           # Convert to float32 to avoid overflow / clipping
@@ -1980,6 +2017,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.processingWay=22
            elif (processingString=="MaxMinAvgRGB"):
                self.processingWay=23
+           elif (processingString=="Normals"):
+               self.processingWay=24
            elif (processingString=="Sobel"):
                self.processingWay=3
            elif (processingString=="Visible"):
