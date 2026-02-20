@@ -64,7 +64,7 @@ https://en.wikipedia.org/wiki/Netpbm
 Raw `.pnm` frames are:
 - Read/Dumped directly from the SONY XCG-CP510 Polarsense camera
 - De-bayered
-- Converted to **RGBA OpenCV images**
+- Converted to **RGBA OpenCV images** using the readPolarPNMToRGBALive function from readData.py
 
 Each channel represents a polarization angle:
 
@@ -77,13 +77,25 @@ Each channel represents a polarization angle:
 
 An example can be found in this [example.pnm](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm?raw=true) file
 
-
 Relevant code to use as template to unpack polarized data:
 ```python
 readPolarPNMToRGBA
 ```
 
 https://github.com/magician-project/magician_grabber_annotator/blob/main/readData.py#L292
+
+
+The same files can also be encoded as RGBA .png files that can be decoded using exactly the same readPolarPNMToRGBALive function
+
+A PNG encoded example can be found in this [example.png](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm?raw=true) file
+There is also a [comparePNMPNG.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/comparePNMPNG.py) comparison utility that can be used to show the parity between the two encodings 
+
+```
+python3 comparePNMPNG.py doc/example.pnm doc/example.png 
+```
+should yield 
+OK
+signaling that the two files result to identical polarizations when decoded by readPolarPNMToRGBA.
 
 ---
 
