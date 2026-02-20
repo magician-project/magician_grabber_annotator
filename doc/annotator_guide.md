@@ -48,7 +48,7 @@ Use this to:
 ---
  
 
-## 2. Polarization Data Format & PNM Files 
+## 2. Polarization Data Format PNM & PNG Files 
 
 The datasets use **PNM (Netpbm)** files:
 
