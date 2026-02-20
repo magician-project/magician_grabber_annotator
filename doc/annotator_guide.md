@@ -87,7 +87,8 @@ https://github.com/magician-project/magician_grabber_annotator/blob/main/readDat
 
 The same files can also be encoded as RGBA .png files that can be decoded using exactly the same readPolarPNMToRGBALive function
 
-A PNG encoded example can be found in this [example.png](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm?raw=true) file
+A PNG encoded example can be found in this [example.png](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.png?raw=true) file
+
 There is also a [comparePNMPNG.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/comparePNMPNG.py) comparison utility that can be used to show the parity between the two encodings 
 
 ```
