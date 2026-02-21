@@ -165,6 +165,40 @@ def checkIfPathIsDirectory(filename):
     return os.path.isdir(filename) 
 
 
+
+def resolve_annotation_json_path(image_path: str, prefer_existing: bool = True) -> str:
+    """
+    Resolve the annotation JSON path for a given image.
+
+    New-style annotations (current behavior) are stored as:
+        <image_path>.json
+    Legacy datasets (PNM-era) stored annotations as:
+        <image_basename>.pnm.json
+    e.g. colorFrame_0_00021.png  -> colorFrame_0_00021.pnm.json
+
+    If prefer_existing is True, the first existing candidate path is returned.
+    Otherwise, the default new-style path is returned.
+    """
+    if image_path is None:
+        return None
+
+    candidates = []
+
+    # New style: image.ext.json
+    candidates.append(f"{image_path}.json")
+
+    # Legacy style: image.pnm.json (swap extension to .pnm)
+    root, ext = os.path.splitext(image_path)
+    if ext.lower() != ".pnm":
+        candidates.append(f"{root}.pnm.json")
+
+    if prefer_existing:
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+
+    return candidates[0]
+
 def list_image_files(directory):
     """
     Retrieve a list of all files in the specified directory.
@@ -1844,8 +1878,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if (self.lightComboBox.GetValue()!="Unknown"):
               allData["lightDirection"] = self.lightComboBox.GetValue()
 
-        with open("%s.json" % self.filepath, "w") as outfile:
+        primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
+        fallback_json = f"{self.filepath}.json"
+        with open(primary_json, "w") as outfile:
             json.dump(allData, outfile, sort_keys=False)
+
+        # Also write the new-style <image>.json for forward-compatibility
+        # if we ended up saving to the legacy <image>.pnm.json path.
+        if (primary_json != fallback_json):
+            try:
+                with open(fallback_json, "w") as outfile2:
+                    json.dump(allData, outfile2, sort_keys=False)
+            except Exception as e:
+                print("Warning: could not also write", fallback_json, ":", e)
 
         self.folderStreamer.saveJSON()
 
@@ -1915,6 +1960,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            #    print("There are saved data that need to be restored here")
            #    self.restoreFromJSON("%s.json" % filepath)
            jsonPath = self.folderStreamer.getJSON()
+           # Make .png/.jpg compatible with legacy annotations saved as *.pnm.json
+           jsonPath = resolve_annotation_json_path(filepath, prefer_existing=True) or jsonPath
            if (checkIfFileExists(jsonPath)):
                print("There are saved data that need to be restored here")
                self.restoreFromJSON(jsonPath)
@@ -2642,7 +2689,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         # Temporarily jump to previous to compute JSON path, then restore.
         try:
             self.folderStreamer.select(prev_idx)
-            prev_json = self.folderStreamer.getJSON()
+            prev_img = self.folderStreamer.getImage()
+            prev_json = resolve_annotation_json_path(prev_img, prefer_existing=True)
         finally:
             self.folderStreamer.select(cur_idx)
 

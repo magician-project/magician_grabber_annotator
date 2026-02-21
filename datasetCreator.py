@@ -40,6 +40,58 @@ import re
 
 
 import json
+
+
+# ------------------------------------------------------------------
+# Compatibility helpers for image extension changes (.pnm -> .png)
+# Many older datasets store annotations as: <frame>.pnm.json
+# while images may have been converted to: <frame>.png
+# These helpers make datasetCreator work with both.
+# ------------------------------------------------------------------
+def _legacy_pnm_json_for_image(image_path: str) -> str:
+    """Return legacy annotation path '<basename>.pnm.json' for any image path."""
+    base, ext = os.path.splitext(image_path)
+    return base + ".pnm.json"
+
+def _json_for_image(image_path: str) -> str:
+    """Return default annotation path '<image>.<ext>.json' (i.e. '<image>.json')."""
+    return image_path + ".json"
+
+def find_annotation_for_image(image_path: str) -> str | None:
+    """Find an existing annotation file for an image, supporting legacy *.pnm.json."""
+    p1 = _json_for_image(image_path)
+    if os.path.exists(p1):
+        return p1
+    p2 = _legacy_pnm_json_for_image(image_path)
+    if os.path.exists(p2):
+        return p2
+    return None
+
+def ensure_annotation_sidecar(image_path: str) -> str | None:
+    """
+    Ensure loadImage(file_path, ...) can find annotations at '<image_path>.json'.
+    If only legacy '<basename>.pnm.json' exists, copy it to '<image_path>.json'.
+    Returns the annotation path that will be used (or None if none exists).
+    """
+    wanted = _json_for_image(image_path)
+    if os.path.exists(wanted):
+        return wanted
+    legacy = _legacy_pnm_json_for_image(image_path)
+    if os.path.exists(legacy):
+        try:
+            # Prefer symlink if possible, fallback to copy.
+            if os.path.islink(wanted) or os.path.exists(wanted):
+                return wanted
+            try:
+                os.symlink(os.path.abspath(legacy), wanted)
+            except Exception:
+                shutil.copy2(legacy, wanted)
+            return wanted
+        except Exception as e:
+            print(f"Warning: could not create compat sidecar json for {image_path}: {e}")
+            return legacy
+    return None
+
 #from memory_profiler import profile
 
 
@@ -245,11 +297,16 @@ class ProcessorThread(threading.Thread):
         self.use_severity = use_severity
         self.use_clean_class = use_clean_class
         self._stop = False
+        self.includeTilesNotAnnotated    = False
         self.includeTilesAnnotatedByAI   = includeTilesAnnotatedByAI
         self.total_tiles_annotated_by_ai = 0
   
     def process_a_file(self,file_index,file_path,occurances):
                 print("File : ",file_path,end=" ")
+                # Ensure annotations are discoverable as '<image>.json' even if the dataset
+                # uses legacy '<basename>.pnm.json' while images are now '.png'.
+                ensure_annotation_sidecar(file_path)
+
 
                 tiles, tile_classes, tile_info, tiles_annotated_by_ai = loadImage(file_path,
                                                            file_index,
@@ -297,11 +354,21 @@ class ProcessorThread(threading.Thread):
                 entry_path = os.path.join(dataset_dir, entry)
                 if not os.path.isfile(entry_path):
                     continue
-                if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')) and os.path.exists(entry_path + '.json'):
-                    file_list.append(entry_path)
+
+                if (self.includeTilesNotAnnotated):
+                    if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')):
+                       file_list.append(entry_path)
+                else:
+                    # Only include images that have annotations (supports legacy '*.pnm.json')
+                    if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')):
+                      ann = find_annotation_for_image(entry_path)
+                      if ann is not None:
+                        # Keep the REAL image path (png/jpg/pnm). We'll ensure a compatible
+                        # '<image>.json' sidecar exists right before processing.
+                        file_list.append(entry_path)
 
 
-
+            #print("Files to run on :",file_list)
             # Apply optional frame limits from info.json (startFrame/endFrame)
             start_frame = 0
             end_frame = len(file_list) - 1
@@ -537,6 +604,7 @@ class MainFrame(wx.Frame):
     def log(self, msg):
         timestamp = time.strftime('%H:%M:%S')
         self.log_ctrl.AppendText(f"[{timestamp}] {msg}\n")
+        print(f"[{timestamp}] {msg}\n")
 
     def on_dir_changed(self, event):
         path = self.dirpicker.GetPath()
