@@ -84,6 +84,7 @@ class FolderStreamer():
                height     = 0
               ):
       self.path        = path
+      self.local_dir   = path
       self.label       = label
       self.frameNumber = 0
       #----------------------------------------------------
@@ -149,6 +150,10 @@ class FolderStreamer():
     self.filepath = self.directoryList[self.directoryListIndex]
     print("Folder Stream item ",self.directoryListIndex," -> ",self.filepath)
     return self.filepath
+
+  def getImageSimple(self):
+    """Compatibility helper (alias for getImage)."""
+    return self.getImage()
 
   def saveJSON(self):
     print("Updated JSON (Doing nothing)..")

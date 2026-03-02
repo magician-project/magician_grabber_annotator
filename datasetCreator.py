@@ -284,7 +284,19 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
 # Worker thread that actually processes selected directories
 # ------------------------------------------------------------------
 class ProcessorThread(threading.Thread):
-    def __init__(self, directories, target_dir, ui_callbacks, ratio_clean=1.0, threshold=0, border=0, step=32, tile_size=64, includeTilesAnnotatedByAI=True, use_severity=False, use_clean_class=True):
+    def __init__(self, 
+                 directories, 
+                 target_dir,
+                 ui_callbacks, 
+                 ratio_clean=1.0,
+                 threshold=0,
+                 border=0,
+                 step=32, 
+                 tile_size=64,
+                 includeTilesNotAnnotated = False,
+                 includeTilesAnnotatedByAI=True,
+                 use_severity=False,
+                 use_clean_class=True):
         super().__init__()
         self.directories = directories
         self.target_dir = target_dir
@@ -297,7 +309,7 @@ class ProcessorThread(threading.Thread):
         self.use_severity = use_severity
         self.use_clean_class = use_clean_class
         self._stop = False
-        self.includeTilesNotAnnotated    = False
+        self.includeTilesNotAnnotated    = includeTilesNotAnnotated
         self.includeTilesAnnotatedByAI   = includeTilesAnnotatedByAI
         self.total_tiles_annotated_by_ai = 0
   
@@ -540,20 +552,30 @@ class MainFrame(wx.Frame):
 
         # ---- Start/Stop buttons ----
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.start_btn = wx.Button(panel, label="Start Dump")
+        self.start_btn = wx.Button(panel, label="Start")
         self.start_btn.Bind(wx.EVT_BUTTON, self.on_start)
+        self.train_cmd_btn = wx.Button(panel, label="CLI")
+        self.train_cmd_btn.SetToolTip("Show/copy the CLI commands to reproduce this dump + conversion (and training template) with the current GUI settings.")
+        self.train_cmd_btn.Bind(wx.EVT_BUTTON, self.on_training_command)
         self.stop_btn = wx.Button(panel, label="Stop")
         self.stop_btn.Bind(wx.EVT_BUTTON, self.on_stop)
         self.stop_btn.Disable()
 
         # ---- Merge buttons ----
-        self.merge_btn = wx.Button(panel, label="Merge Output Classes")
+        self.merge_btn = wx.Button(panel, label="Merge")
         self.merge_btn.Bind(wx.EVT_BUTTON, self.on_merge)
         self.merge_btn.Disable()
 
+        # ---- H5 Package button ----
+        self.h5_btn = wx.Button(panel, label="H5 Package")
+        self.h5_btn.Bind(wx.EVT_BUTTON, self.on_h5_package)
+        self.h5_btn.Disable()
+
         btn_sizer.Add(self.start_btn)
+        btn_sizer.Add(self.train_cmd_btn, 0, wx.LEFT, 8)
         btn_sizer.Add(self.stop_btn, 0, wx.LEFT, 8)
         btn_sizer.Add(self.merge_btn, 0,  wx.LEFT, 5)
+        btn_sizer.Add(self.h5_btn, 0, wx.LEFT, 5)
         right_sizer.Add(btn_sizer, 0, wx.ALL, 5)
 
         # ---- Overall progress ----
@@ -610,6 +632,7 @@ class MainFrame(wx.Frame):
         path = self.dirpicker.GetPath()
         #wx.MessageBox(f"New directory selected:\n{path}", "Directory Changed")
         self.merge_btn.Enable()
+        self.h5_btn.Enable()
 
     def populate_dataset_list(self):
         self.checklist.Clear()
@@ -795,10 +818,80 @@ class MainFrame(wx.Frame):
                                          step            = self.step_size_ctrl.GetValue(), 
                                          tile_size       = self.tile_size_ctrl.GetValue(),
                                          use_severity    = self.severity_checkbox.GetValue(),
-                                         use_clean_class = self.clean_class_checkbox.GetValue()
+                                         use_clean_class = self.clean_class_checkbox.GetValue(),
+                                         includeTilesAnnotatedByAI = self.aiannotated_checkbox.GetValue()
                                          )
         self.processor.start()
         self.log(f"Started processing {len(selected_dirs)} datasets -> {target_dir}")
+
+
+    def on_training_command(self, event):
+        """Build a CLI command that reproduces the current GUI dump configuration."""
+        selections = [i for i in range(self.checklist.GetCount()) if self.checklist.IsChecked(i)]
+        if not selections:
+            wx.MessageBox("Please select at least one dataset first.", "No selection", wx.ICON_WARNING)
+            return
+
+        selected_dirs = [self.dataset_paths[i] for i in selections]
+        target_dir = self.dirpicker.GetPath()
+        if not target_dir:
+            wx.MessageBox("Please choose a target output directory first.", "No target", wx.ICON_WARNING)
+            return
+
+        # Mirror GUI options -> CLI flags
+        tile_size = self.tile_size_ctrl.GetValue()
+        step      = self.step_size_ctrl.GetValue()
+        border    = self.border_size_ctrl.GetValue()
+        thresh    = self.threshold_ctrl.GetValue()
+        ratio     = self.ratio_ctrl.GetValue()
+
+        use_sev   = self.severity_checkbox.GetValue()
+        use_clean = self.clean_class_checkbox.GetValue()
+        ai_ann    = self.aiannotated_checkbox.GetValue()
+
+        # We call the updated CLI dumper (drop-in replacement of dumpKerasDataset.py)
+        dumper = "python3 dumpDataset.py"
+
+        common_flags = [
+            f'--tile-size {tile_size}',
+            f'--step {step}',
+            f'--border {border}',
+            f'--threshold {thresh}',
+            f'--ratio-clean {ratio}',
+            ('--use-severity' if use_sev else '--no-use-severity'),
+            ('--use-clean-class' if use_clean else '--no-use-clean-class'),
+            ('--include-ai-annotated' if ai_ann else '--no-include-ai-annotated'),
+        ]
+        common = " ".join(common_flags)
+
+        lines = []
+        for k, d in enumerate(selected_dirs):
+            clear = " --clear-output" if k == 0 else ""
+            lines.append(f'{dumper} --directory "{d}" -o "{target_dir}"{clear} {common}')
+
+        # Optional next steps (same as GUI buttons / typical flow)
+        lines.append(f'python3 mergeDatasets.py "{target_dir}"  # optional (same as "Merge Outputs")')
+        lines.append(f'python3 ../magician_vision_classifier/DatasetConverter.py "{target_dir}"  # same as "H5 Package"')
+        lines.append('# Training step (adjust to your training script / entrypoint):')
+        lines.append(f'# python3 ../magician_vision_classifier/train.py --dataset "{target_dir}"')
+
+        cmd_text = "\n".join(lines)
+
+        # Copy to clipboard for convenience
+        try:
+            if wx.TheClipboard.Open():
+                wx.TheClipboard.SetData(wx.TextDataObject(cmd_text))
+                wx.TheClipboard.Close()
+                copied = True
+            else:
+                copied = False
+        except Exception:
+            copied = False
+
+        msg = "Commands copied to clipboard." if copied else "Commands (could not copy to clipboard automatically):"
+        dlg = wx.MessageDialog(self, f"{msg}\n\n{cmd_text}", "Training command", wx.OK | wx.ICON_INFORMATION)
+        dlg.ShowModal()
+        dlg.Destroy()
 
     def on_stop(self, event):
         if self.processor:
@@ -865,6 +958,32 @@ class MainFrame(wx.Frame):
 
     def on_dataset_done(self, dataset_dir):
         self.log(f"Finished dataset: {dataset_dir}")
+
+    def on_h5_package(self, event):
+        output_path = self.dirpicker.GetPath()
+    
+        if not output_path or not os.path.isdir(output_path):
+            wx.MessageBox("Please select a valid output directory first.",
+                          "Invalid Output Path",
+                          wx.OK | wx.ICON_WARNING)
+            return
+    
+        cmd = f"python3 ../magician_vision_classifier/DatasetConverter.py {output_path}"
+        self.log(f"Executing H5 packaging:\n{cmd}")
+    
+        ret = os.system(cmd)
+    
+        if ret == 0:
+            wx.MessageBox("H5 Packaging completed successfully.",
+                          "Success",
+                          wx.OK | wx.ICON_INFORMATION)
+            self.log("H5 Packaging completed successfully.")
+        else:
+            wx.MessageBox("H5 Packaging failed. Check console output.",
+                          "Error",
+                          wx.OK | wx.ICON_ERROR)
+            self.log("H5 Packaging failed.")
+    
 
     def on_all_done(self, target_dir):
         self.log(f"All done. Output written to: {target_dir}")

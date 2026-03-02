@@ -791,7 +791,9 @@ class UploadDialog(wx.Dialog):
         except subprocess.CalledProcessError as e:
             wx.MessageBox(f"Upload failed!\n{e.stderr}", "Error", wx.OK | wx.ICON_ERROR)
 
+from downloadAllFrames import BatchProcessDialog
 
+"""
 class BatchProcessDialog(wx.Dialog):
     def __init__(self, parent, folderStreamer):
         super().__init__(parent, title="Batch Download of Dataset", size=(400, 200))
@@ -863,9 +865,12 @@ class BatchProcessDialog(wx.Dialog):
             wx.CallAfter(self.eta_label.SetLabel, f"Estimated time remaining: {remaining:.1f} mins")
 
         wx.CallAfter(self.EndModal, wx.ID_OK)
+"""
 
 
+from magnifier import MagnifierFrame 
 
+"""
 class MagnifierFrame(wx.Frame):
     def __init__(self, parent, zoom=3, size=(300, 300), win_size=(400, 400)):
         super().__init__(parent, title="Magnifier", size=win_size)
@@ -919,7 +924,7 @@ class MagnifierFrame(wx.Frame):
         self.crosshairCheckbox.Bind(wx.EVT_CHECKBOX, self.onCrosshairToggle)
 
     def setImage(self, img):
-        """Store original image (as wx.Image) for magnification."""
+        #Store original image (as wx.Image) for magnification.
         self.original_img = img
 
     def updateMagnifier(self, x, y):
@@ -962,7 +967,7 @@ class MagnifierFrame(wx.Frame):
         self.panel.Layout()
 
     def refreshZoom(self):
-        """Update slider + text + refresh view."""
+        #Update slider + text + refresh view.
         self.slider.SetValue(self.zoom)
         self.txtZoom.SetValue(str(self.zoom))
         self.updateMagnifier(self.last_x, self.last_y)
@@ -991,7 +996,7 @@ class MagnifierFrame(wx.Frame):
     def onCrosshairToggle(self, event):
         self.show_crosshair = self.crosshairCheckbox.GetValue()
         self.updateMagnifier(self.last_x, self.last_y)
-
+"""
 
 
 class PhotoCtrl(wx.App):

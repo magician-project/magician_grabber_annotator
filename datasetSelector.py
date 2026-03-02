@@ -212,7 +212,7 @@ class DatasetSelector(wx.Dialog):
           - it has at least one PUBLIC annotation ZIP in /magician/uploads/
             (see HTTPStream.retrieve_annotation_zips)
 
-        Returns (has_any_annotations, annotated_count, total_images, has_zip).
+        Returns (has_any_annotations, annotated_count, total_images, has_zip, image_formats).
         annotated_count is computed by matching per-frame JSONs either in the dataset listing
         OR inside the latest matching annotation ZIP.
         """
@@ -232,6 +232,9 @@ class DatasetSelector(wx.Dialog):
             if f.lower().endswith(image_exts) and ("foreground.png" not in f.lower())
         ]
         total_images = len(images)
+
+        # Image formats present in dataset (png/jpg/pnm/etc)
+        image_formats = sorted({os.path.splitext(f)[1].lstrip(".").lower() for f in images})
 
         # --- 2) Find matching annotation ZIPs (public uploads) ---
         has_zip = False
@@ -301,7 +304,7 @@ class DatasetSelector(wx.Dialog):
 
         # "Annotated" per your rule: any per-frame json OR any matching zip exists
         has_any = (annotated > 0) or has_zip
-        return has_any, annotated, total_images, has_zip
+        return has_any, annotated, total_images, has_zip, image_formats
 
 
     def onCheckAnnotations(self, event):
@@ -339,7 +342,9 @@ class DatasetSelector(wx.Dialog):
         not_annotated_datasets = 0
 
         for dset in datasets:
-            has_any, ann, tot, has_zip = self._annotation_status_for_dataset(provider_url, dset)
+            has_any, ann, tot, has_zip, fmts = self._annotation_status_for_dataset(provider_url, dset)
+
+            fmt_note = "unknown" if not fmts else (fmts[0] if len(fmts) == 1 else "mixed[" + ",".join(fmts) + "]")
 
             # Frame totals
             total_annotated_frames += int(ann)
@@ -357,7 +362,7 @@ class DatasetSelector(wx.Dialog):
 
             mark = "✅" if dataset_is_annotated else "❌"
             zip_note = " (zip)" if (has_zip and ann == 0) else ""
-            lines.append(f"{mark} {dset}{zip_note}  —  {pct_str} ({ann}/{tot})")
+            lines.append(f"{mark} {dset}{zip_note}  —  {pct_str} ({ann}/{tot})  —  images: {fmt_note}")
 
         # Overall frame completion
         overall_frames_pct = "N/A" if total_frames == 0 else f"{(100.0 * total_annotated_frames / total_frames):.1f}%"

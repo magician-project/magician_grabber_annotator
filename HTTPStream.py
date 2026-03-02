@@ -210,13 +210,56 @@ class HTTPFolderStreamer:
 
     # ---------- Downloads ----------
 
+    #def _download_file(self, remote_name, overwrite=False):
+
+    def _is_image_name(self, name: str) -> bool:
+        name_l = name.lower()
+        # avoid treating JSON sidecars as images
+        if name_l.endswith(".pnm.json") or name_l.endswith(".json"):
+            return False
+        return any(name_l.endswith(ext) for ext in (".png", ".pnm", ".jpg", ".jpeg"))
+
+    def _find_existing_local_image_variant(self, remote_name: str):
+        """Return an existing local path for the same frame regardless of extension.
+
+        Fixes the case where the server lists .pnm but the user has already
+        compressed locally to .png (or .jpg/.jpeg), so we should not re-download.
+        """
+        stem, ext = os.path.splitext(remote_name)
+        # If remote_name has no extension, nothing to do.
+        if not ext:
+            return None
+
+        # Check exact first (fast path)
+        candidate = os.path.join(self.local_dir, remote_name)
+        if os.path.isfile(candidate):
+            return candidate
+
+        # Check alternative extensions (same stem)
+        for alt_ext in (".png", ".pnm", ".jpg", ".jpeg"):
+            alt = os.path.join(self.local_dir, stem + alt_ext)
+            if os.path.isfile(alt):
+                return alt
+
+        return None
+
     def _download_file(self, remote_name, overwrite=False):
+        # If this is an image, accept any already-present local variant
+        # (.png/.pnm/.jpg/.jpeg) and skip download to avoid duplicates/traffic.
+        if (not overwrite) and self._is_image_name(remote_name):
+            existing = self._find_existing_local_image_variant(remote_name)
+            if existing is not None:
+                return existing
+
         local_path = os.path.join(self.local_dir, remote_name)
 
         if not overwrite and os.path.isfile(local_path):
             return local_path
 
-        url = auth_url(self.provider, self.dataset + remote_name,  self.username, self.password)
+        # Ensure subdirectories exist (in case remote_name contains paths)
+        os.makedirs(os.path.dirname(local_path) or self.local_dir, exist_ok=True)
+
+        url = auth_url(self.provider, self.dataset + remote_name, self.username, self.password)
         print(f"Downloading: {url}")
 
         resp = requests.get(url)
