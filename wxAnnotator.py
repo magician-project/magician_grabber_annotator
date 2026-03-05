@@ -39,7 +39,7 @@ import threading
 Configurations in one central place
 """
 
-version         = "0.42"
+version         = "0.44"
 useSAM          = False
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 combineChannels = True
@@ -65,7 +65,10 @@ import sys
 import os
 
 from folderStream import FolderStreamer
-from classifierGrading import AnnotationCorrelationStats 
+from classifierGrading import AnnotationCorrelationStats
+from downloadAllFrames import BatchProcessDialog
+from magnifier import MagnifierFrame 
+
 
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
@@ -189,8 +192,9 @@ def resolve_annotation_json_path(image_path: str, prefer_existing: bool = True) 
 
     # Legacy style: image.pnm.json (swap extension to .pnm)
     root, ext = os.path.splitext(image_path)
-    if ext.lower() != ".pnm":
-        candidates.append(f"{root}.pnm.json")
+    #if ext.lower() != ".pnm":
+    candidates.append(f"{root}.pnm.json")
+    candidates.append(f"{root}.png.json") #<- attempt to annotate .png->.pnm
 
     if prefer_existing:
         for c in candidates:
@@ -243,450 +247,8 @@ def loadMoreClasses(filename,classes_dict):
            classes_dict[cl]=True 
     return classes_dict 
 
-def detect_sobel_edges(image):
-    """
-    Detect Sobel edges in a 4-channel polarized image and return them in a 3-channel image.
 
-    Parameters:
-        image (numpy.ndarray): Input image with 4 channels (polarizations: 0°, 45°, 90°, 135°).
-
-    Returns:
-        numpy.ndarray: 3-channel image containing Sobel edge detections.
-    """
-    # Split the 4-channel image into individual polarization channels
-    polar_0, polar_45, polar_90, polar_135 = debayerPolarImage(image)# cv2.split(image)
-
-    # Initialize an empty list to store edge-detected channels
-    edges = []
-
-    # Apply Sobel edge detection for each channel
-    for channel in [polar_0, polar_45, polar_90, polar_135]:
-        # Compute Sobel gradients in x and y directions
-        grad_x = cv2.Sobel(channel, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(channel, cv2.CV_64F, 0, 1, ksize=3)
-
-        # Compute gradient magnitude
-        magnitude = cv2.magnitude(grad_x, grad_y)
-
-        # Normalize the magnitude to the range [0, 255] and convert to uint8
-        magnitude_normalized = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-
-        # Append the result to the edges list
-        edges.append(magnitude_normalized)
-
-    # Combine the first three edge-detected channels into a 3-channel image
-    # (Choose polarizations 0°, 45°, 90° for the output channels)
-    result = cv2.merge(edges[:4])
-
-    return result
-
-
-
-def tenengrad_focus_measure(image, ksize=3):
-    """
-    Compute the Tenengrad focus measure of an image.
-    
-    Parameters:
-        image (numpy.ndarray): Input image (BGR or grayscale).
-        ksize (int): Kernel size for Sobel operator (must be 1, 3, 5, or 7).
-    
-    Returns:
-        float: Tenengrad focus measure value.
-    """
-    # Convert to grayscale if image is colored
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = image
-    
-    # Apply Sobel operator in X and Y directions
-    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize)
-    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=ksize)
-    
-    # Compute gradient magnitude
-    gxy = gx**2 + gy**2
-    
-    # Return mean gradient magnitude (Tenengrad measure)
-    return np.mean(gxy)
-
-
-def determine_intensity_region(image, threshold=0.1):
-    """
-    Determines the region of the image with the highest intensity values.
-
-    Parameters:
-        image (numpy.ndarray): A 4-channel image (H, W, 4) with intensity values.
-        threshold (float): A value between 0 and 1 to decide if intensity changes are significant.
-
-    Returns:
-        str: One of "Unknown", "Bottom Left", "Top Left", "Top", "Top Right", "Bottom Right", or "Bottom".
-    """
-    #if image.shape[-1] != 4:
-    #    raise ValueError("Input image must have 4 channels.")
-
-    # Convert image to grayscale by summing up all channels
-    gray_image = np.sum(image, axis=-1)
-
-    # Get image dimensions
-    height, width = gray_image.shape
-
-    # Define regions
-    top_left     = gray_image[:height//2, :width//2]
-    top          = gray_image[:height//2, width//4:(3*width)//4]
-    top_right    = gray_image[:height//2, width//2:]
-    bottom_left  = gray_image[height//2:, :width//2]
-    bottom       = gray_image[height//2:, width//4:(3*width)//4]
-    bottom_right = gray_image[height//2:, width//2:]
-
-    # Compute average intensities for each region
-    regions = {
-        "Top Left": np.mean(top_left),
-        "Top": np.mean(top),
-        "Top Right": np.mean(top_right),
-        "Bottom Left": np.mean(bottom_left),
-        "Bottom": np.mean(bottom),
-        "Bottom Right": np.mean(bottom_right)
-    }
-
-    print("determine_intensity_region: ",regions)
-
-    # Find the region with the highest intensity
-    max_region = max(regions, key=regions.get)
-    max_value  = regions[max_region]
-
-    # Calculate the overall mean intensity
-    overall_mean = np.mean(gray_image)
-
-    # If the difference between the highest intensity and the mean is below the threshold, return "Unknown"
-    if (max_value - overall_mean) / overall_mean < threshold:
-        return "Unknown"
-
-    return max_region
-
-
-
-def adjust_contrast(image: np.ndarray, factor: float):
-    """
-    Adjusts the contrast of an RGB image.
-    
-    Parameters:
-        image (np.ndarray): Input image as a NumPy array with shape (H, W, 3).
-        factor (float): Contrast adjustment factor (1.0 = no change, >1 increases contrast, <1 decreases contrast).
-    
-    Returns:
-        np.ndarray: Contrast-adjusted image.
-    """
-    # Convert to float for precision
-    img_float = image.astype(np.float32) / 255.0
-    
-    # Compute mean intensity per channel
-    mean      = np.mean(img_float, axis=(0, 1), keepdims=True)
-    
-    # Apply contrast adjustment
-    adjusted  = mean + factor * (img_float - mean)
-    
-    # Clip values to valid range and convert back to uint8
-    adjusted = np.clip(adjusted * 255, 0, 255).astype(np.uint8)
-    
-    return adjusted
-
-
-def convertRGBCVMATToRGB(rgb_image,brightness=0,contrast=0):
-    brightnessValue = 10* brightness
-    contrastValue   = 1.0 + contrast/10
-    rgb_image = adjust_contrast(rgb_image,contrastValue)
-    return rgb_image
-
-
-
-      
-# Normalize each independently to 0-255 for visibility
-def normalize_to_u8(img):
-              minv = np.min(img)
-              maxv = np.max(img)
-              if maxv > minv:
-                  img = (img - minv) / (maxv - minv)
-              else:
-                  img = np.zeros_like(img)
-              return (img * 255.0).astype(np.uint8)
-
-def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
-    if image is None:
-        print("Error: Unable to read the image.")
-        return None
-
-    height, width, channels = image.shape
-    #if channels == 3: 
-    #    print("Casting RGB image as monochrome")
-    #    image = image[:,:,0]
-    image = image[:,:,0]
-
-    # Split into polarization images
-    #from readData import debayerPolarImage
-    polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg = debayerPolarImage(image)
-
-    # Create an RGB image
-    rgb_image = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
-
-    brightnessValue = 10* brightness
-    contrastValue   = 1.0 + contrast/10
-
-    print("Image Visualization using: ",way)
-
-    # Assign each polarization image to a specific channel
-    if (way==0):
-      rgb_image[:, :, 0] = np.clip(polarization_0_deg.astype(np.float32)   + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_45_deg.astype(np.float32)  + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_90_deg.astype(np.float32)  + brightnessValue, 0, 255)
-    elif (way==1):
-      rgb_image[:, :, 0] = np.clip(polarization_45_deg.astype(np.float32)  + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_90_deg.astype(np.float32)  + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
-    elif (way==2):
-      rgb_image[:, :, 0] = np.clip( ( polarization_0_deg.astype(np.float32) +  polarization_45_deg.astype(np.float32) ) / 2   + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_45_deg  + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip( ( polarization_90_deg.astype(np.float32) + polarization_135_deg.astype(np.float32) ) / 2  + brightnessValue, 0, 255)
-    elif (way==4):
-      #this needs some care so that values are not clipped
-      sumMat = (polarization_0_deg.astype(np.float32) + 
-                  polarization_45_deg.astype(np.float32) + 
-                  polarization_90_deg.astype(np.float32) + 
-                  polarization_135_deg.astype(np.float32)) / 4
-      rgb_image[:, :, 0] = np.clip(sumMat.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(sumMat.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(sumMat.astype(np.float32) + brightnessValue, 0, 255)
-    elif (way==5):
-      rgb_image[:, :, 0] = np.clip(polarization_0_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_0_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_0_deg.astype(np.float32) + brightnessValue, 0, 255)
-    elif (way==6):
-      rgb_image[:, :, 0] = np.clip(polarization_45_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_45_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_45_deg.astype(np.float32) + brightnessValue, 0, 255)
-    elif (way==7):
-      rgb_image[:, :, 0] = np.clip(polarization_90_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_90_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_90_deg.astype(np.float32) + brightnessValue, 0, 255)
-    elif (way==8):
-      rgb_image[:, :, 0] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
-    elif (way>=9) and (way<=22):
-      # --- Polarization analysis / Stokes-based visualizations ---
-      # NOTE:
-      #   From a 4-angle DoFP sensor (0/45/90/135), we can compute s0,s1,s2.
-      #   s3 (circular component) normally requires additional measurements (e.g., a retarder),
-      #   so we set s3 = 0 here unless you later provide R/L (or QWP) channels.
-
-      I0   = polarization_0_deg.astype(np.float32)
-      I45  = polarization_45_deg.astype(np.float32)
-      I90  = polarization_90_deg.astype(np.float32)
-      I135 = polarization_135_deg.astype(np.float32)
-
-      # Linear Stokes (per-pixel)
-      S0 = I0 + I90
-      S1 = I0 - I90
-      S2 = I45 - I135
-      S3 = np.zeros_like(S0, dtype=np.float32)
-
-      eps = 1e-6
-
-      # Intensity (average of the 4 angles; stays in 0..255 domain)
-      intensity_f = (I0 + I45 + I90 + I135) / 4.0
-      intensity_u8 = np.clip(intensity_f + brightnessValue, 0, 255).astype(np.uint8)
-
-      # DoLP (linear) and DoP (total)
-      dolp = np.sqrt(S1*S1 + S2*S2) / (S0 + eps)
-      dolp = np.clip(dolp, 0.0, 1.0)
-      dop  = np.sqrt(S1*S1 + S2*S2 + S3*S3) / (S0 + eps)
-      dop  = np.clip(dop, 0.0, 1.0)
-
-      dolp_u8 = (dolp * 255.0).astype(np.uint8)
-      dop_u8  = (dop  * 255.0).astype(np.uint8)
-
-      # AoLP in radians [-pi/2, pi/2], map to OpenCV HSV hue [0..179]
-      aolp = 0.5 * np.arctan2(S2, S1)
-      hue = ((aolp + (np.pi/2.0)) / np.pi) * 179.0
-      hue = np.clip(hue, 0.0, 179.0).astype(np.uint8)
-
-      # Ellipticity angle chi in [-pi/4, pi/4]
-      # chi = 0.5 * atan2(S3, sqrt(S1^2 + S2^2))
-      chi = 0.5 * np.arctan2(S3, np.sqrt(S1*S1 + S2*S2) + eps)
-
-      # DoCP (degree of circular polarization) often defined as |S3|/S0
-      docp = np.abs(S3) / (S0 + eps)
-      docp = np.clip(docp, 0.0, 1.0)
-      docp_u8 = (docp * 255.0).astype(np.uint8)
-
-      # ToP (type of polarization): 0 = linear, 1 = circular (approx from |chi|)
-      top = np.abs(4.0 * chi / np.pi)  # chi in [-pi/4, pi/4] -> top in [0,1]
-      top = np.clip(top, 0.0, 1.0)
-      top_u8 = (top * 255.0).astype(np.uint8)
-
-      # --- Retardation-ish magnitude (assumption-dependent) ---
-      # If we (strongly) assume the light is fully polarized (DoP≈1), then:
-      #   S0^2 = S1^2 + S2^2 + S3^2  =>  |S3| = sqrt(max(S0^2 - S1^2 - S2^2, 0))
-      # This provides ONLY a magnitude for the circular component, not handedness.
-      S3_mag = np.sqrt(np.maximum(S0*S0 - S1*S1 - S2*S2, 0.0))
-      chi_mag = 0.5 * np.arctan2(S3_mag, np.sqrt(S1*S1 + S2*S2) + eps)  # in [0, pi/4]
-      retard_mag = np.clip((4.0 * chi_mag / np.pi), 0.0, 1.0)
-      retard_u8 = (retard_mag * 255.0).astype(np.uint8)
-
-      # Helpers for s0..s3 visualization
-      s0_u8 = np.clip((S0 * 0.5) + brightnessValue, 0, 255).astype(np.uint8)  # divide by 2 to fit in 8-bit
-      # s1,s2,s3 in ~[-255,255] -> map to [0,255] with mid=128
-      def _stokes_signed_to_u8(S):
-          S = np.clip(S, -255.0, 255.0)
-          return (S * 0.5 + 128.0).astype(np.uint8)
-
-      s1_u8 = _stokes_signed_to_u8(S1)
-      s2_u8 = _stokes_signed_to_u8(S2)
-      s3_u8 = _stokes_signed_to_u8(S3)
-
-      # --- Dispatch ---
-      if (way==11):
-         # Intensity (grayscale)
-         rgb_image[:, :, 0] = intensity_u8
-         rgb_image[:, :, 1] = intensity_u8
-         rgb_image[:, :, 2] = intensity_u8
-
-      elif (way==10):
-         # DoLP (false color)
-         rgb_image = cv2.applyColorMap(dolp_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==9):
-         # AoLP (HSV): Hue=AoLP, Sat=DoLP, Val=Intensity
-         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
-         hsv[:, :, 0] = hue
-         hsv[:, :, 1] = dolp_u8
-         hsv[:, :, 2] = intensity_u8
-         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-      elif (way==12):
-         # s0 (grayscale)
-         rgb_image[:, :, 0] = s0_u8
-         rgb_image[:, :, 1] = s0_u8
-         rgb_image[:, :, 2] = s0_u8
-
-      elif (way==13):
-         # s1
-         rgb_image = cv2.applyColorMap(s1_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==14):
-         # s2
-         rgb_image = cv2.applyColorMap(s2_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==15):
-         # s3 (will be ~0 with 4-angle DoFP input)
-         rgb_image = cv2.applyColorMap(s3_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==16):
-         # AoLP (light): Hue=AoLP, Sat=DoP, Val=255
-         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
-         hsv[:, :, 0] = hue
-         hsv[:, :, 1] = dop_u8
-         hsv[:, :, 2] = 255
-         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-      elif (way==17):
-         # AoLP (dark): Hue=AoLP, Sat=DoP, Val=Intensity
-         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
-         hsv[:, :, 0] = hue
-         hsv[:, :, 1] = dop_u8
-         hsv[:, :, 2] = intensity_u8
-         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-      elif (way==18):
-         # DoP (false color)
-         rgb_image = cv2.applyColorMap(dop_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==19):
-         # DoCP (false color)  (likely 0 with 4-angle DoFP input)
-         rgb_image = cv2.applyColorMap(docp_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==20):
-         # ToP (false color): 0=linear, 1=circular (approx; needs S3 for non-zero)
-         rgb_image = cv2.applyColorMap(top_u8, cv2.COLORMAP_TURBO)
-
-      elif (way==22):
-         # Retardation-ish magnitude (false color; magnitude-only, assumption-dependent)
-         rgb_image = cv2.applyColorMap(retard_u8, cv2.COLORMAP_TURBO)
-      else:
-         # CoP (chirality): Hue encodes chi sign/magnitude, shown at full value
-         # Map chi [-pi/4, pi/4] -> hue [0..179]
-         hue_chi = ((chi + (np.pi/4.0)) / (np.pi/2.0)) * 179.0
-         hue_chi = np.clip(hue_chi, 0.0, 179.0).astype(np.uint8)
-         hsv = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
-         hsv[:, :, 0] = hue_chi
-         hsv[:, :, 1] = 255
-         hsv[:, :, 2] = 255
-         rgb_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-    elif (way==24):
-         # Surface Normal visualization (heuristic, from AoLP+DoLP)
-         # NOTE: This is NOT metric shape-from-polarization.
-         # We use AoLP as azimuth (shifted by +90deg for diffuse-reflection convention)
-         # and DoLP as a tilt magnitude proxy (mapped to [0, pi/2]).
-         I0   = polarization_0_deg.astype(np.float32)
-         I45  = polarization_45_deg.astype(np.float32)
-         I90  = polarization_90_deg.astype(np.float32)
-         I135 = polarization_135_deg.astype(np.float32)
-
-         S0 = I0 + I90
-         S1 = I0 - I90
-         S2 = I45 - I135
-         eps = 1e-6
-
-         dolp = np.sqrt(S1*S1 + S2*S2) / (S0 + eps)
-         dolp = np.clip(dolp, 0.0, 1.0)
-
-         aolp = 0.5 * np.arctan2(S2, S1)  # [-pi/2, pi/2]
-
-         # Heuristic mapping
-         az = aolp + (np.pi/2.0)
-         tilt = dolp * (np.pi/2.0)
-
-         nx = np.sin(tilt) * np.cos(az)
-         ny = np.sin(tilt) * np.sin(az)
-         nz = np.cos(tilt)
-
-         # Encode to normal-map colors in RGB, then write as BGR (OpenCV)
-         r = np.clip((nx * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
-         g = np.clip((ny * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
-         b = np.clip((nz * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
-
-         rgb_image[:, :, 2] = r
-         rgb_image[:, :, 1] = g
-         rgb_image[:, :, 0] = b
-    elif way == 23:
-          # --- Max / Min / Avg visualization ---
-          # Convert to float32 to avoid overflow / clipping
-          I0   = polarization_0_deg.astype(np.float32)
-          I45  = polarization_45_deg.astype(np.float32)
-          I90  = polarization_90_deg.astype(np.float32)
-          I135 = polarization_135_deg.astype(np.float32)
-
-          # Stack safely
-          stack = np.stack([I0, I45, I90, I135], axis=2)
-      
-          max_img = np.max(stack, axis=2)
-          min_img = np.min(stack, axis=2)
-          avg_img = np.mean(stack, axis=2)
-      
-          max_u8 = normalize_to_u8(max_img)
-          min_u8 = normalize_to_u8(min_img)
-          avg_u8 = normalize_to_u8(avg_img)
-      
-          # OpenCV uses BGR
-          rgb_image[:, :, 0] = avg_u8   # B
-          rgb_image[:, :, 1] = min_u8   # G
-          rgb_image[:, :, 2] = max_u8   # R
-          print("\n\n\nMIN/MAX/AVG vis ",np.min(max_img), np.max(max_img), np.mean(avg_img) )
-
-    if (contrastValue!=0.0):
-           rgb_image = adjust_contrast(rgb_image,contrastValue)
-
-    return rgb_image
+from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region
 
 def slowPC():
     import socket
@@ -700,303 +262,8 @@ def slowPC():
     return False
 
 
+from uploadAnnotations import UploadDialog
 
-class UploadDialog(wx.Dialog):
-    def __init__(self, parent, zip_path, dataset, credentials="server.json"):
-        super().__init__(parent, title="Upload Annotations", size=(350, 200))
-        self.zip_path = zip_path  # path to the zip file
-        self.dataset  = dataset
-        self.credentials = credentials
-
-        # Try to load saved credentials
-        saved_user, saved_pwd = self.load_credentials()
-
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Username
-        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
-        hbox1.Add(wx.StaticText(self, label="Username:"), 0, wx.ALL | wx.CENTER, 5)
-        self.username = wx.TextCtrl(self, value=saved_user)
-        hbox1.Add(self.username, 1, wx.ALL | wx.EXPAND, 5)
-        vbox.Add(hbox1, 0, wx.EXPAND)
-
-        # Password
-        hbox2 = wx.BoxSizer(wx.HORIZONTAL)
-        hbox2.Add(wx.StaticText(self, label="Password:"), 0, wx.ALL | wx.CENTER, 5)
-        self.password = wx.TextCtrl(self, style=wx.TE_PASSWORD, value=saved_pwd)
-        hbox2.Add(self.password, 1, wx.ALL | wx.EXPAND, 5)
-        vbox.Add(hbox2, 0, wx.EXPAND)
-
-        vbox.Add(wx.StaticText(self, label=" Contact ammarkov@ics.forth.gr for a new account"), 0, wx.EXPAND)
-
-        # Buttons
-        btns = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
-        vbox.Add(btns, 0, wx.EXPAND | wx.ALL, 10)
-
-        self.SetSizer(vbox)
-
-        # Override Upload (OK) behavior
-        self.Bind(wx.EVT_BUTTON, self.onUpload, id=wx.ID_OK)
-
-    def load_credentials(self):
-        """Load username and password from config file if it exists."""
-        if os.path.exists(self.credentials):
-            try:
-                with open(self.credentials, "r") as f:
-                    data = json.load(f)
-                    return data.get("username", ""), data.get("password", "")
-            except Exception:
-                pass
-        return "", ""  # defaults
-
-    def save_credentials(self, username, password):
-        """Save username and password to config file."""
-        try:
-            with open(self.credentials, "w") as f:
-                json.dump({"username": username, "password": password}, f)
-        except Exception as e:
-            wx.MessageBox(f"Failed to save credentials: {e}", "Warning", wx.OK | wx.ICON_WARNING)
-
-    def onUpload(self, event):
-        user     = self.username.GetValue().strip()
-        pwd      = self.password.GetValue().strip()
-        dataset  = self.dataset
-
-        if not user or not pwd:
-            wx.MessageBox("Please enter both username and password.", "Error", wx.OK | wx.ICON_ERROR)
-            return  # don’t close yet
-
-        # Command for curl file upload
-        url = "http://ammar.gr/magician/upload.php"
-        cmd = [
-            "curl",
-            "-s",  # silent mode
-            "-F", f"username={user}",
-            "-F", f"password={pwd}",
-            "-F", f"dataset={dataset}",
-            "-F", f"file=@{self.zip_path}",  # attach file
-            url
-        ]
-
-        try:
-            import subprocess
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            wx.MessageBox(f"Upload successful!\nServer response:\n{result.stdout}", 
-                          "Success", wx.OK | wx.ICON_INFORMATION)
-
-            # Save credentials only if successful
-            self.save_credentials(user, pwd)
-
-            self.EndModal(wx.ID_OK)
-        except subprocess.CalledProcessError as e:
-            wx.MessageBox(f"Upload failed!\n{e.stderr}", "Error", wx.OK | wx.ICON_ERROR)
-
-from downloadAllFrames import BatchProcessDialog
-
-"""
-class BatchProcessDialog(wx.Dialog):
-    def __init__(self, parent, folderStreamer):
-        super().__init__(parent, title="Batch Download of Dataset", size=(400, 200))
-        self.folderStreamer = folderStreamer
-        self.stop_requested = False  # flag for cancellation
-
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Spin control for number of iterations
-        hbox1 = wx.BoxSizer(wx.HORIZONTAL)
-        hbox1.Add(wx.StaticText(self, label="Number of files to download:"), 0, wx.ALL | wx.CENTER, 5)
-        self.spin = wx.SpinCtrl(self, min=1, max=100000, initial=self.folderStreamer.max())
-        hbox1.Add(self.spin, 1, wx.ALL | wx.CENTER, 5)
-        vbox.Add(hbox1, 0, wx.EXPAND)
-
-        # Progress bar
-        self.gauge = wx.Gauge(self, range=100, size=(250, 25))
-        vbox.Add(self.gauge, 0, wx.ALL | wx.EXPAND, 10)
-
-        # ETA label
-        self.eta_label = wx.StaticText(self, label="Estimated time remaining: --")
-        vbox.Add(self.eta_label, 0, wx.ALL | wx.CENTER, 5)
-
-        # Buttons
-        btns = self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL)
-        vbox.Add(btns, 0, wx.EXPAND | wx.ALL, 10)
-
-        self.SetSizer(vbox)
-
-        # Get references to buttons
-        self.okBtn = self.FindWindowById(wx.ID_OK)
-        self.cancelBtn = self.FindWindowById(wx.ID_CANCEL)
-
-        # Override button behavior
-        self.okBtn.Bind(wx.EVT_BUTTON, self.onStart)
-        self.cancelBtn.Bind(wx.EVT_BUTTON, self.onCancel)
-
-    def onStart(self, event):
-        count = self.spin.GetValue()
-        self.okBtn.Disable()  # prevent starting twice
-        self.stop_requested = False
-        threading.Thread(target=self.runBatch, args=(count,), daemon=True).start()
-
-    def onCancel(self, event):
-        self.stop_requested = True  # signal thread to stop
-        self.cancelBtn.Disable()    # prevent spamming cancel button
-
-    def runBatch(self, count):
-        times = []
-        for i in range(count):
-            if self.stop_requested:
-                wx.CallAfter(self.eta_label.SetLabel, "Cancelled by user.")
-                break
-
-            start = time.perf_counter()
-
-            self.folderStreamer.next()
-            self.folderStreamer.getJSON()
-            self.folderStreamer.getImageSimple()
-
-            elapsed = time.perf_counter() - start
-            times.append(elapsed)
-
-            avg_time = sum(times) / len(times)
-            remaining = avg_time * (count - i - 1) / 60
-
-            # Update UI safely
-            wx.CallAfter(self.gauge.SetValue, int((i + 1) / count * 100))
-            wx.CallAfter(self.eta_label.SetLabel, f"Estimated time remaining: {remaining:.1f} mins")
-
-        wx.CallAfter(self.EndModal, wx.ID_OK)
-"""
-
-
-from magnifier import MagnifierFrame 
-
-"""
-class MagnifierFrame(wx.Frame):
-    def __init__(self, parent, zoom=3, size=(300, 300), win_size=(400, 400)):
-        super().__init__(parent, title="Magnifier", size=win_size)
-        self.panel = wx.Panel(self)
-        self.zoom = zoom
-        self.size = size
-        self.original_img = None
-        self.last_x, self.last_y = 0, 0  # store last cursor pos
-        self.show_crosshair = True
-
-        # Layout: image + controls
-        vbox = wx.BoxSizer(wx.VERTICAL)
-
-        # Image display
-        self.imageCtrl = wx.StaticBitmap(self.panel, size=size)
-        vbox.Add(self.imageCtrl, 1, wx.EXPAND | wx.ALL, 5)
-
-        # Zoom controls row
-        hbox = wx.BoxSizer(wx.HORIZONTAL)
-
-        self.btnZoomOut = wx.Button(self.panel, label="–")
-        self.btnZoomIn = wx.Button(self.panel, label="+")
-        hbox.Add(self.btnZoomOut, 0, wx.ALL, 5)
-        hbox.Add(self.btnZoomIn, 0, wx.ALL, 5)
-
-        # Slider
-        self.slider = wx.Slider(self.panel, value=self.zoom, minValue=1, maxValue=20,
-                                style=wx.SL_HORIZONTAL | wx.SL_LABELS)
-        hbox.Add(self.slider, 1, wx.ALL | wx.EXPAND, 5)
-
-        # Text field for zoom value
-        self.txtZoom = wx.TextCtrl(self.panel, value=str(self.zoom), size=(50, -1),
-                                   style=wx.TE_PROCESS_ENTER)
-        hbox.Add(self.txtZoom, 0, wx.ALL, 5)
-
-        # Checkbox for crosshair
-        self.crosshairCheckbox = wx.CheckBox(self.panel, label="Show Crosshair")
-        self.crosshairCheckbox.SetValue(self.show_crosshair)
-        hbox.Add(self.crosshairCheckbox, 0, wx.ALL | wx.CENTER, 5)
-
-
-        vbox.Add(hbox, 0, wx.EXPAND)
-
-        self.panel.SetSizer(vbox)
-
-        # Bind events
-        self.btnZoomIn.Bind(wx.EVT_BUTTON, self.onZoomIn)
-        self.btnZoomOut.Bind(wx.EVT_BUTTON, self.onZoomOut)
-        self.slider.Bind(wx.EVT_SLIDER, self.onSliderChange)
-        self.txtZoom.Bind(wx.EVT_TEXT_ENTER, self.onTextEnter)
-        self.crosshairCheckbox.Bind(wx.EVT_CHECKBOX, self.onCrosshairToggle)
-
-    def setImage(self, img):
-        #Store original image (as wx.Image) for magnification.
-        self.original_img = img
-
-    def updateMagnifier(self, x, y):
-        if not self.original_img:
-            return
-
-        self.last_x, self.last_y = x, y  # store last position
-
-        half_w = self.size[0] // (2 * self.zoom)
-        half_h = self.size[1] // (2 * self.zoom)
-
-        # Crop region around cursor
-        crop_x1 = max(0, x - half_w)
-        crop_y1 = max(0, y - half_h)
-        crop_x2 = min(self.original_img.GetWidth(),  x + half_w)
-        crop_y2 = min(self.original_img.GetHeight(), y + half_h)
-
-        sub_img = self.original_img.GetSubImage(
-            (crop_x1, crop_y1, crop_x2 - crop_x1, crop_y2 - crop_y1)
-        )
-        sub_img = sub_img.Scale(self.size[0], self.size[1], wx.IMAGE_QUALITY_HIGH)
-
-        # Draw crosshair if enabled
-        if self.show_crosshair:
-            dc = wx.MemoryDC()
-            bmp = wx.Bitmap(sub_img)
-            dc.SelectObject(bmp)
-            w, h = bmp.GetWidth(), bmp.GetHeight()
-            pen = wx.Pen(wx.Colour(255, 0, 0), 1)  # red crosshair
-            dc.SetPen(pen)
-            # Horizontal line
-            dc.DrawLine(0, h//2, w, h//2)
-            # Vertical line
-            dc.DrawLine(w//2, 0, w//2, h)
-            dc.SelectObject(wx.NullBitmap)
-            self.imageCtrl.SetBitmap(bmp)
-        else:
-            self.imageCtrl.SetBitmap(wx.Bitmap(sub_img))
-
-        self.panel.Layout()
-
-    def refreshZoom(self):
-        #Update slider + text + refresh view.
-        self.slider.SetValue(self.zoom)
-        self.txtZoom.SetValue(str(self.zoom))
-        self.updateMagnifier(self.last_x, self.last_y)
-
-    def onZoomIn(self, event):
-        self.zoom = min(self.zoom + 1, 20)
-        self.refreshZoom()
-
-    def onZoomOut(self, event):
-        self.zoom = max(self.zoom - 1, 1)
-        self.refreshZoom()
-
-    def onSliderChange(self, event):
-        self.zoom = self.slider.GetValue()
-        self.refreshZoom()
-
-    def onTextEnter(self, event):
-        try:
-            val = int(self.txtZoom.GetValue())
-            if 1 <= val <= 20:
-                self.zoom = val
-                self.refreshZoom()
-        except ValueError:
-            pass  # ignore invalid input
-
-    def onCrosshairToggle(self, event):
-        self.show_crosshair = self.crosshairCheckbox.GetValue()
-        self.updateMagnifier(self.last_x, self.last_y)
-"""
 
 
 class PhotoCtrl(wx.App):
@@ -1066,6 +333,18 @@ class PhotoCtrl(wx.App):
         self.brightness_offset = 0
         self.contrast_offset   = 0
         self.scrollStep        = 10
+
+        # --- Where to draw point overlays (static "const") ---
+        self.DRAW_TARGET_LEFT  = 1
+        self.DRAW_TARGET_RIGHT = 2
+        self.DRAW_TARGET_BOTH  = self.DRAW_TARGET_LEFT | self.DRAW_TARGET_RIGHT
+
+        # Change this to control drawing:
+        #   DRAW_TARGET_LEFT / DRAW_TARGET_RIGHT / DRAW_TARGET_BOTH
+        self.DRAW_TARGET = self.DRAW_TARGET_BOTH
+
+        self.magnifier_source = "left"  # or "right"
+        self.magnifier = None
 
         self.local_base_path = "./"
         self.controlsData = []
@@ -1910,6 +1189,39 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.lightComboBox.SetValue("Unknown")
 
 
+
+   def sensibleDefaults(self,loadDatasetCase):
+               loadDataset = loadDatasetCase.lower()
+               #Small check (this will need to  be updated if defects change)..
+               if ("positive" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+               if ("negative" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+               if ("class-a" in loadDataset):
+                   app.severityComboBox.SetValue("Class A")
+               if ("class-b" in loadDataset):
+                   app.severityComboBox.SetValue("Class B")
+               if ("class-c" in loadDataset):
+                   app.severityComboBox.SetValue("Class C")
+               if ("pda" in loadDataset) or ("posa" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+                   app.severityComboBox.SetValue("Class A")
+               if ("pdb" in loadDataset) or ("posb" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+                   app.severityComboBox.SetValue("Class B")
+               if ("pdc" in loadDataset) or ("posc" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+                   app.severityComboBox.SetValue("Class C")
+               if ("nda" in loadDataset) or ("nega" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+                   app.severityComboBox.SetValue("Class A")
+               if ("ndb" in loadDataset) or ("negb" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+                   app.severityComboBox.SetValue("Class B")
+               if ("ndc" in loadDataset) or ("negc" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+                   app.severityComboBox.SetValue("Class C")
+
    def openDataset(self, base_dir, streamer, is_directory=True):
     """
     base_dir: local path where info.json/controller.csv/tactile live
@@ -1934,6 +1246,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.scrollBar.SetMin(0)
     self.scrollBar.SetMax(self._ui_max())
 
+    self.sensibleDefaults(base_dir)
+
     # Jump to first visible frame in range
     self.gotoFrameUI(0)
 
@@ -1949,6 +1263,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     if self.filePathIsDirectory:
         self.onSave(None)
+
 
     self.filepath = self.folderStreamer.getImage()
     self.onProcessNewImageSample(self.filepath)
@@ -1970,7 +1285,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            if (checkIfFileExists(jsonPath)):
                print("There are saved data that need to be restored here")
                self.restoreFromJSON(jsonPath)
-
+           else:
+               print("No annotations found for ",filepath)
+               
            json_exists = checkIfFileExists(jsonPath)
 
            # Keep json_exists used (debug/logic elsewhere)
@@ -2229,65 +1546,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             self.onProcessNewImageSample(self.filepath)
 
-
-
-
-   def onNewInputPathOLD(self, newPath):
-        print("\n\n\n\n   New Input Path Received : ",newPath)
-        self.filepath = newPath
-        if (self.filepath!=""):
-           self.filePathIsDirectory = checkIfPathIsDirectory(self.filepath)
-           if (self.filePathIsDirectory):
-               self.folderStreamer.loadNewDataset(self.filepath)
-               self.directoryList = list_image_files(self.filepath)
-               #self.directoryListIndex = 0
-
-               """
-               self.folderStreamer.select(0)
-               print("Directory mode")
-               #print("Directory mode : ",self.directoryList)
-               self.populateMetaData("%s/info.json" % self.filepath)
-               self.loadControlsCSV("%s/controller.csv" % self.filepath)
-               #self.filepath = self.directoryList[self.directoryListIndex]
-               self.filepath = self.folderStreamer.getImage()
-               self.updateMinMaxSlider()
-               """
-
-               print("Directory mode")
-
-               # Load metadata first
-               self.populateMetaData("%s/info.json" % self.filepath)
-
-               # Determine starting frame
-               start_frame = 0
-               if self.metadata and "startFrame" in self.metadata:
-                   try:
-                       start_frame = int(self.metadata["startFrame"])
-                       print("Starting from frame:", start_frame)
-                   except Exception:
-                       start_frame = 0
-
-               # Clamp to valid range
-               start_frame = max(0, min(start_frame, self.folderStreamer.max()))
-
-               # Select frame
-               self.folderStreamer.select(start_frame)
-
-               self.loadControlsCSV("%s/controller.csv" % self.filepath)
-
-               self.filepath = self.folderStreamer.getImage()
-               self.updateMinMaxSlider()
-
-               # Also update slider UI position
-               self.scrollBar.SetValue(start_frame)
-
-
-
-               self._initializeSensorPlotPlaceholders(parent=self.controlsPanel)
-
-
-           self.onProcessNewImageSample(self.filepath)
-
    def loadControlsCSV(self, path):
     """Load control/sensor CSV file."""
     try:
@@ -2414,88 +1672,105 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         NewW,NewH = self.rescaleAnything(img.shape[1],img.shape[0])
         return cv2.resize(img, dsize=(int(NewW),int(NewH)), interpolation=cv2.INTER_CUBIC)
  
-   def onView(self):
-        processed_img = self.sam_processor.foregroundImage
-        processed_img = self.rescaleCVMAT(processed_img)
 
-        #Don't recalculate this
-        #self.clickRatioX = self.sam_processor.foregroundImage.shape[1] / processed_img.shape[1]
-        #self.clickRatioY = self.sam_processor.foregroundImage.shape[0] / processed_img.shape[0]
+   def _annotate_bitmap_with_points(self, base_bmp: wx.Bitmap, ratioX: float, ratioY: float) -> wx.Bitmap:
+    """Return a NEW bitmap with circles drawn on it (does not modify base_bmp)."""
+    img_copy = wx.Image(base_bmp.ConvertToImage())
+    temp_bmp = wx.Bitmap(img_copy)
 
-        h, w = processed_img.shape[:2]
-        #processed_img = self.ClassifierPnm.forward(self.sam_processor.foregroundImage)
-        wxbmp = wx.Bitmap.FromBuffer(w, h, processed_img)
-        
-        if len(self.points_of_interest)>0:
-          #img_copy = wx.Image(w, h)
-          #img_copy.SetData(wxbmp.ConvertToImage().GetData())
-          img_copy = wx.Image(wxbmp.ConvertToImage())  # Preserve original image data
-          # Draw red circles on the copy for points of interest
-          temp_bmp = wx.Bitmap(img_copy)  # Create a temporary wx.Bitmap
-          dc = wx.MemoryDC()
-          dc.SelectObject(temp_bmp)  # Select the temporary bitmap into the memory DC
-          dc.SetBrush(wx.TRANSPARENT_BRUSH)  # Make sure circles are not filled with white
+    dc = wx.MemoryDC()
+    dc.SelectObject(temp_bmp)
+    dc.SetBrush(wx.TRANSPARENT_BRUSH)
 
-          numberOfPointsToDraw = len(self.points_of_interest)
-          for pointID in range(numberOfPointsToDraw):
-              x = self.points_of_interest[pointID][0]
-              y = self.points_of_interest[pointID][1]
-              pClass = self.points_classes[pointID]
-              pSever = self.points_severities[pointID]
+    expectedTileSize = 40
+    r = expectedTileSize // 2
 
-              if pClass == "Suspicious":
-                #This is not a defect we annotate it to make sure it is included
-                dc.SetPen(wx.Pen(wx.GREEN, 2))
-                dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 17)
-              elif pClass == "Clean":
-                #This is not a defect we annotate it to make sure it is included
-                dc.SetPen(wx.Pen(wx.GREEN, 2))
-                dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 17)
-              else:
-                #Regular defect here 
-                if   "Class A" in pSever:  
-                   dc.SetPen(wx.Pen(wx.YELLOW, 2))
-                elif "Class B" in pSever: 
-                   wxColor = wx.NamedColour("orange")
-                   dc.SetPen(wx.Pen(wxColor, 2)) #wx.ORANGE
-                elif "Class C" in pSever: 
-                   dc.SetPen(wx.Pen(wx.BLACK, 2))
-                elif "AI" in pSever: 
-                   dc.SetPen(wx.Pen(wx.WHITE, 2))
-                else:
-                   print("Weird severity encountered (",pSever,")")
-                   dc.SetPen(wx.Pen(wx.BLUE, 2))
-                dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 19)
+    for pointID in range(len(self.points_of_interest)):
+        x = self.points_of_interest[pointID][0]
+        y = self.points_of_interest[pointID][1]
+        pClass = self.points_classes[pointID]
+        pSever = self.points_severities[pointID]
 
-                dc.SetPen(wx.Pen(wx.RED, 2))
-                dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 17)
-                dc.DrawCircle(int(x/self.clickRatioX), int(y/self.clickRatioY), 21)
+        cx = int(x / ratioX)
+        cy = int(y / ratioY)
 
-          dc.SelectObject(wx.NullBitmap)  # Deselect the bitmap from the memory DC
-
-          self.secondaryImageCtrl.SetBitmap(temp_bmp)  # Set the bitmap with the drawn circles
-
+        if pClass in ("Suspicious", "Clean"):
+            dc.SetPen(wx.Pen(wx.GREEN, 2))
+            dc.DrawCircle(cx, cy, r)
         else:
-          self.secondaryImageCtrl.SetBitmap(wxbmp)
+            if "Class A" in pSever:
+                dc.SetPen(wx.Pen(wx.YELLOW, 2))
+            elif "Class B" in pSever:
+                dc.SetPen(wx.Pen(wx.NamedColour("orange"), 2))
+            elif "Class C" in pSever:
+                dc.SetPen(wx.Pen(wx.BLACK, 2))
+            elif "AI" in pSever:
+                dc.SetPen(wx.Pen(wx.WHITE, 2))
+            else:
+                print("Weird severity encountered (", pSever, ")")
+                dc.SetPen(wx.Pen(wx.BLUE, 2))
 
+            dc.DrawCircle(cx, cy, r + 2)
+
+            dc.SetPen(wx.Pen(wx.RED, 2))
+            dc.DrawCircle(cx, cy, r)
+            dc.DrawCircle(cx, cy, r + 4)
+
+    dc.SelectObject(wx.NullBitmap)
+    return temp_bmp
+
+   def onView(self):
+    # ---- RIGHT image base (SAM / foreground) ----
+    right_img = self.sam_processor.foregroundImage
+    right_img = self.rescaleCVMAT(right_img)
+    rh, rw = right_img.shape[:2]
+    right_bmp = wx.Bitmap.FromBuffer(rw, rh, right_img)
+
+    # ---- LEFT image base (whatever is currently shown) ----
+    left_bmp = self.imageCtrl.GetBitmap()
+    left_ok = left_bmp and left_bmp.IsOk()
+
+    # If no points, just refresh the right image like before (and optionally leave left alone)
+    if len(self.points_of_interest) == 0:
+        if self.DRAW_TARGET & self.DRAW_TARGET_RIGHT:
+            self.secondaryImageCtrl.SetBitmap(right_bmp)
+        else:
+            # keep whatever was there, or show right_bmp if you want
+            self.secondaryImageCtrl.SetBitmap(right_bmp)
+
+        # Only touch left if you explicitly want to overwrite it (usually you don't)
         self.panel.Refresh()
+        return
+
+    # ---- Annotate per-target using per-target ratios ----
+    # IMPORTANT: ratios must match the bitmap you're drawing on
+    # Full dims are in: self.viewedImageFullWidth / self.viewedImageFullHeight
+    # (set in onProcessNewImageSample)
+    if self.DRAW_TARGET & self.DRAW_TARGET_LEFT and left_ok:
+        lw = left_bmp.GetWidth()
+        lh = left_bmp.GetHeight()
+        left_ratioX = self.viewedImageFullWidth / lw
+        left_ratioY = self.viewedImageFullHeight / lh
+        left_overlay = self._annotate_bitmap_with_points(left_bmp, left_ratioX, left_ratioY)
+        self.imageCtrl.SetBitmap(left_overlay)
+
+    if self.DRAW_TARGET & self.DRAW_TARGET_RIGHT:
+        right_ratioX = self.viewedImageFullWidth / rw
+        right_ratioY = self.viewedImageFullHeight / rh
+        right_overlay = self._annotate_bitmap_with_points(right_bmp, right_ratioX, right_ratioY)
+        self.secondaryImageCtrl.SetBitmap(right_overlay)
+    else:
+        # if not drawing on right, still show the right base image
+        self.secondaryImageCtrl.SetBitmap(right_bmp)
+
+    self.panel.Refresh()
+
 
    def onSelectPoint(self, event):
         selected_index = self.pointList.GetSelection()
         #if selected_index != -1:
         #    wx.MessageBox(f"Selected Point: {self.points_of_interest[selected_index]}")
-
-   """
-   def updateMinMaxSlider(self):
-        cur      = self.folderStreamer.current()
-        maxim    = self.folderStreamer.max()
-        percent  = 100.0 * (cur/maxim) 
-
-        self.scrollBar.SetValue(cur)
-        self.scrollBar.SetMax(maxim)
-        print("setScrollbar Value/Max ( ",cur,",",maxim,")")
-        self.instructLbl.SetLabel("Sample %u/%u - %0.2f%%  - Focus %0.2f" % (cur,maxim,percent,self.tenengrad_focus_measure) )
-   """
+ 
    def updateMinMaxSlider(self):
     stream_cur = self.folderStreamer.current()
     ui_cur     = self._ui_from_stream(stream_cur)
@@ -2515,23 +1790,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     )
 
 
-   """
-   def onScroll(self, event):
-        # Handle scroll events here
-        #scroll_position = self.scrollBar.GetThumbPosition()
-        scroll_position = self.scrollBar.GetValue()
-        scroll_max      = self.scrollBar.GetMax()
-        print("Scroll Position:", scroll_position,"/",scroll_max)
-
-        self.folderStreamer.select(scroll_position)
-
-        if (self.filePathIsDirectory):
-               self.onSave(None)
-               self.filepath = self.folderStreamer.getImage()
-               self.onProcessNewImageSample(self.filepath)
-               self.updateMinMaxSlider()
-               self.onView()
-   """
    def onScroll(self, event):
     ui_idx = self.scrollBar.GetValue()
     print("Scroll Position:", ui_idx, "/", self.scrollBar.GetMax())
@@ -2646,28 +1904,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     ui = self.scrollBar.GetValue()
     ui = self._ui_max() if ui <= 0 else (ui - 1)
     self.gotoFrameUI(ui)
-
-   """
-   def onPrevious(self, event):
-        print("Previous")
-        self.folderStreamer.previous()
-        if (self.filePathIsDirectory):
-               self.onSave(None)
-               self.updateMinMaxSlider()
-               self.filepath = self.folderStreamer.getImage()
-               self.onProcessNewImageSample(self.filepath)
-               self.onView()
-
-   def onNext(self, event):
-        print("Next")
-        self.folderStreamer.next()
-        if (self.filePathIsDirectory):
-               self.onSave(None)
-               self.updateMinMaxSlider()
-               self.filepath = self.folderStreamer.getImage()
-               self.onProcessNewImageSample(self.filepath)
-               self.onView()
-   """
 
    def onRemovePoint(self, event):
         selected_index = self.pointList.GetSelection()
@@ -2820,10 +2056,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onExit(event)
         elif keycode == ord('J') or keycode == ord('j'):
             self.openJumpToFrameDialog()
+        elif keycode == wx.WXK_TAB:
+            if self.magnifier and self.magnifier.IsShown():
+                self.magnifier_source = "right" if self.magnifier_source == "left" else "left"
+                self._updateMagnifierImage()
+                return
         else:
             event.Skip()
 
-   def onUploadAnnotations(self, event):
+   def onUploadAnnotationsOLD(self, event):
       print("Local Dir: ",self.folderStreamer.local_dir)
       zip_path = "./upload.zip"  # replace with your real file path
       zipCommand = "zip %s -b %s %s/color*.json "% (zip_path, self.local_base_path, self.folderStreamer.local_dir) 
@@ -2834,12 +2075,35 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       dlg.Destroy()
       os.system("rm upload.zip")
 
+   def onUploadAnnotations(self, event):
+    print("Local Dir: ", self.folderStreamer.local_dir)
+
+
+    base_dir = self.local_base_path                 # e.g. /media/ammar/games2/Datasets/Magician
+    #zip_path = "./upload.zip"
+    zip_path = os.path.join(base_dir, "upload.zip")
+    rel_dir  = os.path.basename(self.folderStreamer.local_dir.rstrip("/"))
+    # rel_dir should be "AltinayKapoDefect"
+
+    zipCommand = (
+        f'cd "{base_dir}" && '
+        f'zip "{zip_path}" -b "{base_dir}" "{rel_dir}"/color*.json'
+    )
+
+    print("Zip command : ", zipCommand)
+    os.system(zipCommand)
+
+    dlg = UploadDialog(self.frame, zip_path, self.folderStreamer.local_dir)
+    dlg.ShowModal()
+    dlg.Destroy()
+    os.system('rm -f "./upload.zip"')
+
    def onRunBatch(self, event):
         dlg = BatchProcessDialog(self.frame, self.folderStreamer)
         dlg.ShowModal()
         dlg.Destroy()
 
-   def onOpenMagnifier(self, event):
+   def onOpenMagnifierOLD(self, event):
      """Open a magnifier window."""
      if hasattr(self, 'magnifier') and self.magnifier:
         self.magnifier.Raise()
@@ -2857,6 +2121,40 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
      # Bind mouse motion to update magnifier for both images
      self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
      self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
+
+   def _updateMagnifierImage(self):
+    if not self.magnifier:
+        return
+
+    if self.magnifier_source == "left":
+        bmp = self.imageCtrl.GetBitmap()
+    else:
+        bmp = self.secondaryImageCtrl.GetBitmap()
+
+    self.magnifier.updateImage(bmp)
+
+   def onOpenMagnifier(self, event):
+    # If already open, just raise it
+    if self.magnifier and self.magnifier.IsShown():
+        self.magnifier.Raise()
+        return
+
+    self.magnifier = MagnifierFrame(self.frame)
+    self.magnifier.Show()
+
+    # Choose initial source
+    src_ctrl = self.imageCtrl if self.magnifier_source == "left" else self.secondaryImageCtrl
+    self._magnifier_src = src_ctrl  # track current source control
+
+    # Set initial image (wx.Image!)
+    bmp = src_ctrl.GetBitmap()
+    if bmp and bmp.IsOk():
+        self.magnifier.setImage(bmp.ConvertToImage())
+
+    # IMPORTANT: bind motion so updates happen
+    self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
+    self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
+
 
    def onRecordDataset(self,event):
        os.system("python3 magician_grabber_frontend.py %s" % self.local_base_path) #<- Lazy
@@ -2920,12 +2218,37 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
    def onBenchmarkAcc(self,event):
         self.onBenchmarkGeneral(event,alterStep=False)
 
-
-   def onMouseMoveMagnifier(self, event):
+   def onMouseMoveMagnifierOLD(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
         x, y = event.GetX(), event.GetY()
         self.magnifier.updateMagnifier(x, y)
      event.Skip()
+
+   def onMouseMoveMagnifier(self, event):
+    if not (hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown()):
+        event.Skip()
+        return
+
+    src = event.GetEventObject()  # either imageCtrl or secondaryImageCtrl
+
+    # Switch magnifier source only when the mouse moves over the other image
+    if getattr(self, "_magnifier_src", None) is not src:
+        self._magnifier_src = src
+
+        # Pull bitmap from the active control and set magnifier image
+        try:
+            bmp = src.GetBitmap()
+            if bmp and bmp.IsOk():
+                self.magnifier.setImage(bmp.ConvertToImage())
+        except Exception:
+            pass
+
+    # Coordinates are relative to the control that generated the event
+    x, y = event.GetX(), event.GetY()
+    self.magnifier.updateMagnifier(x, y)
+
+    event.Skip()
+
 
 if __name__ == '__main__':
     print("Annotator App Starting..")

@@ -1,9 +1,17 @@
 import os
 import threading
 import time
+import json
 import wx
 
 
+"""
+Check if a file exists
+"""
+def checkIfFileExists(filename):
+    if (filename is None):  
+       return False
+    return os.path.isfile(filename) 
 
 class UploadDialog(wx.Dialog):
     def __init__(self, parent, zip_path, dataset, credentials="server.json"):
@@ -11,6 +19,10 @@ class UploadDialog(wx.Dialog):
         self.zip_path = zip_path  # path to the zip file
         self.dataset  = dataset
         self.credentials = credentials
+
+        if (not checkIfFileExists(zip_path)):
+            wx.MessageBox(f"Could not find zip file %s with annotations :(" % zip_path, "Error", wx.OK | wx.ICON_ERROR)
+            return
 
         # Try to load saved credentials
         saved_user, saved_pwd = self.load_credentials()

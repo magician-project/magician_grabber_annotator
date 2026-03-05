@@ -98,6 +98,10 @@ class MagnifierFrame(wx.Frame):
 
         self.panel.Layout()
 
+    def updateImage(self, bitmap):
+        self.original_bitmap = bitmap
+        self.Refresh()
+
     def refreshZoom(self):
         """Update slider + text + refresh view."""
         self.slider.SetValue(self.zoom)

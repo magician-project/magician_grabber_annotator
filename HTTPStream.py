@@ -107,13 +107,18 @@ def retrieve_annotation_zips(base_url, datasetnameFull, local_dir="downloads"):
         import zipfile
         from io import BytesIO
 
-        with zipfile.ZipFile(BytesIO(zresp.content)) as zf:
-            zf.extractall(local_dir)
+        print("We assume annotations should have DatasetName/*.json files")
+        
+        print("So we want to extract one layer above ",local_dir)
+        extract_base = os.path.dirname(local_dir.rstrip("/"))
+        print("The extract base should be ",extract_base)
 
-        os.system(
-            f"mv {local_dir}/{datasetname}/*.json {local_dir}/ 2>/dev/null && "
-            f"rmdir {local_dir}/{datasetname}/ 2>/dev/null"
-        )
+        with zipfile.ZipFile(BytesIO(zresp.content)) as zf:
+            #zf.extractall(local_dir)
+            zf.extractall(extract_base)
+
+        #os.system(f"mv {local_dir}/{datasetname}/*.json {local_dir}/ 2>/dev/null && "
+        #    f"rmdir {local_dir}/{datasetname}/ 2>/dev/null" )
 
         recoveredAnnotations = True
 
