@@ -128,115 +128,13 @@ else:
         pass
 #-------------------------------------------------------------------------------
 
-"""
-Do a CRC on data to prevent data corruption training errors
-"""
-def get_md5(file_path):
-    # Construct the command
-    command = f"md5sum {file_path}"
-    
-    # Execute the command and capture the output
-    output = os.popen(command).read()
-    
-    # Parse the output to extract the MD5 hash
-    md5_hash = output.split()[0]
-    
-    return md5_hash
+
+from readData import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
+from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region
+from uploadAnnotations import UploadDialog
+
 
 """
-Check if a file exists
-"""
-def checkIfFileExists(filename):
-    if (filename is None):  
-       return False
-    return os.path.isfile(filename) 
-
-"""
-Check if a path exists
-"""
-def checkIfPathExists(filename):
-    if (filename is None):  
-       return False
-    return os.path.exists(filename) 
-
-"""
-Check if a path exists
-"""
-def checkIfPathIsDirectory(filename):
-    if (filename is None):  
-       return False
-    return os.path.isdir(filename) 
-
-
-
-def resolve_annotation_json_path(image_path: str, prefer_existing: bool = True) -> str:
-    """
-    Resolve the annotation JSON path for a given image.
-
-    New-style annotations (current behavior) are stored as:
-        <image_path>.json
-    Legacy datasets (PNM-era) stored annotations as:
-        <image_basename>.pnm.json
-    e.g. colorFrame_0_00021.png  -> colorFrame_0_00021.pnm.json
-
-    If prefer_existing is True, the first existing candidate path is returned.
-    Otherwise, the default new-style path is returned.
-    """
-    if image_path is None:
-        return None
-
-    candidates = []
-
-    # New style: image.ext.json
-    candidates.append(f"{image_path}.json")
-
-    # Legacy style: image.pnm.json (swap extension to .pnm)
-    root, ext = os.path.splitext(image_path)
-    #if ext.lower() != ".pnm":
-    candidates.append(f"{root}.pnm.json")
-    candidates.append(f"{root}.png.json") #<- attempt to annotate .png->.pnm
-
-    if prefer_existing:
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-
-    return candidates[0]
-
-def list_image_files(directory):
-    """
-    Retrieve a list of all files in the specified directory.
-
-    Parameters:
-    - directory (str): The path to the directory.
-
-    Returns:
-    - files (list): A list of file names in the directory.
-    """
-
-    image_extensions = ['.png', '.pnm', '.jpg', '.jpeg']
-    image_files = []
-
-    try:
-        # Iterate over all files and directories in the specified directory
-        for filename in os.listdir(directory):
-            filepath = os.path.join(directory, filename)
-
-            # Check if it's a file (not a directory) and has a valid image extension
-            if os.path.isfile(filepath) and any(filename.lower().endswith(ext) for ext in image_extensions):
-               if "foreground.png" in filepath:
-                   print("Omitting ",filepath," since it is a foreground file!")
-               else:
-                   image_files.append(filepath) 
-
-    except OSError as e:
-        print(f"Error reading directory '{directory}': {e}")
-    
-    image_files.sort() # Always sort files 
-
-    return image_files
-
-
 def loadMoreClasses(filename,classes_dict):
     with open("%s.json"%filename) as json_data:
         data          = json.load(json_data)
@@ -246,9 +144,8 @@ def loadMoreClasses(filename,classes_dict):
            #print("Add `",cl,"` class ")
            classes_dict[cl]=True 
     return classes_dict 
+"""
 
-
-from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region
 
 def slowPC():
     import socket
@@ -262,7 +159,6 @@ def slowPC():
     return False
 
 
-from uploadAnnotations import UploadDialog
 
 
 
@@ -526,10 +422,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # Under-image navigation
     self.prevBtn = wx.Button(self.panel, label='<')
     self.prevBtn.Bind(wx.EVT_BUTTON, self.onPrevious)
+    self.playBtn = wx.Button(self.panel, label='Play')
+    self.playBtn.Bind(wx.EVT_BUTTON, self.onTogglePlay)
     self.nextBtn = wx.Button(self.panel, label='>')
     self.nextBtn.Bind(wx.EVT_BUTTON, self.onNext)
     self.cameraSettingsBtn = wx.Button(self.panel, label='Camera')
     self.cameraSettingsBtn.Bind(wx.EVT_BUTTON, self.onCameraSettings)
+
+
+    self.isPlaying = False
+    self.playIntervalMs = 100  # adjust speed here
+    self.playTimer = wx.Timer(self)
+    self.Bind(wx.EVT_TIMER, self.onPlayTimer, self.playTimer)
 
     global processors
     self.ProcessorComboBox = wx.ComboBox(self.panel, choices=processors, style=wx.CB_DROPDOWN)
@@ -578,6 +482,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # Under-image controls row
     self.underImage.Add(self.prevBtn, 0, wx.ALL, 5)
+    self.underImage.Add(self.playBtn, 0, wx.ALL, 5) 
     self.underImage.Add(self.nextBtn, 0, wx.ALL, 5)
     self.underImage.Add(self.photoTxt, 0, wx.ALL, 5)
     self.underImage.Add(browseBtn, 0, wx.ALL, 5)
@@ -1162,21 +1067,23 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if (self.lightComboBox.GetValue()!="Unknown"):
               allData["lightDirection"] = self.lightComboBox.GetValue()
 
+        #primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
+        #fallback_json = f"{self.filepath}.json"
+
+        root, _ = os.path.splitext(self.filepath)
+        newstyle_json = root + ".json"  # <-- colorFrame_0_00047.json
         primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
-        fallback_json = f"{self.filepath}.json"
-        with open(primary_json, "w") as outfile:
+        if (not checkIfFileExists(primary_json)):
+                  primary_json = newstyle_json
+
+        try:
+          with open(primary_json, "w") as outfile:
             json.dump(allData, outfile, sort_keys=False)
+   
+          self.folderStreamer.saveJSON()
+        except Exception as e:
+          print("Warning: Could not write annotations to disk",primary_json," , ",fallback_json, ":", e)
 
-        # Also write the new-style <image>.json for forward-compatibility
-        # if we ended up saving to the legacy <image>.pnm.json path.
-        if (primary_json != fallback_json):
-            try:
-                with open(fallback_json, "w") as outfile2:
-                    json.dump(allData, outfile2, sort_keys=False)
-            except Exception as e:
-                print("Warning: could not also write", fallback_json, ":", e)
-
-        self.folderStreamer.saveJSON()
 
 
    def cleanThisFrameMetaData(self):
@@ -1279,18 +1186,32 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            #if (checkIfFileExists("%s.json"%filepath)):
            #    print("There are saved data that need to be restored here")
            #    self.restoreFromJSON("%s.json" % filepath)
-           jsonPath = self.folderStreamer.getJSON()
+           #jsonPath = self.folderStreamer.getJSON()
            # Make .png/.jpg compatible with legacy annotations saved as *.pnm.json
-           jsonPath = resolve_annotation_json_path(filepath, prefer_existing=True) or jsonPath
-           if (checkIfFileExists(jsonPath)):
-               print("There are saved data that need to be restored here")
-               self.restoreFromJSON(jsonPath)
-           else:
-               print("No annotations found for ",filepath)
-               
-           json_exists = checkIfFileExists(jsonPath)
+           #jsonPath = resolve_annotation_json_path(filepath, prefer_existing=True) or jsonPath
 
-           # Keep json_exists used (debug/logic elsewhere)
+           print("onProcessNewImageSample (", filepath, ") ")
+           json_exists = False
+
+           jsonPath = self.folderStreamer.getJSON()
+           print(" self.folderStreamer.getJSON() = ", jsonPath, " ")
+
+           # 1) Trust the streamer's answer first (HTTP streamer downloads stem.json)
+           if jsonPath is not None and checkIfFileExists(jsonPath):
+               print("There are saved data that need to be restored here (", jsonPath, ")")
+               self.restoreFromJSON(jsonPath)
+               json_exists = True
+           else:
+               # 2) Fallback to resolver (local legacy compatibility)
+               resolved = resolve_annotation_json_path(filepath, prefer_existing=True)
+               if resolved is not None and checkIfFileExists(resolved):
+                   jsonPath = resolved
+                   print("There are saved data that need to be restored here (", jsonPath, ")")
+                   self.restoreFromJSON(jsonPath)
+                   json_exists = True
+               else:
+                   print("No annotations found for ", filepath, " / ", resolved)
+
            _ = json_exists
 
            
@@ -1894,15 +1815,65 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     self._loadSensorPlotsNewSample(sample_number=sample_number)
 
+   def _slider_max(self):
+    try:
+        return int(self.scrollBar.GetMax())
+    except Exception:
+        return 0
+
+   def _stopPlayback(self):
+    if getattr(self, "playTimer", None) is not None and self.playTimer.IsRunning():
+        self.playTimer.Stop()
+    self.isPlaying = False
+    if getattr(self, "playBtn", None) is not None:
+        self.playBtn.SetLabel("Play")
+
+   def onTogglePlay(self, event):
+    print("Play pressed. ui=", self.scrollBar.GetValue(), " max=", self.scrollBar.GetMax())
+    if self.isPlaying:
+        self._stopPlayback()
+        return
+
+    self.isPlaying = True
+    self.playBtn.SetLabel("Pause")
+    self.playTimer.Start(self.playIntervalMs)
+
+   def onPlayTimer(self, event):
+    # Advance one frame; stop at end (do NOT wrap).
+    try:
+        ui = int(self.scrollBar.GetValue())
+    except Exception:
+        self._stopPlayback()
+        return
+
+    ui_max = self._slider_max()
+    if ui >= ui_max:
+        self._stopPlayback()
+        return
+
+    # IMPORTANT: schedule on UI loop and yield paint events
+    self.gotoFrameUI(ui + 1)
+
+    # Force redraw so you actually see frames change
+    try:
+        self.panel.Refresh(False)
+        self.panel.Update()
+        wx.YieldIfNeeded()
+    except Exception:
+        pass
 
    def onNext(self, event):
+    if getattr(self, "isPlaying", False):
+        self._stopPlayback()
     ui = self.scrollBar.GetValue()
-    ui = 0 if ui >= self._ui_max() else (ui + 1)
+    ui = 0 if ui >= self._slider_max() else (ui + 1)
     self.gotoFrameUI(ui)
 
    def onPrevious(self, event):
+    if getattr(self, "isPlaying", False):
+        self._stopPlayback()
     ui = self.scrollBar.GetValue()
-    ui = self._ui_max() if ui <= 0 else (ui - 1)
+    ui = self._slider_max() if ui <= 0 else (ui - 1)
     self.gotoFrameUI(ui)
 
    def onRemovePoint(self, event):

@@ -17,20 +17,121 @@ import numpy as np
 Check if a file exists
 """
 def checkIfFileExists(filename):
+    if filename is None:
+          return False
     return os.path.isfile(filename) 
 
 """
 Check if a path exists
 """
 def checkIfPathExists(filename):
+    if filename is None:
+          return False
     return os.path.exists(filename) 
 
 """
 Check if a path exists
 """
 def checkIfPathIsDirectory(filename):
+    if filename is None:
+          return False
     return os.path.isdir(filename) 
 
+
+"""
+Do a CRC on data to prevent data corruption training errors
+"""
+def get_md5(file_path):
+    # Construct the command
+    command = f"md5sum {file_path}"
+    
+    # Execute the command and capture the output
+    output = os.popen(command).read()
+    
+    # Parse the output to extract the MD5 hash
+    md5_hash = output.split()[0]
+    
+    return md5_hash
+
+
+def list_image_files(directory):
+    """
+    Retrieve a list of all files in the specified directory.
+
+    Parameters:
+    - directory (str): The path to the directory.
+
+    Returns:
+    - files (list): A list of file names in the directory.
+    """
+
+    image_extensions = ['.png', '.pnm', '.jpg', '.jpeg']
+    image_files = []
+
+    try:
+        # Iterate over all files and directories in the specified directory
+        for filename in os.listdir(directory):
+            filepath = os.path.join(directory, filename)
+
+            # Check if it's a file (not a directory) and has a valid image extension
+            if os.path.isfile(filepath) and any(filename.lower().endswith(ext) for ext in image_extensions):
+               if "foreground.png" in filepath:
+                   print("Omitting ",filepath," since it is a foreground file!")
+               else:
+                   image_files.append(filepath) 
+
+    except OSError as e:
+        print(f"Error reading directory '{directory}': {e}")
+    
+    image_files.sort() # Always sort files 
+
+    return image_files
+
+def resolve_annotation_json_path(image_path: str, prefer_existing: bool = True) -> str:
+    """
+    Resolve the annotation JSON path for a given image.
+
+    Supports multiple historical naming schemes:
+
+    New style:
+        image.ext -> image.ext.json
+
+    Legacy styles:
+        image.ext -> image.pnm.json
+        image.ext -> image.png.json
+        image.ext -> image.jpg.json
+
+    If prefer_existing=True the first existing annotation file is returned.
+    Otherwise the default new-style path is returned.
+    """
+
+    if image_path is None:
+        return None
+
+    root, ext = os.path.splitext(image_path)
+    ext = ext.lower()
+
+    candidates = []
+
+    # 1️⃣ preferred modern format
+    candidates.append(f"{image_path}.json")
+
+    # 2️⃣ legacy variants (dataset history compatibility)
+    legacy_exts = ["", ".pnm", ".png", ".jpg", ".jpeg"]
+
+    for e in legacy_exts:
+        candidates.append(f"{root}{e}.json")
+
+    # remove duplicates while preserving order
+    candidates = list(dict.fromkeys(candidates))
+
+    if prefer_existing:
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+
+    # default location for saving annotations
+    return candidates[0]
  
 
 """
@@ -372,9 +473,55 @@ def averagePolarRGBAtoGray(rgba_image):
     return gray_image
 
 
-def loadImage(filename, 
-              i, 
-              border=0, 
+def loadImageAndJSON(filename,
+                     json_filename,
+                     i,
+                     border=0,
+                     tile_size=32,
+                     step=4,
+                     low_value_tile_threshold=30,
+                     debug=False,
+                     includeTilesAnnotatedByAI=True,
+                     use_severity=False,
+                     use_clean_class=True,
+                     ignoreBackground=False):
+
+    tiles        = []
+    tile_classes = []
+    tile_info    = []
+    tiles_annotated_by_ai = 0
+
+    if (".png" in filename) or (".pnm" in filename) or (".jpeg" in filename) or (".jpg" in filename):
+
+        rgba_image = readPolarPNMToRGBA(filename)
+
+        if rgba_image is None:
+            print(filename, " is not an image ")
+            return tiles, tile_classes, tile_info, tiles_annotated_by_ai
+
+        # Use supplied JSON instead of guessing
+        tiles, tile_classes, tile_info, tiles_annotated_by_ai = tileImages(
+            rgba_image,
+            json_filename,
+            border=border,
+            tile_size=tile_size,
+            step=step,
+            low_value_tile_threshold=low_value_tile_threshold,
+            debug=debug,
+            includeTilesAnnotatedByAI=includeTilesAnnotatedByAI,
+            use_severity=use_severity,
+            use_clean_class=use_clean_class,
+            ignoreBackground=ignoreBackground
+        )
+
+        del rgba_image
+
+    return tiles, tile_classes, tile_info, tiles_annotated_by_ai
+
+
+def loadImage(filename,
+              i,
+              border=0,
               tile_size=32,
               step=4,
               low_value_tile_threshold=30,
@@ -383,38 +530,23 @@ def loadImage(filename,
               use_severity=False,
               use_clean_class=True,
               ignoreBackground=False):
-  # Initialize per-call lists (avoid mutable defaults)
-  tiles        = []
-  tile_classes = []
-  tile_info    = []
-  tiles_annotated_by_ai = 0
 
-  if (".png" in filename) or (".pnm" in filename) or (".jpeg" in filename) or (".jpeg" in filename):
+    json_filename = "%s.json" % filename
 
-   rgba_image = readPolarPNMToRGBA(filename) 
-
-   if rgba_image is None:
-    print(filename," is not an image ")
-    return tiles, tile_classes, tile_info, tiles_annotated_by_ai # Return nothing
-   else:
-    #If we successfully read an image, cut it into tiles 
-    tiles, tile_classes, tile_info, tiles_annotated_by_ai = tileImages(rgba_image,
-                                                "%s.json"%filename,
-                                                border=border,
-                                                tile_size=tile_size,
-                                                step=step,
-                                                low_value_tile_threshold=low_value_tile_threshold,
-                                                debug=debug,
-                                                includeTilesAnnotatedByAI=includeTilesAnnotatedByAI,
-                                                use_severity=use_severity,
-                                                use_clean_class=use_clean_class,
-                                                ignoreBackground=ignoreBackground)
-
-    #Remove RGBA image
-    del rgba_image
-
-    return tiles, tile_classes, tile_info, tiles_annotated_by_ai
-
+    return loadImageAndJSON(
+        filename,
+        json_filename,
+        i,
+        border=border,
+        tile_size=tile_size,
+        step=step,
+        low_value_tile_threshold=low_value_tile_threshold,
+        debug=debug,
+        includeTilesAnnotatedByAI=includeTilesAnnotatedByAI,
+        use_severity=use_severity,
+        use_clean_class=use_clean_class,
+        ignoreBackground=ignoreBackground
+    )
 
 def count_class_appearances(onehot, num_classes):
     score = list()

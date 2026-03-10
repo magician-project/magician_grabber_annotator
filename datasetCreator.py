@@ -31,6 +31,7 @@ import wx.lib.scrolledpanel as scrolled
 import os
 import gc
 import sys
+import csv
 import threading
 import time
 import shutil
@@ -42,66 +43,56 @@ import re
 import json
 
 
-# ------------------------------------------------------------------
-# Compatibility helpers for image extension changes (.pnm -> .png)
-# Many older datasets store annotations as: <frame>.pnm.json
-# while images may have been converted to: <frame>.png
-# These helpers make datasetCreator work with both.
-# ------------------------------------------------------------------
-def _legacy_pnm_json_for_image(image_path: str) -> str:
-    """Return legacy annotation path '<basename>.pnm.json' for any image path."""
-    base, ext = os.path.splitext(image_path)
-    return base + ".pnm.json"
-
-def _json_for_image(image_path: str) -> str:
-    """Return default annotation path '<image>.<ext>.json' (i.e. '<image>.json')."""
-    return image_path + ".json"
-
+#from memory_profiler import profile
 def find_annotation_for_image(image_path: str) -> str | None:
-    """Find an existing annotation file for an image, supporting legacy *.pnm.json."""
-    p1 = _json_for_image(image_path)
-    if os.path.exists(p1):
-        return p1
-    p2 = _legacy_pnm_json_for_image(image_path)
-    if os.path.exists(p2):
-        return p2
-    return None
+    """Find an existing annotation file for an image, using readData.resolve_annotation_json_path."""
+    if resolve_annotation_json_path is None:
+        return None
+
+    ann = resolve_annotation_json_path(image_path, prefer_existing=True)
+    return ann if (ann is not None and os.path.exists(ann)) else None
+
 
 def ensure_annotation_sidecar(image_path: str) -> str | None:
     """
-    Ensure loadImage(file_path, ...) can find annotations at '<image_path>.json'.
-    If only legacy '<basename>.pnm.json' exists, copy it to '<image_path>.json'.
-    Returns the annotation path that will be used (or None if none exists).
+    Ensure loadImage(...) can find annotations at '<image_path>.json'.
+    If annotations exist under a legacy name, create '<image_path>.json' as a symlink (or copy).
     """
-    wanted = _json_for_image(image_path)
+    if resolve_annotation_json_path is None:
+        return None
+
+    wanted = f"{image_path}.json"  # what loadImage expects (new style)
     if os.path.exists(wanted):
         return wanted
-    legacy = _legacy_pnm_json_for_image(image_path)
-    if os.path.exists(legacy):
-        try:
-            # Prefer symlink if possible, fallback to copy.
-            if os.path.islink(wanted) or os.path.exists(wanted):
-                return wanted
-            try:
-                os.symlink(os.path.abspath(legacy), wanted)
-            except Exception:
-                shutil.copy2(legacy, wanted)
-            return wanted
-        except Exception as e:
-            print(f"Warning: could not create compat sidecar json for {image_path}: {e}")
-            return legacy
-    return None
 
-#from memory_profiler import profile
+    existing = resolve_annotation_json_path(image_path, prefer_existing=True)
+    if existing is None or not os.path.exists(existing):
+        return None
+
+    # If existing already equals wanted we're done
+    if os.path.abspath(existing) == os.path.abspath(wanted):
+        return wanted
+
+    try:
+        # Prefer symlink if possible, fallback to copy.
+        try:
+            os.symlink(os.path.abspath(existing), wanted)
+        except Exception:
+            shutil.copy2(existing, wanted)
+        return wanted
+    except Exception as e:
+        print(f"Warning: could not create compat sidecar json for {image_path}: {e}")
+        # Fallback: return what we *do* have
+        return existing
 
 
 # --- Import external utilities assumed to exist in readData.py ---
 try:
-    from readData import loadImage, checkIfFileExists, checkIfPathExists, check_threshold, check_variation
+    from readData import loadImageAndJSON, checkIfFileExists, checkIfPathExists, check_threshold, check_variation, resolve_annotation_json_path
 except Exception as e:
     print("Could not import readData utilities. Make sure readData.py exists and is importable.\n", e)
     # We'll still continue; the UI will warn the user if the import failed.
-    loadImage = None
+    loadImageAndJSON = None
     checkIfFileExists = lambda p: os.path.isfile(p)
     checkIfPathExists = lambda p: os.path.exists(p)
     def check_threshold(tile, t):
@@ -166,28 +157,26 @@ def count_files_with_extension(path, extension):
     )
     return count
 # ------------------------------------------------------------------
-def add_png_comment(png_path: str, comment: str):
+def add_png_comment(png_path: str, comment):
     """
-    Adds or updates a 'Comment' metadata field in a PNG file.
-
-    Args:
-        png_path (str): Path to the PNG file.
-        comment (str): Comment string to add.
+    Adds or updates PNG metadata.
+    If comment is a dict, it is stored as JSON in the Comment field.
+    Otherwise it is stored as plain text.
     """
-    
     from PIL import Image, PngImagePlugin
-    # Open the existing image
+    import json
+
     img = Image.open(png_path)
-    
-    # Create a copy of its metadata
+
     meta = PngImagePlugin.PngInfo()
     for k, v in img.info.items():
-        meta.add_text(k, v)
+        meta.add_text(k, str(v))
 
-    # Add or overwrite the 'Comment' field
-    meta.add_text("Comment", comment)
-    #print("Writing ",comment," to ",png_path)
-    # Save the image with updated metadata
+    if isinstance(comment, dict):
+        meta.add_text("Comment", json.dumps(comment))
+    else:
+        meta.add_text("Comment", str(comment))
+
     img.save(png_path, "PNG", pnginfo=meta)
 
 #@profile
@@ -293,7 +282,8 @@ class ProcessorThread(threading.Thread):
                  border=0,
                  step=32, 
                  tile_size=64,
-                 includeTilesNotAnnotated = False,
+                 ignoreSamplesWithNoMetadata=True,
+                 includeTilesNotAnnotated=False,
                  includeTilesAnnotatedByAI=True,
                  use_severity=False,
                  use_clean_class=True):
@@ -309,45 +299,120 @@ class ProcessorThread(threading.Thread):
         self.use_severity = use_severity
         self.use_clean_class = use_clean_class
         self._stop = False
+        self.ignoreSamplesWithNoMetadata = ignoreSamplesWithNoMetadata
         self.includeTilesNotAnnotated    = includeTilesNotAnnotated
         self.includeTilesAnnotatedByAI   = includeTilesAnnotatedByAI
         self.total_tiles_annotated_by_ai = 0
+        self.controlsData = []
+
+    def readControllerCSV(self,pathToCSV):
+        self.controlsData = []
+        try:
+          with open(pathToCSV, newline='') as csvfile:
+            reader = csv.DictReader(csvfile)
+            self.controlsData = list(reader)
+        except Exception:
+            print("Failed opening CSV file ",pathToCSV)
+            pass
+
+    def getControllerCSVRowData(self,frameID):
+      if frameID is None:
+         return None
+      try:
+        data_row = self.controlsData[frameID]
+        print("Controller data for frame #",frameID,"/",len(self.controlsData)," : ",data_row)
+
+
+        #DistanceAverage calculation
+        #==============================================================
+        distances = []
+        for key in ["Distance1", "Distance2", "Distance3"]:
+            val = data_row.get(key)
+            try:
+                distances.append(float(val))
+            except (TypeError, ValueError):
+                # ignore H, F, None, missing, etc.
+                pass
+        #==============================================================
+        if distances:
+            data_row["DistanceAverage"] = sum(distances) / len(distances)
+        #else:
+        #    data_row["DistanceAverage"] = None
+        #==============================================================
+
+        return data_row
+      except Exception as e:
+            print(f"Failed {e} getControllerCSVRowData for frame #",frameID,"         ")
+            pass
+      return None
+
+    def get_frame_number_from_path(self,path): # path is something like /media/ammar/games2/Datasets/Magician/AltinayWelding/colorFrame_0_00047.png
+        filename = os.path.basename(path)          # colorFrame_0_00047.png
+        if ("colorFrame" in filename):
+          number = filename.split('_')[-1].split('.')[0]  # 00047
+          return int(number)
+        return None
   
-    def process_a_file(self,file_index,file_path,occurances):
-                print("File : ",file_path,end=" ")
-                # Ensure annotations are discoverable as '<image>.json' even if the dataset
-                # uses legacy '<basename>.pnm.json' while images are now '.png'.
-                ensure_annotation_sidecar(file_path)
+    def process_a_file(self, file_index, file_path, metaData, occurances):
+        print("File : ", file_path, end=" ")
 
+        # Resolve the *existing* annotation path (handles .pnm.json / .png.json etc)
+        json_path = resolve_annotation_json_path(file_path, prefer_existing=True)
 
-                tiles, tile_classes, tile_info, tiles_annotated_by_ai = loadImage(file_path,
-                                                           file_index,
-                                                           border=self.border,
-                                                           tile_size=self.tile_size,
-                                                           step=self.step,
-                                                           low_value_tile_threshold=self.threshold,
-                                                           use_severity=self.use_severity,
-                                                           use_clean_class=self.use_clean_class,
-                                                           includeTilesAnnotatedByAI=self.includeTilesAnnotatedByAI,
-                                                           debug=True)
-                self.total_tiles_annotated_by_ai += tiles_annotated_by_ai
-                print("Tiles : ",len(tiles)," ")
-                # Create per-file output dir under target_dir -> maintain the same structure: one output root for everything
-                outdir = os.path.abspath(self.target_dir)
-                os.makedirs(outdir, exist_ok=True)
-
-                # progress callback to update UI for each tile
-                progress_cb = None
-                #def progress_cb(info):
-                #    wx.CallAfter(self.ui_callbacks['on_progress_update'], info)
-
-                occurances, cleanThreshold = dump_dataset_to_keras_data_loader(tiles, tile_classes,  occurances, self.ratio_clean, outdir, tile_info=tile_info, tiles_annotated_by_ai=self.total_tiles_annotated_by_ai, progress_callback=progress_cb)
-
-                #Empty memory occupied by tiles 
-                del tiles
-                del tile_classes
-                gc.collect()
+        if (json_path is None) or (not os.path.exists(json_path)):
+            # No annotations found for this image
+            if not self.includeTilesNotAnnotated:
+                print(" -> no annotation json, skipping")
                 return occurances
+            # If you DO allow unannotated tiles, still pass the default new-style path
+            # (tileImages should then treat it as missing / empty)
+            json_path = f"{file_path}.json"
+
+        # Use the explicit loader that accepts a json path
+        tiles, tile_classes, tile_info, tiles_annotated_by_ai = loadImageAndJSON(
+                                                                                 file_path,
+                                                                                 json_path,
+                                                                                 file_index,
+                                                                                 border=self.border,
+                                                                                 tile_size=self.tile_size,
+                                                                                 step=self.step,
+                                                                                 low_value_tile_threshold=self.threshold,
+                                                                                 use_severity=self.use_severity,
+                                                                                 use_clean_class=self.use_clean_class,
+                                                                                 includeTilesAnnotatedByAI=self.includeTilesAnnotatedByAI,
+                                                                                 debug=True
+                                                                                )
+
+        self.total_tiles_annotated_by_ai += tiles_annotated_by_ai
+        print("Tiles : ", len(tiles), "             ")
+
+        outdir = os.path.abspath(self.target_dir)
+        os.makedirs(outdir, exist_ok=True)
+
+        #tile_info has a string like: /media/ammar/games2/Datasets/Magician/AltinayWelding/colorFrame_0_00045.json(960,1008)
+        #metaData is a dictionary with entries like : {'timestamp': '6661870', 'dev_timestamp': '5199', 'Button1': '0', 'Button2': '0', 'Distance1': 'H', 'Distance2': '156', 'Distance3': '202', 'Light1': '0', 'Light2': '0', 'Light3': '0', 'Light4': '1', 'Light5': '0', 'Light6': '0'}
+        if metaData is None:
+               metaData = {} 
+
+        combinedTileInfo = [
+                            {"source": one_tile_info, **metaData}
+                            for one_tile_info in tile_info
+                           ]
+        #print("tile_info ",tile_info)
+        #print("combinedTileInfo ",combinedTileInfo)
+
+
+        occurances, cleanThreshold = dump_dataset_to_keras_data_loader(
+                                                                        tiles, tile_classes, occurances, self.ratio_clean, outdir,
+                                                                        tile_info=combinedTileInfo,
+                                                                        tiles_annotated_by_ai=self.total_tiles_annotated_by_ai,
+                                                                        progress_callback=None
+                                                                       )
+
+        del tiles
+        del tile_classes
+        gc.collect()
+        return occurances
 
 
     def run(self):
@@ -412,14 +477,36 @@ class ProcessorThread(threading.Thread):
             # report start of dataset
             #wx.CallAfter(self.ui_callbacks['on_dataset_start'], dataset_dir, len(file_list), dir_index, total_dirs)
 
+            self.readControllerCSV("%s/controller.csv" % dataset_dir) 
+
+
             files_processed = 0
             for file_index, file_path in enumerate(file_list, start=start_frame+1):
                 if self._stop:
                     break
  
-                self.process_a_file(file_index,file_path,occurances)
+                frameNumber = self.get_frame_number_from_path(file_path)
+                metaData    = self.getControllerCSVRowData(frameNumber)
+                #print("File Index %u / Frame Number %u / File Path %s "%(file_index,frameNumber,file_path)," data = ",metaData)
+                print("File Index %u / Frame Number %u / File Path %s "%(file_index,frameNumber,file_path)) #Less Verbose
+          
+                
+                if (frameNumber is None):
+                     print("Frame Number was not correctly resolved, stopping execution")
+                     sys.exit(1)
 
-                files_processed += 1
+                #if (metaData is None):
+                #     print("Metadata was not correctly resolved, stopping execution")
+                #     sys.exit(1) 
+
+                okToProcessFile = (frameNumber is not None)
+                if (self.ignoreSamplesWithNoMetadata):
+                      okToProcessFile = (metaData is not None) and (frameNumber is not None)
+ 
+                if okToProcessFile: #Only process metadata
+                   self.process_a_file(file_index,file_path,metaData,occurances)
+
+                   files_processed += 1
                 #wx.CallAfter(self.ui_callbacks['on_file_done'], dataset_dir, file_path, files_processed, len(file_list))
 
             wx.CallAfter(self.ui_callbacks['on_dataset_done'], dataset_dir)
@@ -990,7 +1077,9 @@ class MainFrame(wx.Frame):
         self.start_btn.Enable()
         self.stop_btn.Disable()
 
-        # ask to zip
+        #================================================================================================
+        # Ask to zip
+        #================================================================================================
         dlg = wx.MessageDialog(self, f"Processing finished. Do you want to zip the output folder {target_dir}?\n It will take a lot of time!", "Zip output?", wx.YES_NO | wx.ICON_QUESTION)
         res = dlg.ShowModal()
         dlg.Destroy()
@@ -998,12 +1087,61 @@ class MainFrame(wx.Frame):
             try:
                 base = os.path.abspath(target_dir)
                 print("Creating Zip Archive .. (this will take a lot of time..)")
-                archive_name = shutil.make_archive(base, 'zip', base_dir=base)
+                self.log(f"Creating Zip Archive .. (this will take a lot of time..)")
+                #archive_name = shutil.make_archive(base, 'zip', base_dir=base)
+                archive_name = os.path.abspath(target_dir)
+                os.system(f'zip -rv "{archive_name}.zip" "{target_dir}/"')
                 wx.MessageBox(f"Created archive: {archive_name}", "Zip created", wx.ICON_INFORMATION)
                 self.log(f"Created archive: {archive_name}")
             except Exception as e:
                 wx.MessageBox(f"Failed to create archive: {e}", "Error", wx.ICON_ERROR)
                 self.log(f"Failed to create archive: {e}")
+
+
+
+        # ---------------------------------------------------
+        # Ask if user wants to convert dataset to HDF5
+        # ---------------------------------------------------
+        dlg = wx.MessageDialog(
+            self,
+            f"Do you want to package the dataset into HDF5 format (dataset.h5)?\n\n"
+            f"Now is the time to remove classes you dont want from the directory.\nThis will run DatasetConverter.py on:\n{target_dir}",
+            "Create HDF5 dataset?",
+            wx.YES_NO | wx.ICON_QUESTION
+        )
+
+        res = dlg.ShowModal()
+        dlg.Destroy()
+
+        if res == wx.ID_YES:
+            try:
+                cmd = f"python3 ../magician_vision_classifier/DatasetConverter.py {target_dir}"
+                self.log(f"Executing H5 packaging:\n{cmd}")
+                ret = os.system(cmd)
+
+                if ret == 0:
+                    wx.MessageBox(
+                        "HDF5 dataset successfully created.",
+                        "H5 Packaging",
+                        wx.OK | wx.ICON_INFORMATION
+                    )
+                    self.log("HDF5 packaging completed.")
+                else:
+                    wx.MessageBox(
+                        "HDF5 packaging failed. Check console output.",
+                        "H5 Packaging Error",
+                        wx.OK | wx.ICON_ERROR
+                    )
+                    self.log("HDF5 packaging failed.")
+
+            except Exception as e:
+                wx.MessageBox(
+                    f"Failed to run DatasetConverter.py:\n{e}",
+                    "Error",
+                    wx.OK | wx.ICON_ERROR
+                )
+                self.log(f"HDF5 packaging error: {e}")
+
 
 # ------------------------------------------------------------------
 # Main

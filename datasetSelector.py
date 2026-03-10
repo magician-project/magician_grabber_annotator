@@ -297,6 +297,7 @@ class DatasetSelector(wx.Dialog):
                 img + ".json",
                 stem + ".json",
                 stem + ".pnm.json",
+                stem + ".png.json",
             }
 
             if (candidates & file_set) or (set(map(os.path.basename, candidates)) & zip_json_set):

@@ -249,16 +249,19 @@ class HTTPFolderStreamer:
         return None
 
     def _download_file(self, remote_name, overwrite=False):
+        print(f"Ask for: {remote_name}")
         # If this is an image, accept any already-present local variant
         # (.png/.pnm/.jpg/.jpeg) and skip download to avoid duplicates/traffic.
         if (not overwrite) and self._is_image_name(remote_name):
             existing = self._find_existing_local_image_variant(remote_name)
             if existing is not None:
+                print(f"Already Existing: {remote_name}")
                 return existing
 
         local_path = os.path.join(self.local_dir, remote_name)
 
         if not overwrite and os.path.isfile(local_path):
+            print(f"Local Path: {local_path}")
             return local_path
 
         # Ensure subdirectories exist (in case remote_name contains paths)
@@ -281,22 +284,30 @@ class HTTPFolderStreamer:
         next_img = self.file_list[next_index]
         self._download_file(next_img)
 
-        json_name = os.path.splitext(next_img)[0] + ".pnm.json"
-        try:
-            self._download_file(json_name)
-        except RuntimeError:
-            pass
+        stem = os.path.splitext(next_img)[0]
+        for json_name in (stem + ".json", stem + ".pnm.json", stem + ".png.json"):
+            try:
+                self._download_file(json_name)
+                break
+            except RuntimeError:
+                pass
 
     # ---------- Metadata ----------
-
     def getJSON(self):
         img_name = self.file_list[self.index]
-        json_name =  os.path.splitext(img_name)[0] + ".pnm.json"
-        try:
-            return self._download_file(json_name)
-        except RuntimeError:
-            print(f"There is no JSON file for item {self.index}")
-            return None
+        stem = os.path.splitext(img_name)[0]
+
+        # Strict priority: modern -> legacy pnm -> legacy png
+        candidates = [ stem + ".json", stem + ".pnm.json", stem + ".png.json", ]
+
+        for json_name in candidates:
+            try:
+                return self._download_file(json_name)
+            except RuntimeError:
+                continue
+
+        print(f"HTTPStream: There is no JSON file for item {self.index} ({img_name})")
+        return None
 
     def getInfo(self):
         try:
@@ -378,7 +389,7 @@ class HTTPFolderStreamer:
         return img_path
 
     def saveJSON(self):
-        print("Updated JSON (Doing nothing)..")
+        print("HTTPStream saveJSON called (Doing nothing)..")
 
 
 # ------------------ Test ------------------

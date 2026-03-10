@@ -139,11 +139,21 @@ class FolderStreamer():
     self.directoryListIndex = item
 
   def getJSON(self):
-    filepath = "%s.json"% self.directoryList[self.directoryListIndex]
-    if (checkIfFileExists(filepath)):
-               print("There is a JSON file for item ",self.directoryListIndex," -> ",filepath)
-               return filepath
-    print("There is no JSON file for item ",self.directoryListIndex)
+    img_path = self.directoryList[self.directoryListIndex]
+    stem = os.path.splitext(img_path)[0]
+
+    candidates = [
+        img_path + ".json",      # new style: image.ext.json
+        stem + ".pnm.json",      # legacy
+        stem + ".png.json",      # legacy
+    ]
+
+    for filepath in candidates:
+        if checkIfFileExists(filepath):
+            print("folderStream: There is a JSON file for item ", self.directoryListIndex, " -> ", filepath)
+            return filepath
+
+    print("folderStream: There is no JSON file for item ", self.directoryListIndex)
     return None
 
   def getImage(self):
@@ -156,7 +166,7 @@ class FolderStreamer():
     return self.getImage()
 
   def saveJSON(self):
-    print("Updated JSON (Doing nothing)..")
+    print("folderStream saveJSON (Doing nothing)..")
  
 if __name__ == '__main__':
     print("Folder Stream tester..") 
