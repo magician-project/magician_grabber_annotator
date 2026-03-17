@@ -164,7 +164,7 @@ class StreamerFrame(wx.Frame):
     def on_start(self, event):
         folder = self.dir_picker.GetPath()
         stream_name = self.stream_name_ctrl.GetValue()
-        if not folder or not stream_name:
+        if not folder or not os.path.isdir(folder) or not stream_name:
             wx.MessageBox("Please select folder and set stream name", "Error", wx.ICON_ERROR)
             return
 
@@ -190,7 +190,15 @@ class StreamerFrame(wx.Frame):
             os.system("git clone https://github.com/AmmarkoV/SharedMemoryVideoBuffers")
             os.system("cd SharedMemoryVideoBuffers && make && cd ..")
             os.system("ln -s SharedMemoryVideoBuffers/libSharedMemoryVideoBuffers.so" )
-            os.system("SharedMemoryVideoBuffers/server --nokb&")
+
+        # Ensure the shared memory server is running
+        import subprocess
+        result = subprocess.run(["pgrep", "-x", "server"], capture_output=True)
+        if result.returncode != 0:
+            print("Starting shared memory server...")
+            subprocess.Popen(["SharedMemoryVideoBuffers/server", "--nokb"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.5)  # give it time to initialize
 
         self.smm = SharedMemoryManager("libSharedMemoryVideoBuffers.so", 
                                        descriptor="video_frames.shm", 
@@ -245,33 +253,6 @@ class StreamerFrame(wx.Frame):
             self.timer.Stop()
             return
 
-        ok, frame = self.streamer.read()
-        if not ok:
-            self.timer.Stop()
-            self.running = False
-            return
-
-        try:
-            self.smm.copy_numpy_to_shared_memory(frame_rgb)
-        except Exception as e:
-            print("Shared memory write error:", e)
-            self.timer.Stop()
-            return
-
-        # Ensure proper format
-        if len(frame.shape) == 2:
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        elif frame.shape[2] == 4:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-
-        # Match shape
-        if frame.shape[1] != self.smm.width or frame.shape[0] != self.smm.height:
-            frame = cv2.resize(frame, (self.smm.width, self.smm.height))
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-
-        self.current_frame = frame_rgb
         self.update_gui()
 
     def update_gui(self):
