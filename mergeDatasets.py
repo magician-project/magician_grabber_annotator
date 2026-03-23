@@ -6,7 +6,13 @@ Copyright : "2025 Foundation of Research and Technology, Computer Science Depart
 License : "FORTH" 
 """
 
-import wx
+
+try:
+ import wx
+except Exception as e:
+ print("No Wx")
+
+
 import os
 import sys
 import shutil
@@ -41,8 +47,8 @@ def do_merge(src_path,dst_path):
         if not os.listdir(src_path):
             os.rmdir(src_path)
 
-
-class MergeFrame(wx.Frame):
+try:
+ class MergeFrame(wx.Frame):
     def __init__(self, root_path):
         super().__init__(None, title="Class Merger", size=(500, 200))
         self.root_path = root_path
@@ -101,8 +107,11 @@ class MergeFrame(wx.Frame):
 
         # Refresh dropdowns after merge
         self.refresh_choices()
+except Exception as e:
+ print("No Wx")
 
-
+#=======================================================================
+#=======================================================================
 def main():
     if len(sys.argv) < 2:
         print("Usage: python merge_classes.py <path>")
@@ -129,6 +138,8 @@ def main():
     frame = MergeFrame(root_path)
     frame.Show()
     app.MainLoop()
+#=======================================================================
+#=======================================================================
 
 
 if __name__ == "__main__":

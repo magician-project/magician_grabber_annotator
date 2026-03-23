@@ -320,7 +320,7 @@ class ProcessorThread(threading.Thread):
          return None
       try:
         data_row = self.controlsData[frameID]
-        print("Controller data for frame #",frameID,"/",len(self.controlsData)," : ",data_row)
+        #print("Controller data for frame #",frameID,"/",len(self.controlsData)," : ",data_row) #Reduce spam
 
 
         #DistanceAverage calculation
@@ -505,8 +505,9 @@ class ProcessorThread(threading.Thread):
  
                 if okToProcessFile: #Only process metadata
                    self.process_a_file(file_index,file_path,metaData,occurances)
-
                    files_processed += 1
+                else:
+                   print("Metadata was not correctly resolved / file ignored because of ignoreSamplesWithNoMetadata")
                 #wx.CallAfter(self.ui_callbacks['on_file_done'], dataset_dir, file_path, files_processed, len(file_list))
 
             wx.CallAfter(self.ui_callbacks['on_dataset_done'], dataset_dir)
