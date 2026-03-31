@@ -265,13 +265,21 @@ def tileImages(image,
                         if start_x <= xAct < end_x and start_y <= yAct < end_y:
 
                             thisTileDescription = point_classes[idx]
- 
+
+                            # RLClean: automatic RL annotation — treat as Clean when
+                            # includeTilesAnnotatedByAI is True, otherwise drop it.
+                            if thisTileDescription == "RLClean":
+                               if includeTilesAnnotatedByAI:
+                                   thisTileDescription = "Clean"
+                               else:
+                                   tileAnnotatedByAI = 1  # will be filtered below
+
                             if (points_severities[idx]=="AI"):
                                tileAnnotatedByAI = 1
                                #points_severities[idx]="Class A" #<- Maybe package this with the rest ?
 
                             #If we care about severities, this will make description of class:
-                            # PositiveDentClassA 
+                            # PositiveDentClassA
                             if (use_severity):
                                if (point_classes[idx]!="Clean"): #Clean tiles have no severity :P
                                   thisTileDescription += points_severities[idx]

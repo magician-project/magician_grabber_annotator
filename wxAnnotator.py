@@ -43,13 +43,14 @@ version         = "0.44"
 useSAM          = False
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 combineChannels = True
-options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean"]
+options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean", "RLClean"]
 severities      = ["Class A","Class B","Class C"]
 directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
 processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Normals", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible","SAM"]
 
 
 #classifier_relative_directory = "../classifier" #Old Name
+classifier_online_repository         = "http://ammar.gr/magician/ckpts2/"
 classifier_relative_directory = "../magician_vision_classifier"
 classifier_model_path         = "%s/last.pth"  % classifier_relative_directory
 classifier_cfg_path           = "%s/last.json" % classifier_relative_directory
@@ -67,7 +68,9 @@ import os
 from folderStream import FolderStreamer
 from classifierGrading import AnnotationCorrelationStats
 from downloadAllFrames import BatchProcessDialog
-from magnifier import MagnifierFrame 
+from magnifier import MagnifierFrame
+from modelUpdater import ModelUpdaterDialog
+from rlAnnotator import RLAnnotatorDialog
 
 
 # Add this line at the beginning of the file to define a new event
@@ -95,6 +98,7 @@ if useClassifier:
     from EnsembleClassifier  import EnsembleClassifierPnm
   except Exception as e:
     print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in wxAnnotator.py")
+    print("Classifier Path : ",parent_path)
     sys.exit(1)
 else:
   class ClassifierPnm:
@@ -125,6 +129,8 @@ else:
         self.foregroundMask  = None
         self.foregroundImage = None
     def save_mask(self,path,mask):
+        pass
+    def select_area(self, x, y):
         pass
 #-------------------------------------------------------------------------------
 
@@ -246,7 +252,7 @@ class PhotoCtrl(wx.App):
         self.controlsData = []
 
         # Create global instance once
-        self.stats = AnnotationCorrelationStats(classifier_name=self.classifierModelCombo.GetValue(),hit_radius=40)
+        self.stats = AnnotationCorrelationStats(classifier_name=self.classifierModelCombo.GetValue(),hit_radius=60)
 
         """
 ['ID_ABORT', 'ID_ABOUT', 'ID_ADD', 'ID_ANY', 'ID_APPLY', 'ID_BACKWARD', 'ID_BOLD
@@ -309,6 +315,29 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        print("Dataset range:", self.datasetStartFrame, "..", self.datasetEndFrame, "total:", total)
 
 
+   def _scan_allclass_models(self, directory):
+        """Return a list of (pth, json) pairs for all valid allclass_* models in directory."""
+        import zipfile
+        result = []
+        if not os.path.isdir(directory):
+            return result
+        for name in sorted(os.listdir(directory)):
+            if not name.startswith("allclass_") or not name.endswith(".pth"):
+                continue
+            base     = name[:-4]
+            pth_path = os.path.join(directory, f"{base}.pth")
+            cfg_path = os.path.join(directory, f"{base}.json")
+            if not os.path.isfile(cfg_path):
+                continue
+            if not zipfile.is_zipfile(pth_path):
+                print(f"[Ensemble] Skipping corrupted/incomplete: {pth_path}")
+                continue
+            print(f"[Ensemble] Adding model: {base}")
+            result.append((pth_path, cfg_path))
+        if not result:
+            print("[Ensemble] Warning: no valid allclass_* models found in", directory)
+        return result
+
    def initializeModels(self):
         if (useSAM):
           if (slowPC):
@@ -318,15 +347,17 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
-        if useClassifier: 
+        if useClassifier:
           self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
+          try:
+              _min_hz = float(self.ensembleMinHz.GetValue())
+          except Exception:
+              _min_hz = 0.0
           self.EnsembleClassifierPnm = EnsembleClassifierPnm(
-                                                            initial_model_cfg = ("../magician_vision_classifier/binary_small_cnn.pth","../magician_vision_classifier/binary_small_cnn.json"),
-                                                            model_cfg_list=[("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
-                                                                            ("../magician_vision_classifier/allclass_resnet18.pth","../magician_vision_classifier/allclass_resnet18.json"),
-                                                                            ("../magician_vision_classifier/allclass_resnext50.pth","../magician_vision_classifier/allclass_resnext50.json"),
-                                                                            #("../magician_vision_classifier/allclass_efficientnet_v2_s.pth","../magician_vision_classifier/allclass_efficientnet_v2_s.json"), #<- This is the slowest to run
-                                                                            ("../magician_vision_classifier/allclass_convnext_tiny.pth","../magician_vision_classifier/allclass_convnext_tiny.json")])
+                                                            #("../magician_vision_classifier/binary_small_cnn.pth","../magician_vision_classifier/binary_small_cnn.json")
+                                                            initial_model_cfg = ("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
+                                                            model_cfg_list=self._scan_allclass_models(classifier_relative_directory),
+                                                            min_hz=_min_hz)
 
    def createWidgets(self):
     # ----- Menus (unchanged) -------------------------------------------------
@@ -366,6 +397,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     itemStreamer      = toolsMenu.Append(wx.ID_FORWARD,  "&Stream To Shared Memory", "Stream To Shared Memory")
     itemBenchmarkPerf = toolsMenu.Append(wx.ID_INDENT,   "&Benchmark Performance based on loaded NN", "Benchmark Perfomance Classifier")
     itemBenchmarkAcc  = toolsMenu.Append(wx.ID_UNINDENT, "&Benchmark Accuracy based on loaded NN", "Benchmark Accuracy Classifier")
+    toolsMenu.AppendSeparator()
+    itemMakeVideo     = toolsMenu.Append(wx.ID_ANY, "&Make Video", "Render all frames to a video file")
     self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
     self.Bind(wx.EVT_MENU, self.onRecordDataset,itemRecordDataset)
     self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
@@ -373,6 +406,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.Bind(wx.EVT_MENU, self.onStreamer,itemStreamer)
     self.Bind(wx.EVT_MENU, self.onBenchmarkPerf,itemBenchmarkPerf)
     self.Bind(wx.EVT_MENU, self.onBenchmarkAcc,itemBenchmarkAcc)
+    self.Bind(wx.EVT_MENU, self.onMakeVideo, itemMakeVideo)
     menuBar.Append(toolsMenu, "&Tools")
 
     helpMenu = wx.Menu()
@@ -658,10 +692,37 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if useClassifier:
             success = self.ClassifierPnm.reload_model(model_dir, model_name)
             if success:
-                #wx.MessageBox(f"Successfully reloaded model: {model_name}", "Model Reloaded", wx.OK | wx.ICON_INFORMATION)
                 print(f"Successfully reloaded model: {model_name}")
+                self.stats.classifier_name = model_name.lower()
+                self.stats.reset()
+                self.classifierInfo.SetLabel(f"Model changed to '{model_name}' — statistics reset.")
             else:
-                wx.MessageBox(f"Failed to reload model: {model_name}", "Error", wx.OK | wx.ICON_ERROR)
+                pth = os.path.join(model_dir, f"{model_name}.pth")
+                answer = wx.MessageBox(
+                    f"Failed to load '{model_name}'.\n\n"
+                    f"The file may be corrupted or incomplete:\n{pth}\n\n"
+                    f"Re-download it now?",
+                    "Model Load Error", wx.YES_NO | wx.ICON_ERROR
+                )
+                if answer == wx.YES:
+                    from modelUpdater import ModelUpdaterDialog
+                    dlg = ModelUpdaterDialog(self.frame, classifier_online_repository, model_dir)
+                    # Pre-select only the failed model
+                    def _preselect(results, err, _dlg=dlg, _name=model_name):
+                        if err or not results:
+                            return
+                        for i, r in enumerate(_dlg._model_data):
+                            _dlg.list_ctrl.Check(i, r['name'] == _name)
+                    dlg._post_check_hook = _preselect
+                    dlg.ShowModal()
+                    # Retry loading after download
+                    retry = self.ClassifierPnm.reload_model(model_dir, model_name)
+                    if retry:
+                        print(f"Successfully reloaded model after re-download: {model_name}")
+                    else:
+                        wx.MessageBox(f"Still failed to load '{model_name}' after re-download.",
+                                      "Error", wx.OK | wx.ICON_ERROR)
+                    dlg.Destroy()
         else:
             print("[WARN] No classifier_instance found on self.")
         evt.Skip()
@@ -730,6 +791,45 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # --- 7. Two-stage classification checkbox ---
     self.classifierTwoStage = wx.CheckBox(parent, label="Enable two-stage classification")
     self.parallellTwoStage  = wx.CheckBox(parent, label="Two-stage parallelism (VRAM intensive)")
+    self.parallellTwoStage.SetValue(True)
+
+    def _on_two_stage_toggled(evt):
+        if self.classifierTwoStage.GetValue():
+            self.stats.classifier_name = "allclass_ensemble"
+        else:
+            self.stats.classifier_name = self.classifierModelCombo.GetValue().lower()
+        self.stats.reset()
+        self.classifierInfo.SetLabel(
+            f"Switched to {'two-stage ensemble' if self.classifierTwoStage.GetValue() else self.classifierModelCombo.GetValue()} — statistics reset.")
+        evt.Skip()
+
+    self.classifierTwoStage.Bind(wx.EVT_CHECKBOX, _on_two_stage_toggled)
+
+    # --- 7b. Min Hz filter for ensemble (applied at init time) ---
+    minHzRow = wx.BoxSizer(wx.HORIZONTAL)
+    minHzLbl = wx.StaticText(parent, label="Ensemble min Hz filter:")
+    self.ensembleMinHz = wx.TextCtrl(parent, value="10", size=(55, -1), style=wx.TE_PROCESS_ENTER)
+    self.ensembleMinHz.SetToolTip(
+        "Drop ensemble models slower than this Hz.\n"
+        "0 = keep all models.  Press Enter or click away to apply immediately.")
+    minHzRow.Add(minHzLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+    minHzRow.Add(self.ensembleMinHz, 0, wx.ALIGN_CENTER_VERTICAL)
+
+    def _apply_min_hz(_evt=None):
+        if not useClassifier:
+            return
+        try:
+            val = float(self.ensembleMinHz.GetValue())
+        except ValueError:
+            return
+        self.EnsembleClassifierPnm.apply_min_hz(val)
+        self.classifierInfo.SetLabel(
+            f"Ensemble filter: {len(self.EnsembleClassifierPnm.classifiers)}"
+            f"/{len(self.EnsembleClassifierPnm._all_classifiers)} models active "
+            f"(min {val:.1f} Hz)")
+
+    self.ensembleMinHz.Bind(wx.EVT_TEXT_ENTER, _apply_min_hz)
+    self.ensembleMinHz.Bind(wx.EVT_KILL_FOCUS,  _apply_min_hz)
 
     # --- 8. "Use NN Classifier" checkbox ---
     self.useClassifierCheckbox = wx.CheckBox(parent, label="Use NN Classifier")
@@ -746,8 +846,180 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.parallellTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(minHzRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
+    # --- "Check for Model Updates" button ---
+    self.checkUpdatesBtn = wx.Button(parent, label="Check for Model Updates…")
+    s.Add(self.checkUpdatesBtn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+    def _on_check_updates(_evt):
+        dlg = ModelUpdaterDialog(self.frame, classifier_online_repository, classifier_relative_directory)
+        dlg.ShowModal()
+        # Refresh model list after dialog closes
+        updated_models = ClassifierPnm.model_scan(classifier_relative_directory)
+        if updated_models:
+            self.classifierModelCombo.Clear()
+            for m in updated_models:
+                self.classifierModelCombo.Append(m)
+            self.classifierModelCombo.SetValue(updated_models[0])
+        dlg.Destroy()
+
+    self.checkUpdatesBtn.Bind(wx.EVT_BUTTON, _on_check_updates)
+
+    # --- "Check Model Statistics" button ---
+    self.checkStatsBtn = wx.Button(parent, label="Check Model Statistics")
+    s.Add(self.checkStatsBtn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+    def _on_check_stats(_evt):
+        text = self.stats.format_stats()
+        if self.classifierTwoStage.GetValue() and hasattr(self.EnsembleClassifierPnm, 'model_perf'):
+            perf = self.EnsembleClassifierPnm.model_perf
+            if perf:
+                lines = ["\n" + "=" * 58,
+                         f" Ensemble per-model performance  (ensemble Hz: {self.EnsembleClassifierPnm.hz:.2f})",
+                         "=" * 58]
+                for name, hz in sorted(perf.items(), key=lambda kv: -kv[1]):
+                    bar = "#" * min(38, max(1, int(hz * 2)))
+                    lines.append(f"  {name:<43}  {hz:6.2f} Hz  {bar}")
+                lines.append("=" * 58)
+                text = text + "\n".join(lines)
+        dlg  = wx.Dialog(self.frame, title="Classifier Accuracy Statistics", size=(700, 520))
+        vsz  = wx.BoxSizer(wx.VERTICAL)
+        tc   = wx.TextCtrl(dlg, value=text,
+                           style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL | wx.TE_RICH2)
+        tc.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        vsz.Add(tc, 1, wx.ALL | wx.EXPAND, 8)
+        btn_row = wx.BoxSizer(wx.HORIZONTAL)
+        reset_btn = wx.Button(dlg, label="Reset Statistics")
+        close_btn = wx.Button(dlg, wx.ID_CLOSE, label="Close")
+        btn_row.Add(reset_btn, 0, wx.RIGHT, 8)
+        btn_row.AddStretchSpacer()
+        btn_row.Add(close_btn, 0)
+        vsz.Add(btn_row, 0, wx.ALL | wx.EXPAND, 8)
+        dlg.SetSizer(vsz)
+
+        def _on_reset(_e):
+            self.stats.reset()
+            tc.SetValue(self.stats.format_stats())
+
+        reset_btn.Bind(wx.EVT_BUTTON, _on_reset)
+        close_btn.Bind(wx.EVT_BUTTON, lambda _e: dlg.EndModal(wx.ID_CLOSE))
+        dlg.Bind(wx.EVT_CLOSE, lambda _e: dlg.EndModal(wx.ID_CLOSE))
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    self.checkStatsBtn.Bind(wx.EVT_BUTTON, _on_check_stats)
+
+    # --- "Reinforcement Learning" button + pixel-distance textbox ---
+    rl_row = wx.BoxSizer(wx.HORIZONTAL)
+    self.rlBtn = wx.Button(parent, label="Reinforcement Learning")
+    rl_row.Add(self.rlBtn, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    rl_row.Add(wx.StaticText(parent, label="Radius (px):"), 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+    self.rlRadiusCtrl = wx.TextCtrl(parent, value="120", size=(55, -1))
+    rl_row.Add(self.rlRadiusCtrl, 0, wx.ALIGN_CENTER_VERTICAL)
+    s.Add(rl_row, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+    def _on_rl(_evt):
+        try:
+            radius = int(self.rlRadiusCtrl.GetValue())
+            if radius <= 0:
+                raise ValueError
+        except ValueError:
+            wx.MessageBox("Please enter a positive integer for the radius.",
+                          "Invalid Radius", wx.OK | wx.ICON_WARNING)
+            return
+
+        local_dir = getattr(self.folderStreamer, "local_dir", None)
+        if not local_dir or not os.path.isdir(local_dir):
+            wx.MessageBox("No local dataset directory is open.\n"
+                          "Open a dataset folder first.",
+                          "No Dataset", wx.OK | wx.ICON_WARNING)
+            return
+
+        classifier = (self.EnsembleClassifierPnm
+                      if self.classifierTwoStage.GetValue()
+                      else self.ClassifierPnm)
+
+        dlg = RLAnnotatorDialog(self.frame, classifier, local_dir, radius)
+        dlg.ShowModal()
+        dlg.Destroy()
+
+    self.rlBtn.Bind(wx.EVT_BUTTON, _on_rl)
+
+    # --- "Purge R/L Labels" button ---
+    self.purgeRLBtn = wx.Button(parent, label="Purge R/L Labels")
+    s.Add(self.purgeRLBtn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+
+    def _on_purge_rl(_evt):
+        local_dir = getattr(self.folderStreamer, "local_dir", None)
+        if not local_dir or not os.path.isdir(local_dir):
+            wx.MessageBox("No local dataset directory is open.\n"
+                          "Open a dataset folder first.",
+                          "No Dataset", wx.OK | wx.ICON_WARNING)
+            return
+
+        answer = wx.MessageBox(
+            f"This will permanently remove all RLClean annotations\n"
+            f"from the .json files in:\n{local_dir}\n\n"
+            f"Continue?",
+            "Purge R/L Labels", wx.YES_NO | wx.ICON_WARNING
+        )
+        if answer != wx.YES:
+            return
+
+        from readData import list_image_files
+        from rlAnnotator import _resolve_json
+        images   = list_image_files(local_dir)
+        purged   = 0
+        modified = 0
+
+        for img_path in images:
+            json_path = _resolve_json(img_path)
+            if not os.path.isfile(json_path):
+                continue
+            try:
+                with open(json_path, "r") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+
+            pts = data.get("pointClicks",    [])
+            cls = data.get("pointClasses",   [])
+            sev = data.get("pointSeverities", [])
+
+            new_pts, new_cls, new_sev = [], [], []
+            for p, c, sv in zip(pts, cls, sev):
+                if c == "RLClean":
+                    purged += 1
+                else:
+                    new_pts.append(p)
+                    new_cls.append(c)
+                    new_sev.append(sv)
+
+            if purged > (len(new_pts) + purged - len(pts)):  # something was removed
+                pass  # counted above
+            if len(new_pts) != len(pts):
+                data["pointClicks"]     = new_pts
+                data["pointClasses"]    = new_cls
+                data["pointSeverities"] = new_sev
+                try:
+                    with open(json_path, "w") as f:
+                        json.dump(data, f, sort_keys=False)
+                    modified += 1
+                except Exception as e:
+                    print(f"[Purge] Failed writing {json_path}: {e}")
+
+        wx.MessageBox(
+            f"Purge complete.\n"
+            f"Removed {purged} RLClean annotation(s) from {modified} file(s).",
+            "Purge R/L Labels", wx.OK | wx.ICON_INFORMATION
+        )
+        # Refresh current frame view in case it was affected
+        self.onProcessNewImageSample(self.filepath)
+        self.onView()
+
+    self.purgeRLBtn.Bind(wx.EVT_BUTTON, _on_purge_rl)
 
     self.classifierInfo = wx.StaticText(parent, label="No classifier run yet.")
     s.Add(self.classifierInfo, 0, wx.ALL | wx.EXPAND, 5)
@@ -1336,8 +1608,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                     if self.classifierTwoStage.GetValue():
                        print("Image classification done through 2-stage ensemble classifier")
                        self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
-                       self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
-                       imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=self.parallellTwoStage.GetValue(), multimodel=self.parallellTwoStage.GetValue())
+                       self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
+                       imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=False, multimodel=self.parallellTwoStage.GetValue())
                        imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                        processed_img = imgRGBFromClassifier
                        self.sam_processor.image = imgRGBFromClassifier
@@ -1359,16 +1631,20 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   self.sam_processor.image       = imgCV
 
                 if useClassifier and self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
+                  current_hz = (self.EnsembleClassifierPnm.hz
+                                if self.classifierTwoStage.GetValue()
+                                else self.ClassifierPnm.hz)
                   self.stats.update(
                                    frame_id=self.filepath,
                                    user_ann={
                                              "points":     self.points_of_interest,
                                              "classes":    self.points_classes,
                                              "severities": self.points_severities,
-                                            }, 
-                                   ai_ann=self.AIAnnotations
+                                            },
+                                   ai_ann=self.AIAnnotations,
+                                   hz=current_hz
                                  )
-                  self.stats.print_stats()
+                  self.classifierInfo.SetLabel(self.stats.get_summary_string())
                 
                 if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
                  print("We don't know Light Direction")
@@ -1594,8 +1870,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         return cv2.resize(img, dsize=(int(NewW),int(NewH)), interpolation=cv2.INTER_CUBIC)
  
 
-   def _annotate_bitmap_with_points(self, base_bmp: wx.Bitmap, ratioX: float, ratioY: float) -> wx.Bitmap:
-    """Return a NEW bitmap with circles drawn on it (does not modify base_bmp)."""
+   def _annotate_bitmap_with_points(self, base_bmp: wx.Bitmap, ratioX: float, ratioY: float,
+                                     checkmarks: bool = False) -> wx.Bitmap:
+    """Return a NEW bitmap with annotations drawn on it (does not modify base_bmp).
+
+    checkmarks=True  → left image: defects shown as bold green ✓
+    checkmarks=False → right image: defects shown as coloured circles (default)
+    """
     img_copy = wx.Image(base_bmp.ConvertToImage())
     temp_bmp = wx.Bitmap(img_copy)
 
@@ -1615,9 +1896,21 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         cx = int(x / ratioX)
         cy = int(y / ratioY)
 
-        if pClass in ("Suspicious", "Clean"):
+        if pClass == "RLClean":
+            dc.SetPen(wx.Pen(wx.RED, 1))
+            dc.SetTextForeground(wx.RED)
+            dc.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            tw, th = dc.GetTextExtent("?")
+            dc.DrawText("?", cx - tw // 2, cy - th // 2)
+        elif pClass in ("Suspicious", "Clean"):
             dc.SetPen(wx.Pen(wx.GREEN, 2))
             dc.DrawCircle(cx, cy, r)
+        elif checkmarks:
+            # Left image: draw a bold green checkmark for all defect classes
+            dc.SetTextForeground(wx.GREEN)
+            dc.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            tw, th = dc.GetTextExtent("\u2713")
+            dc.DrawText("\u2713", cx - tw // 2, cy - th // 2)
         else:
             if "Class A" in pSever:
                 dc.SetPen(wx.Pen(wx.YELLOW, 2))
@@ -1672,13 +1965,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         lh = left_bmp.GetHeight()
         left_ratioX = self.viewedImageFullWidth / lw
         left_ratioY = self.viewedImageFullHeight / lh
-        left_overlay = self._annotate_bitmap_with_points(left_bmp, left_ratioX, left_ratioY)
+        left_overlay = self._annotate_bitmap_with_points(left_bmp, left_ratioX, left_ratioY, checkmarks=True)
         self.imageCtrl.SetBitmap(left_overlay)
 
     if self.DRAW_TARGET & self.DRAW_TARGET_RIGHT:
         right_ratioX = self.viewedImageFullWidth / rw
         right_ratioY = self.viewedImageFullHeight / rh
-        right_overlay = self._annotate_bitmap_with_points(right_bmp, right_ratioX, right_ratioY)
+        right_overlay = self._annotate_bitmap_with_points(right_bmp, right_ratioX, right_ratioY, checkmarks=False)
         self.secondaryImageCtrl.SetBitmap(right_overlay)
     else:
         # if not drawing on right, still show the right base image
@@ -2188,6 +2481,136 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def onBenchmarkAcc(self,event):
         self.onBenchmarkGeneral(event,alterStep=False)
+
+   # ---------------------------------------------------------------------------
+   def onMakeVideo(self, event):
+    """Render every frame (left + right side-by-side) to JPEGs then encode with ffmpeg."""
+    import subprocess, glob, threading, tempfile
+
+    if not self.filePathIsDirectory:
+        wx.MessageBox("Please open a directory first.", "Make Video", wx.OK | wx.ICON_INFORMATION)
+        return
+
+    total = self.folderStreamer.max()
+    if total == 0:
+        wx.MessageBox("No frames found.", "Make Video", wx.OK | wx.ICON_WARNING)
+        return
+
+    # Ask for output path
+    with wx.FileDialog(self.frame, "Save video as", wildcard="MP4 files (*.mp4)|*.mp4",
+                       style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as fd:
+        if fd.ShowModal() != wx.ID_OK:
+            return
+        out_path = fd.GetPath()
+    if out_path.endswith(".mp4"):
+        out_path = out_path[:-4]
+
+    # Work in a temp directory so frame JPEGs don't clutter the dataset
+    tmp_dir = tempfile.mkdtemp(prefix="wxAnnotator_video_")
+
+    dlg = wx.ProgressDialog(
+        "Making Video", "Rendering frames…",
+        maximum=total, parent=self.frame,
+        style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME)
+
+    def _worker():
+        import cv2
+        import numpy as np
+
+        saved_ui = self.scrollBar.GetValue()
+        aborted  = False
+        done_evt = threading.Event()
+        cont_box = [True]
+
+        def _bmp_to_cv(bmp):
+            if not (bmp and bmp.IsOk()):
+                return None
+            img = bmp.ConvertToImage()
+            arr = np.frombuffer(img.GetData(), dtype=np.uint8)
+            arr = arr.reshape(img.GetHeight(), img.GetWidth(), 3)
+            return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+        for i in range(total):
+            done_evt.clear()
+
+            def _gui_step(fi=i):
+                # Update progress; check for user abort
+                cont_box[0], _ = dlg.Update(fi, f"Frame {fi+1}/{total}")
+
+                # Advance frame and force redraw
+                self.gotoFrameUI(fi)
+                self.panel.Update()
+                wx.GetApp().Yield(True)
+
+                left_cv  = _bmp_to_cv(self.imageCtrl.GetBitmap())
+                right_cv = _bmp_to_cv(self.secondaryImageCtrl.GetBitmap())
+
+                if left_cv is not None and right_cv is not None:
+                    h = max(left_cv.shape[0], right_cv.shape[0])
+                    def _pad(img, th):
+                        ph = th - img.shape[0]
+                        return np.pad(img, ((0, ph), (0, 0), (0, 0))) if ph > 0 else img
+                    frame = np.concatenate([_pad(left_cv, h), _pad(right_cv, h)], axis=1)
+                elif left_cv is not None:
+                    frame = left_cv
+                elif right_cv is not None:
+                    frame = right_cv
+                else:
+                    done_evt.set()
+                    return
+
+                fname = os.path.join(tmp_dir, f"colorFrame_0_{fi:05d}.jpg")
+                cv2.imwrite(fname, frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                done_evt.set()
+
+            wx.CallAfter(_gui_step)
+            done_evt.wait(timeout=60)   # wait for GUI thread to finish this frame
+
+            if not cont_box[0]:
+                aborted = True
+                break
+
+        def _finalize():
+            dlg.Destroy()
+
+            if aborted:
+                wx.MessageBox("Rendering aborted.", "Make Video", wx.OK | wx.ICON_INFORMATION)
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                return
+
+            # Restore original frame
+            self.gotoFrameUI(saved_ui)
+
+            # Encode with ffmpeg
+            enc_dlg = wx.ProgressDialog("Encoding", "Running ffmpeg…", maximum=1,
+                                         parent=self.frame, style=wx.PD_APP_MODAL)
+            enc_dlg.Pulse()
+
+            ret = subprocess.run([
+                "ffmpeg", "-nostdin", "-framerate", "25",
+                "-i", os.path.join(tmp_dir, "colorFrame_0_%05d.jpg"),
+                "-vf", "scale=-2:720", "-y", "-r", str(self.metadata.get("frameRate",23)),
+                "-pix_fmt", "yuv420p", "-threads", "8",
+                f"{out_path}_lastRun3DHiRes.mp4",
+            ], check=False)
+
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            enc_dlg.Destroy()
+
+            if ret.returncode == 0:
+                wx.MessageBox(f"Video saved:\n{out_path}_lastRun3DHiRes.mp4",
+                              "Make Video", wx.OK | wx.ICON_INFORMATION)
+            else:
+                wx.MessageBox(
+                    f"ffmpeg exited with code {ret.returncode}.\n"
+                    "Is ffmpeg installed and on PATH?",
+                    "Make Video", wx.OK | wx.ICON_ERROR)
+
+        wx.CallAfter(_finalize)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
    def onMouseMoveMagnifierOLD(self, event):
      if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():

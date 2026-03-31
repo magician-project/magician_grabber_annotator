@@ -629,10 +629,15 @@ class MainFrame(wx.Frame):
         comboButtons.Add(self.clean_class_checkbox, 0, wx.ALL, 5)
         grid.Add(comboButtons)
 
-        # AI Annotation checkbox
+        # RLClean / AI Annotation checkbox
         grid.Add(wx.StaticText(panel, label="Automatic Annotations:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.aiannotated_checkbox = wx.CheckBox(panel, label="Enable self-supervised annotations")
+        self.aiannotated_checkbox = wx.CheckBox(panel, label="Acknowledge R/L labels")
         self.aiannotated_checkbox.SetValue(True)
+        self.aiannotated_checkbox.SetToolTip(
+            "If checked, RLClean annotations are treated as Clean during dataset creation.\n"
+            "If unchecked, RLClean annotations are completely ignored (dropped).\n"
+            "The original .json files are never modified."
+        )
         grid.Add(self.aiannotated_checkbox, 1, wx.EXPAND)
 
         config_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 5)

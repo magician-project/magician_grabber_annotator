@@ -1,443 +1,348 @@
+#!/usr/bin/python3
+"""
+classifierGrading.py - Correlates AI classifier output with user ground-truth.
+"""
+
 import math
 from collections import defaultdict
 
+
+# ---------------------------------------------------------------------------
+# Module-level helper so it is usable without an instance
+# ---------------------------------------------------------------------------
+
+def _metrics(tp, fp, fn):
+    """Return (precision, recall, f1) from raw counts."""
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    return precision, recall, f1
+
+
+def _new_bucket():
+    return {"tp": 0, "fp": 0, "fn": 0}
+
+
+# ---------------------------------------------------------------------------
 
 class AnnotationCorrelationStats:
     """
     Correlates AI classifier annotations with user ground-truth annotations.
 
     Handles two model types:
-        • "binary_xxxxx"  → match on class_defect only
-        • "allclass_xxxxx" → keep separate stats for defect type AND severity
+        • "binary_xxxxx"   → binary defect / clean stats
+        • "allclass_xxxxx" → per-defect-type and per-severity-class stats
 
-    Features:
-        • Case-insensitive comparison
-        • Configurable radius (hit distance)
-        • Maintains cumulative statistics over many frames
-        • Supports reset() when switching models
+    ``update()`` accepts user classes in human-readable form
+    ("Positive Dent", severity "Class A") and AI classes in the compact label
+    form ("class_PositiveDentClassA").  Both are normalised internally so
+    comparisons are meaningful.
+
+    Call ``reset()`` when switching models.
     """
 
     def __init__(self, classifier_name: str, hit_radius: int = 40):
         self.classifier_name = classifier_name.lower()
-        self.hit_radius = hit_radius
-
+        self.hit_radius      = hit_radius
         self.reset()
-        """
-        # For "binary_xxxxx"
-        self.binary_stats = {
-            "tp": 0,   # true positives (found inside hit region)
-            "fp": 0,   # false positives (AI predicted defect where none exists)
-            "fn": 0    # false negatives (AI failed to detect user defect)
-        }
 
-        # For "allclass_xxxxx"
-        self.multi_stats = {
-            "by_class": defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0}),
-            "by_severity": defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0}),
-        }
-        """
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    # -----------------------------
-    # Utility
-    # -----------------------------
     @staticmethod
     def _distance(p1, p2):
-        return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+        return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
     def _match_ai_to_user(self, ai_pts, user_pts):
         """
+        Nearest-neighbour greedy matching within hit_radius.
+
+        All candidate (ai, user) pairs within the radius are sorted by
+        distance; pairs are accepted in that order, ensuring each point
+        appears in at most one match (closest pair wins).
+
         Returns:
-            matches: list of (ai_idx, user_idx)
-            unmatched_ai: set
-            unmatched_user: set
+            matches        – list of (ai_idx, user_idx)
+            unmatched_ai   – set of AI indices without a match
+            unmatched_user – set of user indices without a match
         """
-
-        matches = []
-        unmatched_ai = set(range(len(ai_pts)))
-        unmatched_user = set(range(len(user_pts)))
-
+        candidates = []
         for ai_i, ai_pt in enumerate(ai_pts):
-            for user_i, user_pt in enumerate(user_pts):
-                dist = self._distance(ai_pt, user_pt)
-                if dist <= self.hit_radius:
-                    matches.append((ai_i, user_i))
-                    unmatched_ai.discard(ai_i)
-                    unmatched_user.discard(user_i)
-                    break  # AI tile can only match one user tile
+            for u_i, u_pt in enumerate(user_pts):
+                d = self._distance(ai_pt, u_pt)
+                if d <= self.hit_radius:
+                    candidates.append((d, ai_i, u_i))
+        candidates.sort()
 
+        matched_ai   = set()
+        matched_user = set()
+        matches      = []
+        for _, ai_i, u_i in candidates:
+            if ai_i not in matched_ai and u_i not in matched_user:
+                matches.append((ai_i, u_i))
+                matched_ai.add(ai_i)
+                matched_user.add(u_i)
+
+        unmatched_ai   = set(range(len(ai_pts)))   - matched_ai
+        unmatched_user = set(range(len(user_pts))) - matched_user
         return matches, unmatched_ai, unmatched_user
-
-    # -----------------------------
-    # -----------------------------
 
     def _combine_class_severity(self, cls, sev):
         """
-        Combines user class + severity into the same format the AI outputs.
+        "Positive Dent" + "Class A"  →  "class_positivedentclassa"
+        Returns None when cls is blank.
         """
-        if cls is None or cls.strip() == "":
+        cls = (cls or "").strip()
+        sev = (sev or "").strip()
+        if not cls:
             return None
-        if sev is None or sev.strip() == "":
-            return None
-
-        # Canonical format used by AI:
-        # class_<classname without spaces><severity>
         base = cls.lower().replace(" ", "")
-        sev  = sev.lower().replace(" ", "")
-        return f"class_{base}{sev}"
+        if sev:
+            return f"class_{base}{sev.lower().replace(' ', '')}"
+        return f"class_{base}"
 
-    # -----------------------------
-    # Public API
-    # -----------------------------
-    def updatePerDefect(self, frame_id, user_ann, ai_ann):
+    def parse_label(self, label):
         """
-        user_ann = {
-            "points": [(x,y), ...],
-            "classes": ["Positive Dent", ...],
-            "severities": ["Class A", ...]
+        "class_positivedentclassa"  →  ("positivedent", "a")
+        "class_clean"               →  ("clean",        None)
+        Returns (None, None) on parse failure.
+        """
+        if not label or not label.startswith("class_"):
+            return None, None
+        body = label[len("class_"):]       # e.g. "positivedentclassa"
+        idx  = body.rfind("class")
+        if idx == -1:
+            return body, None              # label has no severity part
+        return body[:idx], body[idx + len("class"):]
+
+    # ------------------------------------------------------------------
+    # State management
+    # ------------------------------------------------------------------
+
+    def reset(self):
+        """Reset all accumulated statistics (call when switching models)."""
+        self.frames_processed = 0
+        self._hz_sum   = 0.0
+        self._hz_count = 0
+
+        self.binary_stats = _new_bucket()
+
+        self.multi_stats = {
+            "by_defect_class": defaultdict(_new_bucket),
+            "by_defect":       defaultdict(_new_bucket),
+            "by_class":        defaultdict(_new_bucket),
         }
 
-        ai_ann = {
-            "points": [(x,y), ...],
-            "classes": [...],
-            "severities": [...],     # only for allclass models
-        }
+    # ------------------------------------------------------------------
+    # Update — primary API called from wxAnnotator
+    # ------------------------------------------------------------------
+
+    def update(self, frame_id, user_ann, ai_ann, hz=0.0):
         """
-        if (ai_ann is None):
-               return
+        Update statistics for one frame.
+
+        user_ann  –  {"points": [(x,y)…], "classes": ["Positive Dent"…],
+                      "severities": ["Class A"…]}
+        ai_ann    –  {"points": [(x,y)…], "classes": ["class_PositiveDentClassA"…]}
+                     May be None (classifier produced no output).
+        hz        –  Classifier throughput for this frame (frames/sec).
+        """
+        if ai_ann is None:
+            ai_ann = {"points": [], "classes": []}
+
+        self.frames_processed += 1
+        if hz > 0:
+            self._hz_sum   += hz
+            self._hz_count += 1
 
         u_pts = user_ann.get("points", [])
         a_pts = ai_ann.get("points", [])
 
-        #u_cls = [c.lower() for c in user_ann.get("classes", [])]
-        #u_sev = [s.lower() for s in user_ann.get("severities", [])]
-
-
+        # Normalise user labels: "Positive Dent" + "Class A" → "class_positivedentclassa"
         raw_classes = user_ann.get("classes", [])
         raw_sevs    = user_ann.get("severities", [])
-
-        u_cls = []
-        u_sev = []
-
-        u_combined = []   # merged class_severity labels
-
-        for c, s in zip(raw_classes, raw_sevs):
-            c = c.lower()
-            s = s.lower()
-            u_cls.append(c)
-            u_sev.append(s)
+        u_labels = []
+        for i, c in enumerate(raw_classes):
+            s      = raw_sevs[i] if i < len(raw_sevs) else ""
             merged = self._combine_class_severity(c, s)
-            u_combined.append(merged)
+            u_labels.append((merged or c).lower().strip())
 
-        a_cls = [c.lower() for c in ai_ann.get("classes", [])]
-        a_sev = [s.lower() for s in ai_ann.get("severities", [])]
+        a_labels = [c.lower().strip() for c in ai_ann.get("classes", [])]
+
+        if self.classifier_name.startswith("binary_"):
+            self._update_binary(u_pts, a_pts)
+            return
+
+        self._update_multiclass(u_pts, u_labels, a_pts, a_labels)
+
+    def _update_binary(self, u_pts, a_pts):
+        """Binary (defect-present / clean) stats for one frame."""
+        if not u_pts and not a_pts:
+            self.binary_stats["tp"] += 1
+            return
+        matches, unmatched_ai, unmatched_user = self._match_ai_to_user(a_pts, u_pts)
+        self.binary_stats["tp"] += len(matches)
+        self.binary_stats["fp"] += len(unmatched_ai)
+        self.binary_stats["fn"] += len(unmatched_user)
+
+    def _update_multiclass(self, u_pts, u_labels, a_pts, a_labels):
+        """Multi-class stats for one frame."""
+        # Both empty → clean frame TP
+        if not u_pts and not a_pts:
+            for bucket in self.multi_stats.values():
+                bucket["clean"]["tp"] += 1
+            return
+
+        # Parse normalised labels into (defect_type, severity_class)
+        u_parsed = [self.parse_label(L) for L in u_labels]
+        a_parsed = [self.parse_label(L) for L in a_labels]
+        u_def = [p[0] for p in u_parsed]
+        u_cls = [p[1] for p in u_parsed]
+        a_def = [p[0] for p in a_parsed]
+        a_cls = [p[1] for p in a_parsed]
 
         matches, unmatched_ai, unmatched_user = self._match_ai_to_user(a_pts, u_pts)
 
-        # --- Binary mode: only defect vs clean ---
-        if self.classifier_name.startswith("binary_"):
-            for ai_i, user_i in matches:
-                if a_cls[ai_i] == u_cls[user_i]:
-                    self.binary_stats["tp"] += 1
-                else:
-                    self.binary_stats["fp"] += 1
+        dc = self.multi_stats["by_defect_class"]
+        dd = self.multi_stats["by_defect"]
+        cc = self.multi_stats["by_class"]
 
-            # AI detected something but no user defect
-            self.binary_stats["fp"] += len(unmatched_ai)
-
-            # User defect not detected by AI
-            self.binary_stats["fn"] += len(unmatched_user)
-
-        # --- Multi-class mode ---
-        elif self.classifier_name.startswith("allclass_"):
-            # matched items
-            for ai_i, user_i in matches:
-                u_class = u_cls[user_i]
-                a_class = a_cls[ai_i]
-                u_sev   = u_sev[user_i]
-                a_sev   = a_sev[ai_i] if ai_i < len(a_sev) else "unknown"
-
-                if a_class == u_class:
-                    self.multi_stats["by_class"][u_class]["tp"] += 1
-                else:
-                    self.multi_stats["by_class"][u_class]["fn"] += 1
-                    self.multi_stats["by_class"][a_class]["fp"] += 1
-
-                if a_sev == u_sev:
-                    self.multi_stats["by_severity"][u_sev]["tp"] += 1
-                else:
-                    self.multi_stats["by_severity"][u_sev]["fn"] += 1
-                    self.multi_stats["by_severity"][a_sev]["fp"] += 1
-
-            # unmatched AI → false positives
-            for ai_i in unmatched_ai:
-                cls = a_cls[ai_i]
-                self.multi_stats["by_class"][cls]["fp"] += 1
-
-                if ai_i < len(a_sev):
-                    self.multi_stats["by_severity"][a_sev[ai_i]]["fp"] += 1
-
-            # unmatched user → false negatives
-            for user_i in unmatched_user:
-                cls = u_cls[user_i]
-                self.multi_stats["by_class"][cls]["fn"] += 1
-
-                if user_i < len(u_sev):
-                    self.multi_stats["by_severity"][u_sev[user_i]]["fn"] += 1
-
-
-
-    def parse_label(self,label):
-        """
-        Input:  "class_positivedentclassa"
-        Output: ("positivedent", "a")
-        """
-        if not label.startswith("class_"):
-            return None, None
-
-        body = label[len("class_"):]    # "positivedentclassa"
-
-        # split into defect part + class part
-        # find last occurrence of "class"
-        idx = body.rfind("class")
-        if idx == -1:
-            return None, None
-
-        defect = body[:idx]             # "positivedent"
-        clazz  = body[idx+len("class"):]  # "a"
-
-        print("parse label resolved ",label," to defect=",defect," class=",clazz)
-        return defect, clazz
-
-    def update(self, frame_id, user_ann, ai_ann):
-        """
-        user_ann = {
-            "points": [(x,y), ...],
-            "classes": ["class_positivedentclassa", ...]
-        }
-
-        ai_ann = same structure.
-        """
-
-        # ------------------------------------------------------------
-        # Handle missing AI annotations (clean frame)
-        # ------------------------------------------------------------
-        if ai_ann is None:
-            ai_ann = {
-                "points": [],
-                "classes": []
-            }
-
-        u_pts = user_ann.get("points", [])
-        a_pts = ai_ann.get("points", [])
-
-        # Keep original labels EXACTLY
-        u_labels = [c.lower().strip() for c in user_ann.get("classes", [])]
-        a_labels = [c.lower().strip() for c in ai_ann.get("classes", [])]
-
-        # Parse user labels
-        u_def = []
-        u_class = []
-        for L in u_labels:
-            d, c = self.parse_label(L)
-            u_def.append(d)
-            u_class.append(c)
-
-        # Parse AI labels
-        a_def = []
-        a_class = []
-        for L in a_labels:
-            d, c = self.parse_label(L)
-            a_def.append(d)
-            a_class.append(c)
-
-        # defect_class stays EXACTLY as given
-        u_defclass = u_labels
-        a_defclass = a_labels
-
-        # ------------------------------------------------------------
-        # CASE 1: No defects at all → Clean frame
-        # ------------------------------------------------------------
-        if len(u_pts) == 0 and len(a_pts) == 0:
-            self.multi_stats["by_defect_class"]["clean"]["tp"] += 1
-            self.multi_stats["by_defect"]["clean"]["tp"] += 1
-            self.multi_stats["by_class"]["clean"]["tp"] += 1
-            return
-
-        # ------------------------------------------------------------
-        # MATCH AI → USER by positions
-        # ------------------------------------------------------------
-        matches, unmatched_ai, unmatched_user = \
-            self._match_ai_to_user(a_pts, u_pts)
-
-        dc_stats = self.multi_stats["by_defect_class"]
-        d_stats  = self.multi_stats["by_defect"]
-        c_stats  = self.multi_stats["by_class"]
-
-        # ------------------------------------------------------------
-        # POINT-LEVEL MATCHES
-        # ------------------------------------------------------------
         for ai_i, u_i in matches:
+            u_dc = u_labels[u_i]         if u_i  < len(u_labels) else None
+            a_dc = a_labels[ai_i]        if ai_i < len(a_labels) else None
+            u_d  = u_def[u_i]            if u_i  < len(u_def)    else None
+            a_d  = a_def[ai_i]           if ai_i < len(a_def)    else None
+            u_c  = u_cls[u_i]            if u_i  < len(u_cls)    else None
+            a_c  = a_cls[ai_i]           if ai_i < len(a_cls)    else None
 
-            # Expected (user)
-            u_dc = u_defclass[u_i]
-            u_d  = u_def[u_i]
-            u_c  = u_class[u_i]
+            _tally(dc, u_dc, a_dc)
+            _tally(dd, u_d,  a_d)
+            _tally(cc, u_c,  a_c)
 
-            # Predicted (AI)
-            a_dc = a_defclass[ai_i]
-            a_d  = a_def[ai_i]
-            a_c  = a_class[ai_i]
-
-            # ----- defect_class -----
-            if u_dc == a_dc:
-                dc_stats[u_dc]["tp"] += 1
-            else:
-                dc_stats[u_dc]["fn"] += 1
-                dc_stats[a_dc]["fp"] += 1
-
-            # ----- defect only -----
-            if u_d == a_d:
-                d_stats[u_d]["tp"] += 1
-            else:
-                d_stats[u_d]["fn"] += 1
-                d_stats[a_d]["fp"] += 1
-
-            # ----- class only -----
-            if u_c == a_c:
-                c_stats[u_c]["tp"] += 1
-            else:
-                c_stats[u_c]["fn"] += 1
-                c_stats[a_c]["fp"] += 1
-
-        # ------------------------------------------------------------
-        # FRAME-LEVEL FN (user defect missing)
-        # ------------------------------------------------------------
         for u_i in unmatched_user:
-            dc_stats[u_defclass[u_i]]["fn"] += 1
-            d_stats[u_def[u_i]]["fn"] += 1
-            c_stats[u_class[u_i]]["fn"] += 1
+            if u_i < len(u_labels): dc[u_labels[u_i]]["fn"] += 1
+            if u_i < len(u_def):    dd[u_def[u_i]]["fn"]    += 1
+            if u_i < len(u_cls):    cc[u_cls[u_i]]["fn"]    += 1
 
-        # ------------------------------------------------------------
-        # FRAME-LEVEL FP (false AI detection)
-        # ------------------------------------------------------------
         for ai_i in unmatched_ai:
-            dc_stats[a_defclass[ai_i]]["fp"] += 1
-            d_stats[a_def[ai_i]]["fp"] += 1
-            c_stats[a_class[ai_i]]["fp"] += 1
+            if ai_i < len(a_labels): dc[a_labels[ai_i]]["fp"] += 1
+            if ai_i < len(a_def):    dd[a_def[ai_i]]["fp"]    += 1
+            if ai_i < len(a_cls):    cc[a_cls[ai_i]]["fp"]    += 1
 
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
 
-
-
-    def reset(self):
-        """Reset accumulated statistics (e.g. when changing model)."""
-        self.binary_stats = {"tp": 0, "fp": 0, "fn": 0}
-
-        self.multi_stats = {
-            "by_defect_class": defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0}),
-            "by_defect":       defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0}),
-            "by_class":        defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0}),
-            "by_severity":     defaultdict(lambda: {"tp": 0, "fp": 0, "fn": 0}),
-        }
+    @property
+    def avg_hz(self):
+        """Average classifier throughput in Hz over all recorded frames."""
+        return self._hz_sum / self._hz_count if self._hz_count > 0 else 0.0
 
     def get_stats(self):
-        """Return current accumulated statistics."""
+        """Return raw accumulated statistics dict."""
         if self.classifier_name.startswith("binary_"):
             return self.binary_stats
-        else:
-            return self.multi_stats
+        return self.multi_stats
 
+    def get_summary_string(self):
+        """Return a compact single-line summary suitable for a UI label."""
+        hz_str = f"  {self.avg_hz:.2f} Hz" if self._hz_count > 0 else ""
 
-    def print_stats(self):
-        """Prints human-readable statistics to stdout."""
-        print("\n====================")
-        print(" Annotation Statistics")
-        print("====================")
-
-        print("\n====================")
-        print(" UNDER CONSTRUCTION Statistics are not perfect yet")
-        print("====================")
-
-        # -----------------------
-        # BINARY CLASSIFIER STATS
-        # -----------------------
         if self.classifier_name.startswith("binary_"):
             tp = self.binary_stats["tp"]
             fp = self.binary_stats["fp"]
             fn = self.binary_stats["fn"]
+            p, r, f1 = _metrics(tp, fp, fn)
+            return (f"Frames:{self.frames_processed}{hz_str}  "
+                    f"TP={tp} FP={fp} FN={fn}  "
+                    f"P={p:.2f} R={r:.2f} F1={f1:.2f}")
 
-            print("\n[Binary Classifier Mode]\n")
-            print(f"True Positives : {tp}")
-            print(f"False Positives: {fp}")
-            print(f"False Negatives: {fn}")
+        # Macro-average over defect types
+        rows = [
+            (s["tp"], s["fp"], s["fn"])
+            for s in self.multi_stats["by_defect"].values()
+            if s["tp"] + s["fp"] + s["fn"] > 0
+        ]
+        if not rows:
+            return f"Frames:{self.frames_processed}{hz_str}  (no data yet)"
 
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall    = tp / (tp + fn) if (tp + fn) > 0 else 0
-            f1        = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
+        ps, rs, f1s = zip(*[_metrics(*r) for r in rows])
+        n = len(rows)
+        return (f"Frames:{self.frames_processed}{hz_str}  "
+                f"Macro P={sum(ps)/n:.2f} R={sum(rs)/n:.2f} F1={sum(f1s)/n:.2f}  "
+                f"({n} defect types)")
 
-            print("\nMetrics:")
-            print(f" Precision: {precision:.3f}")
-            print(f" Recall   : {recall:.3f}")
-            print(f" F1 Score : {f1:.3f}")
+    def format_stats(self):
+        """Return a full formatted statistics string."""
+        hz_line = (f" Avg throughput:   {self.avg_hz:.2f} Hz"
+                   f"  (over {self._hz_count} frames)")
+        lines = [
+            "",
+            "=" * 58,
+            f" Annotation Statistics  [{self.classifier_name}]",
+            f" Frames processed: {self.frames_processed}",
+            hz_line,
+            "=" * 58,
+        ]
 
-            print("\n====================\n")
-            return
+        if self.classifier_name.startswith("binary_"):
+            tp = self.binary_stats["tp"]
+            fp = self.binary_stats["fp"]
+            fn = self.binary_stats["fn"]
+            p, r, f1 = _metrics(tp, fp, fn)
+            lines += [
+                "\n[Binary Mode]",
+                f"  TP={tp}  FP={fp}  FN={fn}",
+                f"  Precision={p:.3f}  Recall={r:.3f}  F1={f1:.3f}",
+                "",
+            ]
+            return "\n".join(lines)
 
-        # ------------------------------------------------------------
-        # MULTI-CLASS CLASSIFIER STATS
-        # ------------------------------------------------------------
-        print("\n[Multi-Class Classifier Mode]")
+        def _section(title, stats_dict):
+            out = [f"\n--- {title} ---"]
+            all_p, all_r, all_f1 = [], [], []
+            for name, s in sorted(stats_dict.items()):
+                tp, fp, fn = s["tp"], s["fp"], s["fn"]
+                if tp + fp + fn == 0:
+                    continue
+                p, r, f1 = _metrics(tp, fp, fn)
+                out.append(
+                    f"  {str(name):<34}  "
+                    f"TP={tp:4d}  FP={fp:4d}  FN={fn:4d}  "
+                    f"P={p:.3f}  R={r:.3f}  F1={f1:.3f}"
+                )
+                all_p.append(p); all_r.append(r); all_f1.append(f1)
+            if all_p:
+                n = len(all_p)
+                out.append(
+                    f"  {'[macro avg]':<34}  "
+                    f"{'':>28}"
+                    f"P={sum(all_p)/n:.3f}  R={sum(all_r)/n:.3f}  F1={sum(all_f1)/n:.3f}"
+                )
+            return out
 
-        # ------------------------------------------------------------
-        # BY CLASS
-        # ------------------------------------------------------------
-        print("\n--- Per Class (a, b, c...) ---")
-        for cls, stats in self.multi_stats["by_class"].items():
-            tp, fp, fn = stats["tp"], stats["fp"], stats["fn"]
-            if tp == fp == fn == 0:
-                continue
+        lines += _section("Per Defect Type",         self.multi_stats["by_defect"])
+        lines += _section("Per Severity Class",      self.multi_stats["by_class"])
+        lines += _section("Per Defect+Class Label",  self.multi_stats["by_defect_class"])
+        lines.append("")
+        return "\n".join(lines)
 
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall    = tp / (tp + fn) if (tp + fn) > 0 else 0
-            f1        = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
-
-            print(f"\nClass: {cls}")
-            print(f"  TP={tp}, FP={fp}, FN={fn}")
-            print(f"    Precision={precision:.3f}, Recall={recall:.3f}, F1={f1:.3f}")
-
-        # ------------------------------------------------------------
-        # BY DEFECT (positivedent, negativedent, welding...)
-        # ------------------------------------------------------------
-        print("\n--- Per Defect (dent, welding...) ---")
-        for defect, stats in self.multi_stats["by_defect"].items():
-            tp, fp, fn = stats["tp"], stats["fp"], stats["fn"]
-            if tp == fp == fn == 0:
-                continue
-
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall    = tp / (tp + fn) if (tp + fn) > 0 else 0
-            f1        = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
-
-            print(f"\nDefect: {defect}")
-            print(f"  TP={tp}, FP={fp}, FN={fn}")
-            print(f"    Precision={precision:.3f}, Recall={recall:.3f}, F1={f1:.3f}")
-
-        # ------------------------------------------------------------
-        # BY DEFECT_CLASS (original full string: class_positivedentclassa)
-        # ------------------------------------------------------------
-        print("\n--- Per Defect-Class (full label) ---")
-        for dc, stats in self.multi_stats["by_defect_class"].items():
-            tp, fp, fn = stats["tp"], stats["fp"], stats["fn"]
-            if tp == fp == fn == 0:
-                continue
-
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            recall    = tp / (tp + fn) if (tp + fn) > 0 else 0
-            f1        = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
-
-            print(f"\nDefect-Class: {dc}")
-            print(f"  TP={tp}, FP={fp}, FN={fn}")
-            print(f"    Precision={precision:.3f}, Recall={recall:.3f}, F1={f1:.3f}")
-
-        print("\n====================\n")
+    def print_stats(self):
+        """Print formatted statistics to stdout."""
+        print(self.format_stats())
 
 
+# ---------------------------------------------------------------------------
+# Helper used inside _update_multiclass — avoids repetition
+# ---------------------------------------------------------------------------
+
+def _tally(bucket_dict, user_key, ai_key):
+    """Increment TP/FP/FN buckets for one matched pair."""
+    if user_key == ai_key:
+        bucket_dict[user_key]["tp"] += 1
+    else:
+        if user_key is not None:
+            bucket_dict[user_key]["fn"] += 1
+        if ai_key is not None:
+            bucket_dict[ai_key]["fp"] += 1
