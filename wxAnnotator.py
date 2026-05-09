@@ -42,6 +42,7 @@ Configurations in one central place
 version         = "0.44"
 useSAM          = False
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
+benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean", "RLClean"]
 severities      = ["Class A","Class B","Class C"]
@@ -348,7 +349,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
         if useClassifier:
-          self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path)
+          self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path,precache=benchmark)
           try:
               _min_hz = float(self.ensembleMinHz.GetValue())
           except Exception:
@@ -357,7 +358,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                                                             #("../magician_vision_classifier/binary_small_cnn.pth","../magician_vision_classifier/binary_small_cnn.json")
                                                             initial_model_cfg = ("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
                                                             model_cfg_list=self._scan_allclass_models(classifier_relative_directory),
-                                                            min_hz=_min_hz)
+                                                            min_hz=_min_hz,
+                                                            precache=benchmark)
 
    def createWidgets(self):
     # ----- Menus (unchanged) -------------------------------------------------
