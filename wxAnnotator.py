@@ -1449,7 +1449,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.filepath = self.folderStreamer.getImage()
     self.onProcessNewImageSample(self.filepath)
     self.updateMinMaxSlider()
-    self.onView()
+    #self.onView() # redundant: onProcessNewImageSample already calls onView()
 
 
 
@@ -1942,19 +1942,28 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     rh, rw = right_img.shape[:2]
     right_bmp = wx.Bitmap.FromBuffer(rw, rh, right_img)
 
-    # ---- LEFT image base (whatever is currently shown) ----
-    left_bmp = self.imageCtrl.GetBitmap()
-    left_ok = left_bmp and left_bmp.IsOk()
+    # ---- LEFT image base: always build fresh from sam_processor.image so annotations
+    #      never accumulate on a previously-annotated canvas across repeated onView() calls.
+    if self.sam_processor.image is not None:
+        left_img = self.rescaleCVMAT(self.sam_processor.image)
+        lh, lw = left_img.shape[:2]
+        left_bmp = wx.Bitmap.FromBuffer(lw, lh, left_img)
+        left_ok = left_bmp.IsOk()
+    else:
+        left_bmp = self.imageCtrl.GetBitmap()
+        left_ok = left_bmp and left_bmp.IsOk()
+        if left_ok:
+            lw = left_bmp.GetWidth()
+            lh = left_bmp.GetHeight()
 
-    # If no points, just refresh the right image like before (and optionally leave left alone)
+    # If no points, refresh both panels with their clean base images
     if len(self.points_of_interest) == 0:
+        if self.DRAW_TARGET & self.DRAW_TARGET_LEFT and left_ok:
+            self.imageCtrl.SetBitmap(left_bmp)
         if self.DRAW_TARGET & self.DRAW_TARGET_RIGHT:
             self.secondaryImageCtrl.SetBitmap(right_bmp)
         else:
-            # keep whatever was there, or show right_bmp if you want
             self.secondaryImageCtrl.SetBitmap(right_bmp)
-
-        # Only touch left if you explicitly want to overwrite it (usually you don't)
         self.panel.Refresh()
         return
 
@@ -1963,8 +1972,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # Full dims are in: self.viewedImageFullWidth / self.viewedImageFullHeight
     # (set in onProcessNewImageSample)
     if self.DRAW_TARGET & self.DRAW_TARGET_LEFT and left_ok:
-        lw = left_bmp.GetWidth()
-        lh = left_bmp.GetHeight()
         left_ratioX = self.viewedImageFullWidth / lw
         left_ratioY = self.viewedImageFullHeight / lh
         left_overlay = self._annotate_bitmap_with_points(left_bmp, left_ratioX, left_ratioY, checkmarks=True)
