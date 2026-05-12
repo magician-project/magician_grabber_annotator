@@ -2634,20 +2634,30 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     src = event.GetEventObject()  # either imageCtrl or secondaryImageCtrl
 
+    bmp = src.GetBitmap()
+    if not (bmp and bmp.IsOk()):
+        event.Skip()
+        return
+
     # Switch magnifier source only when the mouse moves over the other image
     if getattr(self, "_magnifier_src", None) is not src:
         self._magnifier_src = src
-
-        # Pull bitmap from the active control and set magnifier image
         try:
-            bmp = src.GetBitmap()
-            if bmp and bmp.IsOk():
-                self.magnifier.setImage(bmp.ConvertToImage())
+            self.magnifier.setImage(bmp.ConvertToImage())
         except Exception:
             pass
 
-    # Coordinates are relative to the control that generated the event
+    # Map cursor from control-client coordinates to bitmap coordinates.
+    # The control may retain its original allocated size (e.g. PhotoMaxSizeWidth x
+    # PhotoMaxSizeHeight) even after a smaller bitmap is set, so a direct pixel
+    # pass-through would land in the wrong image position.
     x, y = event.GetX(), event.GetY()
+    ctrl_w, ctrl_h = src.GetClientSize()
+    bmp_w, bmp_h = bmp.GetWidth(), bmp.GetHeight()
+    if ctrl_w > 0 and ctrl_h > 0:
+        x = int(x * bmp_w / ctrl_w)
+        y = int(y * bmp_h / ctrl_h)
+
     self.magnifier.updateMagnifier(x, y)
 
     event.Skip()
