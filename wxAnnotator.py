@@ -77,7 +77,7 @@ from rlAnnotator import RLAnnotatorDialog
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-from readData import debayerPolarImage,repackPolarToMosaic
+from readData import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive
 
 """
 def debayerPolarImage(image): 
@@ -834,7 +834,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.ensembleMinHz.Bind(wx.EVT_KILL_FOCUS,  _apply_min_hz)
 
     # --- 8. "Disabled Model" checkbox (active by default — NN off until user enables it) ---
-    self.classifierDisabledCheckbox = wx.CheckBox(parent, label="Disabled Model")
+    self.classifierDisabledCheckbox = wx.CheckBox(parent, label="Disable Neural Network Model (For Speed)")
     self.classifierDisabledCheckbox.SetValue(True)
 
     # --- 9. Layout ---
@@ -1603,7 +1603,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
 
-                if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots 
+                if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots
 
                   if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
                     self.AIAnnotations=None
@@ -1659,9 +1659,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                     #self.sam_processor.image = imgRGBFromClassifier
                     pass
                 else:
-                    processed_img                  = imgCV
-                    self.sam_processor.image       = imgCV
-                self.sam_processor.foregroundImage = imgCV 
+                    rgba = readPolarPNMToRGBALive(imgPNM)
+                    classifierBaseImg = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+                    classifierBaseImg = self.rescaleCVMAT(convertRGBCVMATToRGB(classifierBaseImg, brightness=self.brightness_offset, contrast=self.contrast_offset))
+                    processed_img                  = classifierBaseImg
+                    self.sam_processor.image       = classifierBaseImg
+                self.sam_processor.foregroundImage = imgCV
              else:
                 processed_img                      = imgCV
                 self.sam_processor.image           = imgCV
