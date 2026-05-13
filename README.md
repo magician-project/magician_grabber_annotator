@@ -222,7 +222,7 @@ Dataset annotations can be packaged and exported via `File → Export Annotation
 
 When the `magician_vision_classifier` repository is present alongside this one, the annotator can run live inference on each frame and display a color-coded tile heatmap in the left panel.
 
-<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/binary_verysmall_cnn.jpg?raw=true" height="350"/>
+<img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/allclass_smallcnn.jpg?raw=true" height="350"/>
 
 ### Classifier Tab Controls
 
