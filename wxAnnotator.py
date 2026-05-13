@@ -1309,6 +1309,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def onSave(self, event):
         print("Save")
+        if not self.filepath or not os.path.isfile(self.filepath):
+            print("onSave: skipping — filepath is not a valid file:", self.filepath)
+            return
         if (len(self.regions_of_interest)>0):
            self.sam_processor.save_mask("%s_foreground.png"%self.filepath , self.sam_processor.foregroundMask )
         else:
@@ -1356,7 +1359,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
    
           self.folderStreamer.saveJSON()
         except Exception as e:
-          print("Warning: Could not write annotations to disk",primary_json," , ",fallback_json, ":", e)
+          print("Warning: Could not write annotations to disk", primary_json, ":", e)
 
 
 
