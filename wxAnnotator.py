@@ -833,9 +833,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.ensembleMinHz.Bind(wx.EVT_TEXT_ENTER, _apply_min_hz)
     self.ensembleMinHz.Bind(wx.EVT_KILL_FOCUS,  _apply_min_hz)
 
-    # --- 8. "Use NN Classifier" checkbox ---
-    self.useClassifierCheckbox = wx.CheckBox(parent, label="Use NN Classifier")
-    self.useClassifierCheckbox.SetValue(True)
+    # --- 8. "Disabled Model" checkbox (active by default — NN off until user enables it) ---
+    self.classifierDisabledCheckbox = wx.CheckBox(parent, label="Disabled Model")
+    self.classifierDisabledCheckbox.SetValue(True)
 
     # --- 9. Layout ---
     s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
@@ -849,7 +849,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(self.classifierTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(self.parallellTwoStage, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(minHzRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
-    s.Add(self.useClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+    s.Add(self.classifierDisabledCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
     # --- "Check for Model Updates" button ---
     self.checkUpdatesBtn = wx.Button(parent, label="Check for Model Updates…")
@@ -1605,7 +1605,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots 
 
-                  if useClassifier and self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
+                  if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
                     self.AIAnnotations=None
                     if self.classifierTwoStage.GetValue():
                        print("Image classification done through 2-stage ensemble classifier")
@@ -1632,7 +1632,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   processed_img                  = imgCV
                   self.sam_processor.image       = imgCV
 
-                if useClassifier and self.useClassifierCheckbox.GetValue(): #<- Only use classifier when classifier is on
+                if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
                   current_hz = (self.EnsembleClassifierPnm.hz
                                 if self.classifierTwoStage.GetValue()
                                 else self.ClassifierPnm.hz)
@@ -1654,7 +1654,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                    print("We will try to guess light direction")
                    self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
 
-                if useClassifier and self.useClassifierCheckbox.GetValue():
+                if useClassifier and not self.classifierDisabledCheckbox.GetValue():
                     #processed_img = imgRGBFromClassifier
                     #self.sam_processor.image = imgRGBFromClassifier
                     pass
@@ -2675,7 +2675,7 @@ if __name__ == '__main__':
            if (sys.argv[i]=="--classifier"):
                #global useClassifier
                useClassifier = True
-               app.useClassifierCheckbox.SetValue(True) 
+               app.classifierDisabledCheckbox.SetValue(False)
            if (sys.argv[i]=="--db"): 
                app.local_base_path = sys.argv[i+1] 
                print("Using ",app.local_base_path," as dataset base path")
