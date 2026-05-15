@@ -474,7 +474,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     global processors
     self.ProcessorComboBox = wx.ComboBox(self.panel, choices=processors, style=wx.CB_DROPDOWN)
     self.ProcessorComboBox.Bind(wx.EVT_COMBOBOX, self.onProcessorComboBoxSelect)
-    self.ProcessorComboBox.SetValue(processors[0])
+    self.ProcessorComboBox.SetValue("DoLP")
 
     # ----- Layout roots -------------------------------------------------------
     self.mainSizer  = wx.BoxSizer(wx.VERTICAL)
