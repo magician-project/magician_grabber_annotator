@@ -100,6 +100,8 @@ if useClassifier:
   except Exception as e:
     print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in wxAnnotator.py")
     print("Classifier Path : ",parent_path)
+    print("If you want the classifier but don't have it get it @ https://github.com/magician-project/magician_vision_classifier")
+    print(f"Exact error was : {e}")
     sys.exit(1)
 else:
   class ClassifierPnm:
