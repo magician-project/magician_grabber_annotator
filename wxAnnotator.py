@@ -351,12 +351,23 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
         if useClassifier:
-          self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path,precache=benchmark)
+          _classifier_ok = True
           try:
+              self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path,precache=benchmark)
+          except RuntimeError as e:
+              wx.MessageBox(
+                  f"Failed to load classifier model:\n{classifier_model_path}\n\nThe file may be corrupted or incomplete.\n\nError: {e}",
+                  "Classifier Load Error",
+                  wx.OK | wx.ICON_ERROR
+              )
+              self.ClassifierPnm = None
+              _classifier_ok = False
+          if _classifier_ok:
+           try:
               _min_hz = float(self.ensembleMinHz.GetValue())
-          except Exception:
+           except Exception:
               _min_hz = 0.0
-          self.EnsembleClassifierPnm = EnsembleClassifierPnm(
+           self.EnsembleClassifierPnm = EnsembleClassifierPnm(
                                                             #("../magician_vision_classifier/binary_small_cnn.pth","../magician_vision_classifier/binary_small_cnn.json")
                                                             initial_model_cfg = ("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
                                                             model_cfg_list=self._scan_allclass_models(classifier_relative_directory),
@@ -1542,6 +1553,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            print("Focus : ",self.tenengrad_focus_measure)
            
            processingString = self.ProcessorComboBox.GetValue()
+           if self.photoTxt.GetValue() == "default":
+               processingString = processors[0]
            if (processingString=="PolarizationRGB1"):
                self.processingWay=0
            elif (processingString=="PolarizationRGB2"):
