@@ -53,8 +53,8 @@ processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Po
 #classifier_relative_directory = "../classifier" #Old Name
 classifier_online_repository         = "http://ammar.gr/magician/ckpts2/"
 classifier_relative_directory = "../magician_vision_classifier"
-classifier_model_path         = "%s/last.pth"  % classifier_relative_directory
-classifier_cfg_path           = "%s/last.json" % classifier_relative_directory
+classifier_model_path         = None
+classifier_cfg_path           = None
 
 
 """
@@ -350,7 +350,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
 
-        if useClassifier:
+        if useClassifier and classifier_model_path is not None:
           _classifier_ok = True
           try:
               self.ClassifierPnm = ClassifierPnm(model_path=classifier_model_path,cfg_path=classifier_cfg_path,precache=benchmark)
@@ -678,13 +678,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # --- 1. Get available models from directory ---
     model_dir = classifier_relative_directory
     available_models = ClassifierPnm.model_scan(model_dir)
-    if not available_models:
-        available_models = ["Default"]
+    if available_models:
+        global classifier_model_path
+        classifier_model_path = "%s/%s.pth"  % (classifier_relative_directory, available_models[0])
+        global classifier_cfg_path
+        classifier_cfg_path   = "%s/%s.json" % (classifier_relative_directory, available_models[0])
     else:
-        global classifier_model_path 
-        classifier_model_path         = "%s/%s.pth"  % (classifier_relative_directory,available_models[0])
-        global classifier_cfg_path 
-        classifier_cfg_path           = "%s/%s.json" % (classifier_relative_directory,available_models[0])
+        available_models = ["(none)"]
 
     self.initializeModels() #<- initialize models here
 
@@ -704,7 +704,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     def onClassifierModelChanged(evt):
         model_name = self.classifierModelCombo.GetValue()
         print(f"[INFO] Changing classifier model to: {model_name}")
-        if useClassifier:
+        if useClassifier and self.ClassifierPnm is not None:
             success = self.ClassifierPnm.reload_model(model_dir, model_name)
             if success:
                 print(f"Successfully reloaded model: {model_name}")
