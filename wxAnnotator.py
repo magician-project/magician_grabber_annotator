@@ -254,6 +254,10 @@ class PhotoCtrl(wx.App):
         self.local_base_path = "./"
         self.controlsData = []
 
+        # --- Measuring tool state ---
+        self.measureMode   = False
+        self.measurePoints = []   # up to 2 points, stored in full (raw mosaic) coords
+
         # Create global instance once
         self.stats = AnnotationCorrelationStats(classifier_name=self.classifierModelCombo.GetValue(),hit_radius=60)
 
@@ -1080,6 +1084,31 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         grid.Add(v, 1, wx.EXPAND | wx.RIGHT, 5)
 
     s.Add(grid, 0, wx.ALL | wx.EXPAND, 10)
+
+    # --- Measuring Tool (calibration + 2-click distance) ---
+    measure_box = wx.StaticBoxSizer(wx.StaticBox(parent, label="Measuring Tool"), wx.VERTICAL)
+
+    calibGrid = wx.FlexGridSizer(rows=2, cols=2, vgap=5, hgap=10)
+    calibGrid.AddGrowableCol(1, 1)
+
+    calibGrid.Add(wx.StaticText(parent, label="Pixels per mm"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 5)
+    self.calibPxPerMm = wx.TextCtrl(parent, value="7.95", size=(70, -1))
+    calibGrid.Add(self.calibPxPerMm, 1, wx.EXPAND | wx.RIGHT, 5)
+
+    calibGrid.Add(wx.StaticText(parent, label="at height (mm)"), 0, wx.ALIGN_CENTER_VERTICAL | wx.LEFT, 5)
+    self.calibHeightMm = wx.TextCtrl(parent, value="107.66", size=(70, -1))
+    calibGrid.Add(self.calibHeightMm, 1, wx.EXPAND | wx.RIGHT, 5)
+
+    measure_box.Add(calibGrid, 0, wx.ALL | wx.EXPAND, 5)
+
+    self.measureBtn = wx.Button(parent, label="Measure (2 clicks)")
+    self.measureBtn.Bind(wx.EVT_BUTTON, self.onToggleMeasure)
+    measure_box.Add(self.measureBtn, 0, wx.ALL | wx.EXPAND, 5)
+
+    self.measureResult = wx.StaticText(parent, label="Idle.")
+    measure_box.Add(self.measureResult, 0, wx.ALL | wx.EXPAND, 5)
+
+    s.Add(measure_box, 0, wx.ALL | wx.EXPAND, 5)
 
     # --- CSV Info ---
     self.csvInfo = wx.StaticText(parent, label="No CSV loaded.")
@@ -1985,6 +2014,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.secondaryImageCtrl.SetBitmap(right_bmp)
         else:
             self.secondaryImageCtrl.SetBitmap(right_bmp)
+        self._drawMeasureOverlay()
         self.panel.Refresh()
         return
 
@@ -2007,6 +2037,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         # if not drawing on right, still show the right base image
         self.secondaryImageCtrl.SetBitmap(right_bmp)
 
+    self._drawMeasureOverlay()
     self.panel.Refresh()
 
 
@@ -2295,7 +2326,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.regionList.Set(self.formatRegions())
 
    def onLeftDown(self, event):
-       if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
+       if self.measureMode:
+           mx, my = event.GetPosition()
+           fullPt = (mx * self.clickRatioX, my * self.clickRatioY)
+           if len(self.measurePoints) >= 2:   # start a fresh measurement
+               self.measurePoints = []
+           self.measurePoints.append(fullPt)
+           if len(self.measurePoints) == 2:
+               self._computeMeasurement()
+           else:
+               self.measureResult.SetLabel("First point set — click the second point.")
+           self.onView()
+           return
+       if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot
         self.x, self.y = event.GetPosition()
         self.points_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
         selected_option = self.defectComboBox.GetValue()
@@ -2312,8 +2355,101 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                print("Forcing Redraw")
                self.onRedrawData(event)
 
+   def onToggleMeasure(self, event):
+       self.measureMode   = not self.measureMode
+       self.measurePoints = []
+       if self.measureMode:
+           self.measureBtn.SetLabel("Measuring… (click 2 points)")
+           self.measureResult.SetLabel("Click the first point on the image.")
+       else:
+           self.measureBtn.SetLabel("Measure (2 clicks)")
+       self.onView()
+
+   def _currentTOFHeightMm(self):
+       """Average of the valid TOF Distance1/2/3 sensor readings, or None."""
+       vals = []
+       for k in ("Distance1", "Distance2", "Distance3"):
+           ctrl = self.controlsFields.get(k)
+           if ctrl is None:
+               continue
+           try:
+               vals.append(float(ctrl.GetValue()))
+           except (ValueError, TypeError):
+               pass  # non-numeric readings such as "F" (out of range)
+       if not vals:
+           return None
+       return sum(vals) / len(vals)
+
+   def _computeMeasurement(self):
+       """Distance between the two measure points, reported in raw debayered pixels and mm."""
+       (x0, y0), (x1, y1) = self.measurePoints
+       # measurePoints are in full mosaic coords; debayered channels are half that resolution
+       debayer_dist = (((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5) / 2.0
+
+       try:
+           px_per_mm_ref = float(self.calibPxPerMm.GetValue())
+       except ValueError:
+           px_per_mm_ref = 0.0
+       try:
+           ref_h = float(self.calibHeightMm.GetValue())
+       except ValueError:
+           ref_h = 0.0
+
+       cur_h = self._currentTOFHeightMm()
+       if cur_h is None:
+           cur_h = ref_h
+
+       # pixels-per-mm scales inversely with sensor distance (pinhole model)
+       if cur_h > 0 and ref_h > 0:
+           px_per_mm = px_per_mm_ref * (ref_h / cur_h)
+       else:
+           px_per_mm = px_per_mm_ref
+
+       if px_per_mm > 0:
+           mm = debayer_dist / px_per_mm
+           self.measureResult.SetLabel(
+               "%.1f px (debayered)  ≈  %.2f mm   @ %.1f mm height"
+               % (debayer_dist, mm, cur_h))
+           self.measureLabel = "%.1f px / %.2f mm" % (debayer_dist, mm)
+       else:
+           self.measureResult.SetLabel(
+               "%.1f px (debayered)  — set Pixels per mm" % debayer_dist)
+           self.measureLabel = "%.1f px" % debayer_dist
+       print("Measurement:", self.measureResult.GetLabel())
+
+   def _drawMeasureOverlay(self):
+       """Draw the measurement crosses + connecting line on the current left bitmap."""
+       if not self.measurePoints:
+           return
+       bmp = self.imageCtrl.GetBitmap()
+       if not (bmp and bmp.IsOk()):
+           return
+       lw, lh = bmp.GetWidth(), bmp.GetHeight()
+       ratioX = self.viewedImageFullWidth  / lw if lw else 1.0
+       ratioY = self.viewedImageFullHeight / lh if lh else 1.0
+
+       temp_bmp = wx.Bitmap(wx.Image(bmp.ConvertToImage()))
+       dc = wx.MemoryDC()
+       dc.SelectObject(temp_bmp)
+       dc.SetPen(wx.Pen(wx.Colour(0, 255, 255), 2))
+       pts = [(int(px / ratioX), int(py / ratioY)) for px, py in self.measurePoints]
+       for (x, y) in pts:
+           dc.DrawLine(x - 6, y, x + 6, y)
+           dc.DrawLine(x, y - 6, x, y + 6)
+       if len(pts) == 2:
+           dc.DrawLine(pts[0][0], pts[0][1], pts[1][0], pts[1][1])
+           label = getattr(self, "measureLabel", "")
+           if label:
+               mx = (pts[0][0] + pts[1][0]) // 2
+               my = (pts[0][1] + pts[1][1]) // 2
+               dc.SetTextForeground(wx.Colour(0, 255, 255))
+               dc.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+               dc.DrawText(label, mx + 8, my + 8)
+       dc.SelectObject(wx.NullBitmap)
+       self.imageCtrl.SetBitmap(temp_bmp)
+
    def onRightDown(self, event):
-      if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot 
+      if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot
         self.x, self.y = event.GetPosition()
         self.regions_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
         self.updateRegionList()
