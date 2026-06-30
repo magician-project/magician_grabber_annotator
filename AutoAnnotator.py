@@ -11,6 +11,13 @@ prominent PEN MARKING (a circle / scribble) around every defect on the metal she
 That ink is high-contrast and in-distribution for SAM3, so we never ask the net to
 find the defect — we ask it to find the *mark*, and infer the defect from it.
 
+Key recall trick (validated, recall 0.57 -> 0.84): many pen rings are nearly invisible
+in the intensity image but CRISP in the Degree-of-Linear-Polarisation (DoLP) map, because
+the ink polarises light differently from the metal. So detect() runs SAM3 on BOTH the
+intensity (CLAHE) and the DoLP rendering and unions the rings. The DoLP signal is also
+used to (a) recover rings clipped by the frame edge when the defect is provably in-frame,
+and (b) nudge each point from the ring centroid onto the actual defect.
+
 v1 task: PROPAGATE an annotation from frame N to frame N+1.
 The pen mark is physical ink, so it is robust to the per-frame lighting/polarisation
 changes that break naive optical flow. We segment the mark on both frames, match the
@@ -22,6 +29,7 @@ Standalone test:
 """
 
 import os
+import shutil
 import tempfile
 
 import cv2
@@ -56,6 +64,18 @@ REFINE_K          = 3.0    # anomaly threshold in robust-MAD units (higher = mor
 REFINE_MAX_MOVE   = 0.5    # max move from centroid as a fraction of the ring radius
 REFINE_MIN_AREA   = 6      # min anomaly-cluster area (render px)
 REFINE_RING_DILATE = 21    # dilation (px) used to exclude the ink ring from the interior
+
+# --- Recall heuristics (validated on FORTH_NEGA/POSA hand-GT: recall 0.57 -> 0.84) ---
+# 1) DoLP-INPUT UNION: the pen ink polarises light, so a ring that is invisible in the
+#    intensity (CLAHE) image is often crisp in the Degree-of-Linear-Polarisation map.
+#    We run SAM3 on BOTH representations and union the rings — recovers ~64% of the rings
+#    CLAHE-only misses. Costs a 2nd SAM3 query per frame (set use_dolp=False to disable).
+USE_DOLP_INPUT    = True
+# 2) BORDER recovery: a ring clipped by the frame edge is kept (not blanket-rejected) IFF
+#    a DoLP anomaly confirms the defect is inside the visible arc (i.e. in-frame). Uses a
+#    looser anomaly threshold than the centre refinement because partial arcs are noisier.
+BORDER_REFINE_K   = 1.0
+BORDER_MAX_MOVE   = 0.7
 # -----------------------------------------------------------------------------
 
 
@@ -76,26 +96,35 @@ def polarity_for_class(defect_class):
     return "high" if "positive" in str(defect_class).lower() else "low"
 
 
-def refine_defect_in_ring(dolp, ring_mask, cx, cy, polarity="low",
-                          k=REFINE_K, max_move_frac=REFINE_MAX_MOVE,
-                          min_area=REFINE_MIN_AREA, ring_dilate=REFINE_RING_DILATE):
-    """Move (cx, cy) from the ring centroid onto the DoLP anomaly inside the ring.
+def dolp_to_bgr(dolp):
+    """Render a DoLP map ([0,1], render res) to a CLAHE-enhanced BGR image for SAM3.
+    The pen ink reads as a crisp ring here even when it is invisible in intensity."""
+    g = np.clip(dolp * 255.0, 0, 255).astype(np.uint8)
+    g = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(g)
+    return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
 
-    dolp       : full-frame DoLP map (render res).
-    ring_mask  : binary mask of THIS ring's connected component (render res).
-    Returns (rx, ry) in render coords — the centroid unchanged if no confident anomaly.
+
+def _dolp_anomaly(dolp, ring_mask, cx, cy, polarity="low",
+                  k=REFINE_K, max_move_frac=REFINE_MAX_MOVE,
+                  min_area=REFINE_MIN_AREA, ring_dilate=REFINE_RING_DILATE):
+    """Find the DoLP defect anomaly inside a ring. Returns (x, y) in render coords, or
+    None when no confident anomaly is present (e.g. the defect is outside the frame).
+
+    dolp      : full-frame DoLP map (render res).
+    ring_mask : binary mask of THIS ring's connected component (render res).
+    polarity  : "low" (negative dent) or "high" (positive dent).
     """
     ys, xs = np.where(ring_mask > 0)
     if len(xs) < 3:
-        return cx, cy
+        return None
     # interior = inside the ring (convex hull) minus the ink itself
     hull = cv2.convexHull(np.column_stack((xs, ys)))
     disk = np.zeros_like(ring_mask)
     cv2.fillConvexPoly(disk, hull, 255)
     ring = cv2.dilate(ring_mask, np.ones((ring_dilate, ring_dilate), np.uint8))
     interior = cv2.bitwise_and(disk, cv2.bitwise_not(ring))
-    if interior.sum() == 0:
-        return cx, cy
+    if interior.sum() < 20:
+        return None
 
     dv = dolp[interior > 0]
     med = np.median(dv)
@@ -117,7 +146,14 @@ def refine_defect_in_ring(dolp, ring_mask, cx, cy, polarity="low",
         s = score[labels == i].mean() * np.sqrt(stats[i, cv2.CC_STAT_AREA])
         if s > best_score:
             best_score, best = s, (float(bx), float(by))
-    return best if best is not None else (cx, cy)
+    return best
+
+
+def refine_defect_in_ring(dolp, ring_mask, cx, cy, polarity="low", **kw):
+    """Backward-compatible wrapper: nudge (cx, cy) onto the DoLP anomaly, or leave it at
+    the centroid if none is found."""
+    a = _dolp_anomaly(dolp, ring_mask, cx, cy, polarity, **kw)
+    return a if a is not None else (cx, cy)
 # -----------------------------------------------------------------------------
 
 
@@ -163,12 +199,16 @@ class Sam3Client:
     def __init__(self, ip=SAM3_IP, port=SAM3_PORT):
         self.url = f"http://{ip}:{port}"
         self._client = None
+        # Private per-process download dir. gradio_client otherwise pools downloads in the
+        # SHARED /tmp/gradio (default GRADIO_TEMP_DIR) used by every other gradio client AND
+        # server on the machine — so we isolate ours and only ever clean our own dir.
+        self._dl_dir = tempfile.mkdtemp(prefix="sam3_gradio_")
 
     def _ensure(self):
         if self._client is None:
             from gradio_client import Client      # imported lazily (optional dep)
             print(f"[AutoAnnotator] Connecting to SAM3 at {self.url}")
-            self._client = Client(self.url)
+            self._client = Client(self.url, download_files=self._dl_dir)
 
     def segment(self, bgr, prompt):
         """Segment everything matching `prompt`; returns a binary uint8 mask (0/255)
@@ -193,6 +233,15 @@ class Sam3Client:
 
         # Returned image encodes: R channel = instance IDs, G/B = binary mask.
         out = cv2.imread(result, cv2.IMREAD_UNCHANGED)
+        # The result was downloaded into our PRIVATE dir; wipe its contents so the download
+        # cache can't grow without bound. We never touch the shared /tmp/gradio — doing so
+        # would race with other gradio clients/servers' in-flight files.
+        for name in os.listdir(self._dl_dir):
+            p = os.path.join(self._dl_dir, name)
+            try:
+                shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+            except OSError:
+                pass
         if out is None:
             raise RuntimeError(f"SAM3 returned an unreadable mask: {result!r}")
         if out.ndim == 3:
@@ -223,30 +272,13 @@ class AutoAnnotator:
         mask = self.sam.segment(bgr, prompt or self.prompt)
         return bgr, mask
 
-    def detect(self, raw, prompt=None, merge_dist=60, min_area=DETECT_MIN_AREA,
-               reject_border=True, border_margin=8,
-               refine=REFINE_DEFECT, polarity="low",
-               max_area_frac=0.18, max_aspect=4.0):
-        """Detect pen-mark(s) on a single frame from scratch (no prior annotation).
-
-        Returns [(x, y, area), ...] in full-MOSAIC coords, largest mark first.
-        Blobs whose centroids are within `merge_dist` (render px) of an already-kept
-        larger blob are merged away (a thick ring can fragment into a few components).
-
-        `reject_border`: drop marks whose bounding box touches the image edge. A circle
-        clipped by the frame border usually means the actual defect is OUTSIDE the image
-        (e.g. the scan ran past the sheet), so placing a point at its centroid would be
-        wrong — leave those for the operator to judge.
-
-        `refine`: nudge each point from the ring centroid onto the DoLP defect anomaly
-        inside the ring (`polarity` "low" for negative dents, "high" for positive).
-        """
-        _bgr, mask = self.segment_frame(raw, prompt)
+    def _mask_candidates(self, mask, min_area, max_area_frac, max_aspect, border_margin):
+        """Extract ring candidates from one SAM3 mask.
+        Returns [(cx, cy, area, touches_border, ring_mask), ...] in render coords."""
         H, W = mask.shape[:2]
-        num, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
-
         max_area = max_area_frac * H * W
-        blobs = []  # (cx, cy, area, touches_border, label_idx)
+        num, labels, stats, cents = cv2.connectedComponentsWithStats(mask, 8)
+        cands = []
         for i in range(1, num):
             a = int(stats[i, cv2.CC_STAT_AREA])
             if a < min_area or a > max_area:
@@ -258,25 +290,65 @@ class AutoAnnotator:
             touches = (x0 <= border_margin or y0 <= border_margin or
                        x0 + w >= W - border_margin or y0 + h >= H - border_margin)
             cx, cy = cents[i]
-            blobs.append((cx, cy, a, touches, i))
-        blobs.sort(key=lambda b: -b[2])
+            cands.append((cx, cy, a, touches, (labels == i).astype(np.uint8) * 255))
+        return cands
 
+    def detect(self, raw, prompt=None, merge_dist=60, min_area=DETECT_MIN_AREA,
+               reject_border=True, border_margin=8,
+               refine=REFINE_DEFECT, polarity="low",
+               max_area_frac=0.18, max_aspect=4.0, use_dolp=USE_DOLP_INPUT):
+        """Detect pen-mark(s) on a single frame from scratch (no prior annotation).
+
+        Returns [(x, y, area), ...] in full-MOSAIC coords, largest mark first.
+
+        Recall heuristics (both leverage polarimetry — see module header):
+        - `use_dolp`: also run SAM3 on the DoLP map and UNION the rings, recovering faint
+          ink invisible in intensity. Costs a 2nd SAM3 query per frame.
+        - `reject_border`: a ring clipped by the frame edge is now KEPT iff a DoLP anomaly
+          confirms the defect is inside the visible arc (in-frame); otherwise dropped (the
+          defect is likely off-frame). Set reject_border=False to keep all border rings.
+
+        Blobs within `merge_dist` (render px) of an already-kept larger blob — including
+        across the two representations — are merged away. `refine` nudges each non-border
+        point from the ring centroid onto the DoLP defect anomaly (`polarity` "low" for
+        negative dents, "high" for positive).
+        """
+        prompt = prompt or self.prompt
+        dolp = dolp_from_raw(raw)
+
+        # Segment on intensity (CLAHE) and, optionally, on the DoLP map.
+        cands = self._mask_candidates(
+            self.sam.segment(polar_raw_to_bgr(raw, self.representation), prompt),
+            min_area, max_area_frac, max_aspect, border_margin)
+        if use_dolp:
+            cands += self._mask_candidates(
+                self.sam.segment(dolp_to_bgr(dolp), prompt),
+                min_area, max_area_frac, max_aspect, border_margin)
+
+        # Largest-first; drop blobs that duplicate an already-kept one (also de-dups the
+        # same ring found in both representations).
+        cands.sort(key=lambda b: -b[2])
         merged = []
-        for x, y, a, t, idx in blobs:
-            if all(((mx - x) ** 2 + (my - y) ** 2) ** 0.5 >= merge_dist
-                   for mx, my, _, _, _ in merged):
-                merged.append((x, y, a, t, idx))
+        for c in cands:
+            if all(((m[0] - c[0]) ** 2 + (m[1] - c[1]) ** 2) ** 0.5 >= merge_dist
+                   for m in merged):
+                merged.append(c)
 
-        kept = [b for b in merged if not (reject_border and b[3])]
-
-        dolp = dolp_from_raw(raw) if (refine and kept) else None
-        out = []
         s = self.mosaic_scale
-        for x, y, a, _t, idx in kept:
-            if refine:
-                ring_mask = (labels == idx).astype(np.uint8) * 255
-                x, y = refine_defect_in_ring(dolp, ring_mask, x, y, polarity)
-            out.append((float(x * s), float(y * s), a))
+        out = []
+        for cx, cy, a, touches, ring_mask in merged:
+            if touches and reject_border:
+                # keep only if a DoLP anomaly proves the defect is inside the visible arc
+                an = _dolp_anomaly(dolp, ring_mask, cx, cy, polarity,
+                                   k=BORDER_REFINE_K, max_move_frac=BORDER_MAX_MOVE)
+                if an is None:
+                    continue
+                cx, cy = an
+            elif refine:
+                an = _dolp_anomaly(dolp, ring_mask, cx, cy, polarity)
+                if an is not None:
+                    cx, cy = an
+            out.append((float(cx * s), float(cy * s), a))
         return out
 
     def propagate(self, prev_raw, prev_points, next_raw, prompt=None):
