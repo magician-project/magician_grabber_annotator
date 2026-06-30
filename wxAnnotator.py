@@ -2109,6 +2109,61 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             total += len(d.get("pointClicks", []))
         return defect_counts, severity_counts, total
 
+   def _batchComputeFocusLight(self, local_dir):
+        """Compute Tenengrad focus + light direction for every frame and store them in each
+        frame's JSON. Used by Finalize when live focus/light calculation was left disabled."""
+        images = list(getattr(self.folderStreamer, "directoryList", None) or [])
+        if not images and self.filepath and os.path.isfile(self.filepath):
+            images = list_image_files(os.path.dirname(self.filepath))
+        if not images:
+            return 0
+        prog = wx.ProgressDialog(
+            "Finalize — focus & light", "Computing focus and light direction…",
+            maximum=len(images), parent=self.frame,
+            style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
+                  | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
+        updated = 0
+        for i, img in enumerate(images):
+            cont, _ = prog.Update(i, f"{i+1}/{len(images)} frames")
+            if not cont:
+                break
+            wx.GetApp().Yield(True)
+            raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
+            if raw is None:
+                continue
+            if raw.ndim == 3 and raw.shape[2] == 4:
+                mosaic = repackPolarToMosaic(raw[:, :, 0], raw[:, :, 1], raw[:, :, 2], raw[:, :, 3])
+                imgCV  = cv2.merge([mosaic, mosaic, mosaic])
+            else:
+                imgCV  = raw if (raw.ndim == 3 and raw.shape[2] == 3) else cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+            focus = float(tenengrad_focus_measure(imgCV))
+            light = determine_intensity_region(imgCV, threshold=0.1)
+
+            jp = resolve_annotation_json_path(img, prefer_existing=True)
+            if not jp or not checkIfFileExists(jp):
+                jp = os.path.splitext(img)[0] + ".json"
+            data = {}
+            if checkIfFileExists(jp):
+                try:
+                    with open(jp) as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+            if not data:
+                data = {"width": self.width, "height": self.height, "md5hash": "",
+                        "regionClicks": [], "pointClicks": [], "pointClasses": [],
+                        "pointSeverities": [], "pointSources": []}
+            data["tenengradFocusMeasure"] = focus
+            data["lightDirection"]        = light
+            try:
+                with open(jp, "w") as f:
+                    json.dump(data, f, sort_keys=False)
+                updated += 1
+            except Exception as e:
+                print("Finalize: focus/light write failed", jp, e)
+        prog.Destroy()
+        return updated
+
    def onFinalize(self, event):
         """Finalize the dataset: write/augment info.json with certification info, the
         accumulated annotation-effort statistics, and the dataset-wide defect/severity totals."""
@@ -2117,6 +2172,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             wx.MessageBox("No local dataset directory is loaded — cannot finalize.",
                           "Finalize", wx.OK | wx.ICON_ERROR)
             return
+
+        # If focus/light were not computed live (checkbox off), backfill them for every frame.
+        if not self.guessLightingCheckbox.GetValue():
+            self._batchComputeFocusLight(local_dir)
+
         info_path = os.path.join(local_dir, "info.json")
 
         # Preserve existing (camera) fields; tolerate a missing or malformed info.json.
