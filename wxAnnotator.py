@@ -631,8 +631,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.incrementFrameAfterAnAdditionCheckbox = wx.CheckBox(parent, label="Increment frame after defect annotation")        
     self.incrementFrameAfterAnAddition=True
     self.incrementFrameAfterAnAdditionCheckbox.SetValue(self.incrementFrameAfterAnAddition)
-    self.guessLightingCheckbox = wx.CheckBox(parent, label="Calculate Focus & Light Direction")
-    self.guessLightingCheckbox.SetValue(False)
+    self.calcFocusLightCheckbox = wx.CheckBox(parent, label="Calculate Focus & Light Direction")
+    self.calcFocusLightCheckbox.SetValue(False)
 
     # Layout stack for Annotator tab
     s.Add(self.datasetLabel, 0, wx.ALL | wx.EXPAND, 5)
@@ -660,7 +660,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     s.Add(comboButtons, 0, wx.ALL, 5)
     s.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
-    s.Add(self.guessLightingCheckbox, 0, wx.ALL, 5)
+    s.Add(self.calcFocusLightCheckbox, 0, wx.ALL, 5)
 
     parent.SetSizer(s)
 #===============================================================================
@@ -1877,7 +1877,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            self.viewedImageFullWidth  = imgCV.shape[1]
            self.viewedImageFullHeight = imgCV.shape[0] 
 
-           if self.guessLightingCheckbox.GetValue():
+           if self.calcFocusLightCheckbox.GetValue():
                self.tenengrad_focus_measure = tenengrad_focus_measure(imgCV)
                print("Focus : ",self.tenengrad_focus_measure)
            # else: leave focus as-is — it's 0.0 for a fresh frame, or the value restored from JSON
@@ -2005,7 +2005,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 
               if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
                print("We don't know Light Direction")
-               if (self.guessLightingCheckbox.GetValue()):   #If we are ok with guessing 
+               if (self.calcFocusLightCheckbox.GetValue()):   #If we are ok with guessing 
                  print("We will try to guess light direction")
                  self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
 
@@ -2174,7 +2174,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             return
 
         # If focus/light were not computed live (checkbox off), backfill them for every frame.
-        if not self.guessLightingCheckbox.GetValue():
+        if not self.calcFocusLightCheckbox.GetValue():
             self._batchComputeFocusLight(local_dir)
 
         info_path = os.path.join(local_dir, "info.json")
@@ -2225,8 +2225,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
    def populateMetaData(self,path):
          self.metadata = None
          if (checkIfFileExists(path)):
-              with open(path) as json_data:
-                   self.metadata = json.load(json_data)
+              try:
+                   with open(path) as json_data:
+                        self.metadata = json.load(json_data)
+              except Exception as e:
+                   # A hand-edited info.json (e.g. a stray trailing comma) must not crash startup.
+                   print("Warning: could not parse metadata from", path, ":", e)
+                   self.datasetList.Set([f"info.json unreadable: {e}"])
+                   return self.metadata
 
               metadata = list()
               for k in self.metadata.keys():
@@ -2236,7 +2242,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               self.datasetList.Set(metadata)
          else:
               print("Failed opening meta data from ",path)
- 
+
          return self.metadata
 
 
@@ -2610,9 +2616,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def onRedrawData(self, event):
         print("Asked to redraw data")
-        #Next 2 lines work but are a lazy solution ->
-        self.onNext(event) 
-        self.onPrevious(event)
+        # Re-render the CURRENT frame once (used by brightness/contrast/processor changes).
+        # gotoFrameUI(current) saves in-memory edits then re-processes — half the work of the
+        # old onNext()+onPrevious() double-reload, with the same data-preservation behaviour.
+        self.gotoFrameUI(self.scrollBar.GetValue())
 
    def updateControlsTab(self, data_row,sample_number = 0):
     """
@@ -3005,14 +3012,22 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
     base_dir = self.local_base_path                 # e.g. /media/ammar/games2/Datasets/Magician
-    #zip_path = "./upload.zip"
     zip_path = os.path.join(base_dir, "upload.zip")
     rel_dir  = os.path.basename(self.folderStreamer.local_dir.rstrip("/"))
     # rel_dir should be "AltinayKapoDefect"
 
+    # zip APPENDS to an existing archive — start fresh, otherwise previously-uploaded
+    # datasets accumulate in the same upload.zip.
+    try:
+        if os.path.isfile(zip_path):
+            os.remove(zip_path)
+    except Exception as e:
+        print("Could not remove stale zip:", zip_path, e)
+
+    # Include the per-frame annotation JSONs AND the (finalized) info.json for this dataset only.
     zipCommand = (
         f'cd "{base_dir}" && '
-        f'zip "{zip_path}" -b "{base_dir}" "{rel_dir}"/color*.json'
+        f'zip "{zip_path}" -b "{base_dir}" "{rel_dir}"/color*.json "{rel_dir}"/info.json'
     )
 
     print("Zip command : ", zipCommand)
@@ -3021,7 +3036,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     dlg = UploadDialog(self.frame, zip_path, self.folderStreamer.local_dir)
     dlg.ShowModal()
     dlg.Destroy()
-    os.system('rm -f "./upload.zip"')
+    os.system(f'rm -f "{zip_path}"')
 
    def onRunBatch(self, event):
         dlg = BatchProcessDialog(self.frame, self.folderStreamer)
