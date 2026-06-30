@@ -33,6 +33,9 @@ import sys
 import numpy as np
 import time
 import threading
+import getpass
+import glob
+from datetime import datetime
 
 
 """
@@ -40,14 +43,13 @@ Configurations in one central place
 """
 
 version         = "0.44"
-useSAM          = False
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean", "RLClean"]
 severities      = ["Class A","Class B","Class C"]
 directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
-processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Normals", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible","SAM"]
+processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Normals", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible"]
 
 
 #classifier_relative_directory = "../classifier" #Old Name
@@ -127,24 +129,6 @@ else:
 #-------------------------------------------------------------------------------
 
 
-#-------------------------------------------------------------------------------
-# Make SAM Processor completely seperatable from the rest of the codebase
-#-------------------------------------------------------------------------------
-if useSAM:
-  from sam import SAMProcessor
-else: 
-  class SAMProcessorFoo:
-    def __init__(self, sam_checkpoint, model_type, device="cuda"):
-        self.masks = None
-        self.image = None
-        self.foregroundMask  = None
-        self.foregroundImage = None
-    def save_mask(self,path,mask):
-        pass
-    def select_area(self, x, y):
-        pass
-#-------------------------------------------------------------------------------
-
 
 from readData import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
 from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
@@ -162,18 +146,6 @@ def loadMoreClasses(filename,classes_dict):
            classes_dict[cl]=True 
     return classes_dict 
 """
-
-
-def slowPC():
-    import socket
-    try:
-        hostname = socket.gethostname()
-        if (hostname=="cvrldemo"):
-          return True 
-    except:
-        return "Unable to retrieve hostname"
-        return True
-    return False
 
 
 
@@ -213,6 +185,21 @@ class PhotoCtrl(wx.App):
         self.points_classes      = []
         self.points_severities   = []
         self.points_sources      = []  # parallel to points_of_interest: "auto" | "manual"
+        self._base_cache         = None  # (img, fg, left_bmp, right_bmp, left_ok): annotation-free bases for fast onView redraws
+        self.leftViewImage       = None  # processed image shown in the left panel (imageCtrl)
+        self.rightViewImage      = None  # foreground/visualization image shown in the right panel (secondaryImageCtrl)
+        # --- annotation-effort statistics for the current dataset session (committed to info.json on Finalize) ---
+        self._stat_clicks         = 0
+        self._stat_keystrokes     = 0
+        self._stat_points_added   = 0
+        self._stat_points_deleted = 0
+        self._stat_active_seconds = 0.0
+        self._stat_last_interaction = None   # timestamp of the previous click/keystroke
+        self._STAT_IDLE_CAP = 60.0           # gaps longer than this are treated as idle (not annotation time)
+        self._prefetch        = None     # (key, data): background-rendered NEXT frame, key=(path,way,brightness,contrast)
+        self._prefetch_lock   = threading.Lock()
+        self._prefetch_thread = None
+        self._pf_next         = None     # params captured for the current frame, used to prefetch N+1 at end of load
         self.AIAnnotations       = None
 
         self.width  = 0
@@ -356,14 +343,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         return result
 
    def initializeModels(self):
-        if (useSAM):
-          if (slowPC):
-            self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_b_01ec64.pth", model_type="vit_b", device="cpu")
-          else:
-            self.sam_processor = SAMProcessor(sam_checkpoint="sam_vit_l_0b3195.pth", model_type="vit_l", device="cuda")
-        else:
-            self.sam_processor = SAMProcessorFoo(sam_checkpoint="foo.pth", model_type="vit_l", device="cuda")
-
         if useClassifier and classifier_model_path is not None:
           _classifier_ok = True
           try:
@@ -456,8 +435,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     browseBtn = wx.Button(self.panel, label='Browse')
     browseBtn.Bind(wx.EVT_BUTTON, self.onBrowse)
-    self.rescanBtn = wx.Button(self.panel, label='Rescan')
-    self.rescanBtn.Bind(wx.EVT_BUTTON, self.onRescan)
+    self.rescanBtn = wx.Button(self.panel, label='Finalize')
+    self.rescanBtn.Bind(wx.EVT_BUTTON, self.onFinalize)
 
     # Horizontal “timeline” slider
     self.scrollBar = wx.Slider(self.panel, value=0, minValue=0, maxValue=1000, size=(400, -1), style=wx.SL_HORIZONTAL)
@@ -1357,6 +1336,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               self.points_classes.append(self.defectComboBox.GetValue() or options[0])
               self.points_severities.append(self.severityComboBox.GetValue() or severities[0])
               self.points_sources.append("auto")
+          self._stat_points_added += len(dets)
           self.updatePointList()
           self.onView()
           self.instructLbl.SetLabel(
@@ -1410,6 +1390,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           self.points_sources.append("auto")
           matched += 1
 
+      self._stat_points_added += matched
       self.updatePointList()
       self.onView()
       self.instructLbl.SetLabel(
@@ -1592,14 +1573,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if not self.filepath or not os.path.isfile(self.filepath):
             print("onSave: skipping — filepath is not a valid file:", self.filepath)
             return
-        if (len(self.regions_of_interest)>0):
-           self.sam_processor.save_mask("%s_foreground.png"%self.filepath , self.sam_processor.foregroundMask )
-        else:
-           print("Not producing a foreground file since no foreground was selected") 
 
         allData = dict()
-        allData["width"]   = self.width #self.sam_processor.image.shape[1]
-        allData["height"]  = self.height #self.sam_processor.image.shape[0] 
+        allData["width"]   = self.width #self.leftViewImage.shape[1]
+        allData["height"]  = self.height #self.leftViewImage.shape[0] 
         allData["md5hash"] = self.filehash
 
         if self.tenengrad_focus_measure != 0.0:
@@ -1660,6 +1637,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.regions_of_interest = []
                self.points_of_interest  = []
                self.lightComboBox.SetValue("Unknown")
+               self.tenengrad_focus_measure = 0.0  # restored from JSON below if the frame has a saved value
 
 
 
@@ -1704,6 +1682,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     """
     self.folderStreamer = streamer
     self.filePathIsDirectory = is_directory
+    self._resetSessionStats()   # effort statistics accumulate per dataset session
 
     # Load metadata/controls/sensors
     self.populateMetaData(f"{base_dir}/info.json")
@@ -1745,9 +1724,79 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
 
+   def _renderFrame(self, filepath, way, brightness, contrast):
+       """Pure decode + render for the classifier-off path: returns
+       {'foreground': <way/DoLP render>, 'processed': <RGB base render>} or None.
+       Touches no UI and no shared state, so it is safe to run in a worker thread
+       (only reads self.PhotoMaxSize* via rescaleCVMAT, which is stable during navigation)."""
+       imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+       if imgPNM is None:
+           return None
+       if (imgPNM.ndim == 3) and (imgPNM.shape[2] == 4):
+           imgPNM = repackPolarToMosaic(imgPNM[:, :, 0], imgPNM[:, :, 1], imgPNM[:, :, 2], imgPNM[:, :, 3])
+           imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])
+       else:
+           imgCV  = imgPNM if (imgPNM.ndim == 3 and imgPNM.shape[2] == 3) else cv2.cvtColor(imgPNM, cv2.COLOR_GRAY2BGR)
+       src, w = imgCV, way
+       if w == 3:                       # Sobel pre-step, mirrors onProcessNewImageSample
+           src = detect_sobel_edges(src)
+           w = 0
+       foreground = self.rescaleCVMAT(convertPolarCVMATToRGB(src, way=w, brightness=brightness, contrast=contrast))
+       rgba = readPolarPNMToRGBALive(imgPNM)
+       base = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+       processed = self.rescaleCVMAT(convertRGBCVMATToRGB(base, brightness=brightness, contrast=contrast))
+       return {'foreground': foreground, 'processed': processed}
+
+   def _takePrefetch(self, filepath, way, brightness, contrast):
+       """Consume the background-rendered result for this exact frame+params, or None."""
+       key = (filepath, way, brightness, contrast)
+       with self._prefetch_lock:
+           if self._prefetch is not None and self._prefetch[0] == key and self._prefetch[1] is not None:
+               data = self._prefetch[1]
+               self._prefetch = None
+               return data
+       return None
+
+   def _schedulePrefetch(self, way, brightness, contrast):
+       """Render the NEXT frame in a background thread so the forward transition is instant.
+       One worker at a time; the result is keyed so stale params are simply ignored on use."""
+       # Don't prefetch during auto-play: frames advance faster than a render finishes, so the
+       # worker would just compete with the main thread for CPU/GIL and freeze the UI.
+       if getattr(self, "isPlaying", False):
+           return
+       if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+           return
+       try:
+           cur = self.folderStreamer.current()
+           nxt = cur + 1
+           if nxt >= self.folderStreamer.max():   # valid indices are 0..max()-1
+               return
+           self.folderStreamer.select(nxt)
+           next_path = self.folderStreamer.getImage()
+           self.folderStreamer.select(cur)
+       except Exception:
+           return
+       if not next_path:
+           return
+       key = (next_path, way, brightness, contrast)
+       with self._prefetch_lock:
+           if self._prefetch is not None and self._prefetch[0] == key:
+               return
+       def work():
+           data = None
+           try:
+               data = self._renderFrame(next_path, way, brightness, contrast)
+           except Exception as e:
+               print("prefetch render failed:", e)
+           with self._prefetch_lock:
+               self._prefetch = (key, data)
+       self._prefetch_thread = threading.Thread(target=work, daemon=True)
+       self._prefetch_thread.start()
+
    def onProcessNewImageSample(self,filepath):
            # Always start from a clean frame; we may restore JSON or apply carried points below
            self.cleanThisFrameMetaData()
+           self._pf_next = None  # set below if this frame is prefetch-eligible
 
            #if (checkIfFileExists("%s.json"%filepath)):
            #    print("There are saved data that need to be restored here")
@@ -1800,7 +1849,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            #img = self.rescaleBitmap(img)
            #self.imageCtrl.SetBitmap(wx.Bitmap(img))
 
-           # Process the image with SAM and update the second StaticBitmap
+           # Render the polarization image for both view panels
            global combineChannels
            #imgCV  = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED  # wasteful: this decode is overwritten below for 4-ch polar PNGs; imgCV is derived from imgPNM instead
            imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED) #This is to be used without changes by the classifier
@@ -1831,8 +1880,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            if self.guessLightingCheckbox.GetValue():
                self.tenengrad_focus_measure = tenengrad_focus_measure(imgCV)
                print("Focus : ",self.tenengrad_focus_measure)
-           else:
-               self.tenengrad_focus_measure = 0.0
+           # else: leave focus as-is — it's 0.0 for a fresh frame, or the value restored from JSON
            
            processingString = self.ProcessorComboBox.GetValue()
            if self.photoTxt.GetValue() == "default":
@@ -1889,86 +1937,96 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.processingWay=4
            
 
-           global useSAM
-           if useSAM:
-             processed_img = self.sam_processor.process_image(imgCV)
-           else:
-             if combineChannels:
-                print("Image CV Combining all channels to one")
-                if (self.processingWay==3):
-                    imgCV = detect_sobel_edges(imgCV)  
-                    self.processingWay=0
-                #import ipdb; ipdb.set_trace()
-                #resize imgpnm 1/2
+           if combineChannels:
+              print("Image CV Combining all channels to one")
+              # Prefetch fast path: when the classifier is off, the heavy renders below are a
+              # pure function of (filepath, way, brightness, contrast) and may already be
+              # computed by the background worker for this frame.
+              fast_eligible = (not (useClassifier and not self.classifierDisabledCheckbox.GetValue())
+                               and app.photoTxt.GetValue() != "default")
+              cached = None
+              if fast_eligible:
+                  key_way = self.processingWay  # capture before the Sobel branch mutates it
+                  cached = self._takePrefetch(filepath, key_way, self.brightness_offset, self.contrast_offset)
+                  self._pf_next = (key_way, self.brightness_offset, self.contrast_offset)
 
-                imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
+              if cached is not None:
+                  imgCV = cached['foreground']
+              else:
+                  if (self.processingWay==3):
+                      imgCV = detect_sobel_edges(imgCV)
+                      self.processingWay=0
+                  imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
 
-                if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots
-
-                  if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
-                    self.AIAnnotations=None
-                    if self.classifierTwoStage.GetValue():
-                       print("Image classification done through 2-stage ensemble classifier")
-                       self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
-                       self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
-                       imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=False, multimodel=self.parallellTwoStage.GetValue())
-                       imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
-                       processed_img = imgRGBFromClassifier
-                       self.sam_processor.image = imgRGBFromClassifier
-                       self.classifierInfo.SetLabel("2-stage: %0.2f Hz" % self.EnsembleClassifierPnm.hz)
-                    else:
-                       print("Image classification done through regular 1-stage classifier")
-                       self.ClassifierPnm.step = self.classifierTileSize.GetValue()
-                       self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
-                       imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
-                       imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
-                       processed_img = imgRGBFromClassifier
-                       self.sam_processor.image = imgRGBFromClassifier
-                       self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
-                    #print(" self.AIAnnotations: ",self.AIAnnotations)
-                    #self.AIAnnotations:  {'points': [(1424, 368), (1360, 400), (1392, 400), (1424, 400), (1360, 432), (1392, 432)], 'classes': ['class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA']}
-                else:
-                  #If we didn't trigger then show the raw image as processed image
-                  processed_img                  = imgCV
-                  self.sam_processor.image       = imgCV
+              if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots
 
                 if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
-                  current_hz = (self.EnsembleClassifierPnm.hz
-                                if self.classifierTwoStage.GetValue()
-                                else self.ClassifierPnm.hz)
-                  self.stats.update(
-                                   frame_id=self.filepath,
-                                   user_ann={
-                                             "points":     self.points_of_interest,
-                                             "classes":    self.points_classes,
-                                             "severities": self.points_severities,
-                                            },
-                                   ai_ann=self.AIAnnotations,
-                                   hz=current_hz
-                                 )
-                  self.classifierInfo.SetLabel(self.stats.get_summary_string())
-                
-                if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
-                 print("We don't know Light Direction")
-                 if (self.guessLightingCheckbox.GetValue()):   #If we are ok with guessing 
-                   print("We will try to guess light direction")
-                   self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
+                  self.AIAnnotations=None
+                  if self.classifierTwoStage.GetValue():
+                     print("Image classification done through 2-stage ensemble classifier")
+                     self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
+                     self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
+                     imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=False, multimodel=self.parallellTwoStage.GetValue())
+                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+                     processed_img = imgRGBFromClassifier
+                     self.leftViewImage = imgRGBFromClassifier
+                     self.classifierInfo.SetLabel("2-stage: %0.2f Hz" % self.EnsembleClassifierPnm.hz)
+                  else:
+                     print("Image classification done through regular 1-stage classifier")
+                     self.ClassifierPnm.step = self.classifierTileSize.GetValue()
+                     self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+                     imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
+                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+                     processed_img = imgRGBFromClassifier
+                     self.leftViewImage = imgRGBFromClassifier
+                     self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
+                  #print(" self.AIAnnotations: ",self.AIAnnotations)
+                  #self.AIAnnotations:  {'points': [(1424, 368), (1360, 400), (1392, 400), (1424, 400), (1360, 432), (1392, 432)], 'classes': ['class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA']}
+              else:
+                #If we didn't trigger then show the raw image as processed image
+                processed_img                  = imgCV
+                self.leftViewImage       = imgCV
 
-                if useClassifier and not self.classifierDisabledCheckbox.GetValue():
-                    #processed_img = imgRGBFromClassifier
-                    #self.sam_processor.image = imgRGBFromClassifier
-                    pass
-                else:
-                    rgba = readPolarPNMToRGBALive(imgPNM)
-                    classifierBaseImg = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
-                    classifierBaseImg = self.rescaleCVMAT(convertRGBCVMATToRGB(classifierBaseImg, brightness=self.brightness_offset, contrast=self.contrast_offset))
-                    processed_img                  = classifierBaseImg
-                    self.sam_processor.image       = classifierBaseImg
-                self.sam_processor.foregroundImage = imgCV
-             else:
-                processed_img                      = imgCV
-                self.sam_processor.image           = imgCV
-                self.sam_processor.foregroundImage = imgCV
+              if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
+                current_hz = (self.EnsembleClassifierPnm.hz
+                              if self.classifierTwoStage.GetValue()
+                              else self.ClassifierPnm.hz)
+                self.stats.update(
+                                 frame_id=self.filepath,
+                                 user_ann={
+                                           "points":     self.points_of_interest,
+                                           "classes":    self.points_classes,
+                                           "severities": self.points_severities,
+                                          },
+                                 ai_ann=self.AIAnnotations,
+                                 hz=current_hz
+                               )
+                self.classifierInfo.SetLabel(self.stats.get_summary_string())
+                
+              if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
+               print("We don't know Light Direction")
+               if (self.guessLightingCheckbox.GetValue()):   #If we are ok with guessing 
+                 print("We will try to guess light direction")
+                 self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
+
+              if useClassifier and not self.classifierDisabledCheckbox.GetValue():
+                  #processed_img = imgRGBFromClassifier
+                  #self.leftViewImage = imgRGBFromClassifier
+                  pass
+              else:
+                  if cached is not None:
+                      classifierBaseImg = cached['processed']
+                  else:
+                      rgba = readPolarPNMToRGBALive(imgPNM)
+                      classifierBaseImg = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+                      classifierBaseImg = self.rescaleCVMAT(convertRGBCVMATToRGB(classifierBaseImg, brightness=self.brightness_offset, contrast=self.contrast_offset))
+                  processed_img                  = classifierBaseImg
+                  self.leftViewImage       = classifierBaseImg
+              self.rightViewImage = imgCV
+           else:
+              processed_img                      = imgCV
+              self.leftViewImage           = imgCV
+              self.rightViewImage = imgCV
   
    
            self.width  = processed_img.shape[1]
@@ -1983,11 +2041,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            self.imageCtrl.SetBitmap(wx.Bitmap.FromBuffer(self.width, self.height, processed_img))
 
 
-           if (len(self.regions_of_interest)>0):
-              print("Play back of selected regions")
-              for x,y in self.regions_of_interest:
-                     self.sam_processor.select_area(int(x),int(y))
-
            self.onView()
 
            bmp = self.imageCtrl.GetBitmap()
@@ -1995,6 +2048,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                img = bmp.ConvertToImage()
                self.magnifier.setImage(img)
                self.magnifier.refreshZoom()
+
+           # Kick off the background render of the NEXT frame so the forward transition is instant.
+           if self._pf_next is not None:
+               self._schedulePrefetch(*self._pf_next)
 
 
    def onCameraSettings(self, event):
@@ -2013,7 +2070,97 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         wx.MessageBox("Written by Ammar Qammaz a.k.a. AmmarkoV\nhttp://ammar.gr/\nVersion %s\nhttps://github.com/magician-project/magician_grabber_annotator\nPsalm 32:8"%version, "About", wx.OK | wx.ICON_INFORMATION)
 
    def onRescan(self, newPath):
+        """Refresh / re-render the current frame (triggered by the 'R' key)."""
         self.onProcessNewImageSample(self.filepath)
+
+   # ---- annotation-effort statistics -------------------------------------------------
+   def _recordInteraction(self):
+        """Accumulate active annotation time between consecutive interactions, ignoring
+        long idle gaps so the total reflects real effort (for man-month estimates)."""
+        now = time.time()
+        last = self._stat_last_interaction
+        if last is not None:
+            gap = now - last
+            if gap < self._STAT_IDLE_CAP:
+                self._stat_active_seconds += gap
+        self._stat_last_interaction = now
+
+   def _resetSessionStats(self):
+        self._stat_clicks = 0
+        self._stat_keystrokes = 0
+        self._stat_points_added = 0
+        self._stat_points_deleted = 0
+        self._stat_active_seconds = 0.0
+        self._stat_last_interaction = None
+
+   def _datasetDefectTotals(self, local_dir):
+        """Scan every frame JSON in the dataset and tally defect classes and severities."""
+        defect_counts, severity_counts, total = {}, {}, 0
+        for jp in glob.glob(os.path.join(local_dir, "colorFrame_0_*.json")):
+            try:
+                with open(jp) as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            for c in d.get("pointClasses", []):
+                defect_counts[c] = defect_counts.get(c, 0) + 1
+            for s in d.get("pointSeverities", []):
+                severity_counts[s] = severity_counts.get(s, 0) + 1
+            total += len(d.get("pointClicks", []))
+        return defect_counts, severity_counts, total
+
+   def onFinalize(self, event):
+        """Finalize the dataset: write/augment info.json with certification info, the
+        accumulated annotation-effort statistics, and the dataset-wide defect/severity totals."""
+        local_dir = getattr(self.folderStreamer, "local_dir", None)
+        if not local_dir or not os.path.isdir(local_dir):
+            wx.MessageBox("No local dataset directory is loaded — cannot finalize.",
+                          "Finalize", wx.OK | wx.ICON_ERROR)
+            return
+        info_path = os.path.join(local_dir, "info.json")
+
+        # Preserve existing (camera) fields; tolerate a missing or malformed info.json.
+        info = {}
+        if os.path.isfile(info_path):
+            try:
+                with open(info_path) as f:
+                    info = json.load(f)
+            except Exception as e:
+                print(f"Finalize: existing info.json unreadable ({e}); starting fresh.")
+
+        # Commit this session's active time before reading the counters.
+        self._recordInteraction()
+
+        defect_counts, severity_counts, total_defects = self._datasetDefectTotals(local_dir)
+
+        info["certified_by"]    = getpass.getuser()
+        info["annotated_at"]    = datetime.now().strftime("%Y/%m/%d %H:%M")
+        info["annotation_time"] = int(info.get("annotation_time", 0)) + int(round(self._stat_active_seconds))
+        info["clicks"]          = int(info.get("clicks", 0)) + self._stat_clicks
+        info["keystrokes"]      = int(info.get("keystrokes", 0)) + self._stat_keystrokes
+        info["points_added"]    = int(info.get("points_added", 0)) + self._stat_points_added
+        info["points_deleted"]  = int(info.get("points_deleted", 0)) + self._stat_points_deleted
+        info["defect_counts"]   = defect_counts
+        info["severity_counts"] = severity_counts
+        info["total_defects"]   = total_defects
+
+        try:
+            with open(info_path, "w") as f:
+                json.dump(info, f, indent=1)
+        except Exception as e:
+            wx.MessageBox(f"Failed to write {info_path}:\n{e}", "Finalize", wx.OK | wx.ICON_ERROR)
+            return
+
+        # Reset so a second Finalize this session doesn't double-count the same effort.
+        self._resetSessionStats()
+        self.populateMetaData(info_path)
+        wx.MessageBox(
+            f"Finalized {os.path.basename(local_dir)}.\n\n"
+            f"Total defects: {total_defects}\n"
+            f"Defect types: {defect_counts}\n"
+            f"Severities: {severity_counts}\n"
+            f"(info.json updated with effort statistics.)",
+            "Finalize", wx.OK | wx.ICON_INFORMATION)
 
    def populateMetaData(self,path):
          self.metadata = None
@@ -2132,24 +2279,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         dialog.Destroy()
         self.onNewInputPath(self.photoTxt.GetValue())
 
-   def processImageWithSAM(self, img):
-        global useSAM
-        if not useSAM:
-          print("Deactivated SAM")
-          self.sam_processor.foregroundImage = img
-          return img
-
-        # Process the image with SAM
-        # For example, assuming self.sam_processor.process() is a method that takes an image and returns the processed image
-        processed_img = self.sam_processor.process(img)
-        
-        # Convert the processed image to wx.Image
-        h, w = processed_img.shape[:2]
-        wx_processed_img = wx.Image(w, h, processed_img.tobytes())
-        
-        return wx_processed_img
-
-
    def rescaleAnything(self,width,height):
         W = width
         H = height
@@ -2245,26 +2374,39 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     dc.SelectObject(wx.NullBitmap)
     return temp_bmp
 
-   def onView(self):
-    # ---- RIGHT image base (SAM / foreground) ----
-    right_img = self.sam_processor.foregroundImage
-    right_img = self.rescaleCVMAT(right_img)
-    rh, rw = right_img.shape[:2]
-    right_bmp = wx.Bitmap.FromBuffer(rw, rh, right_img)
+   def _baseBitmapsForView(self):
+    """Return (left_bmp, right_bmp, left_ok): the annotation-free base bitmaps for the
+    current frame. Cached by the identity of the processed arrays so repeated onView()
+    calls (clicks, clear, remove) skip the resize + buffer rebuild. The cache holds
+    references to the source arrays, so a new render (new array object) misses and
+    rebuilds, while annotation-only edits (same arrays) hit."""
+    img = self.leftViewImage
+    fg  = self.rightViewImage
+    c = self._base_cache
+    if c is not None and c[0] is img and c[1] is fg:
+        return c[2], c[3], c[4]
 
-    # ---- LEFT image base: always build fresh from sam_processor.image so annotations
-    #      never accumulate on a previously-annotated canvas across repeated onView() calls.
-    if self.sam_processor.image is not None:
-        left_img = self.rescaleCVMAT(self.sam_processor.image)
-        lh, lw = left_img.shape[:2]
-        left_bmp = wx.Bitmap.FromBuffer(lw, lh, left_img)
-        left_ok = left_bmp.IsOk()
+    right_img = self.rescaleCVMAT(fg)
+    right_bmp = wx.Bitmap.FromBuffer(right_img.shape[1], right_img.shape[0], right_img)
+
+    if img is not None:
+        left_img = self.rescaleCVMAT(img)
+        left_bmp = wx.Bitmap.FromBuffer(left_img.shape[1], left_img.shape[0], left_img)
+        left_ok  = left_bmp.IsOk()
     else:
         left_bmp = self.imageCtrl.GetBitmap()
-        left_ok = left_bmp and left_bmp.IsOk()
-        if left_ok:
-            lw = left_bmp.GetWidth()
-            lh = left_bmp.GetHeight()
+        left_ok  = bool(left_bmp and left_bmp.IsOk())
+
+    self._base_cache = (img, fg, left_bmp, right_bmp, left_ok)
+    return left_bmp, right_bmp, left_ok
+
+   def onView(self):
+    # Annotation-free base bitmaps (cached). Annotations are drawn on fresh copies below,
+    # so the cached bases never accumulate markers across repeated onView() calls.
+    left_bmp, right_bmp, left_ok = self._baseBitmapsForView()
+    rw, rh = right_bmp.GetWidth(), right_bmp.GetHeight()
+    if left_ok:
+        lw, lh = left_bmp.GetWidth(), left_bmp.GetHeight()
 
     # If no points, refresh both panels with their clean base images
     if len(self.points_of_interest) == 0:
@@ -2498,7 +2640,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             del self.points_severities[selected_index]
             if selected_index < len(self.points_sources):
                 del self.points_sources[selected_index]
+            self._stat_points_deleted += 1
             self.updatePointList()
+            self.onView()   # fast redraw so the removed marker disappears immediately
 
    def onCopyPreviousPoints(self, event):
         """Copy points/classes/severities from the previous frame's JSON (if it exists) into the current frame."""
@@ -2555,6 +2699,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.points_classes = cls
         self.points_severities = sev
         self.points_sources = src
+        self._stat_points_added += len(pts)
         self.updatePointList()
         self.onNext(event)
 
@@ -2565,10 +2710,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.updateRegionList()
 
    def onClearAllAnnotations(self, event):
-        """Wipe every point/region annotation on the current frame (cleanup shortcut: 'D').
-        The empty state is persisted on redraw, since navigation auto-saves the frame."""
+        """Wipe every point/region annotation on the current frame (cleanup shortcut: 'D')."""
+        self._stat_points_deleted += len(self.points_of_interest)
         self.cleanThisFrameMetaData()
-        self.onRedrawData(event)
+        self.onSave(event)   # persist the now-empty annotations
+        self.onView()        # fast redraw on the cached base — no image re-decode/re-render
 
    def formatPoints(self):
         result = list()
@@ -2612,6 +2758,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            self.onView()
            return
        if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot
+        self._stat_clicks += 1
+        self._stat_points_added += 1
+        self._recordInteraction()
         self.x, self.y = event.GetPosition()
         self.points_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
         selected_option = self.defectComboBox.GetValue()
@@ -2620,14 +2769,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.points_severities.append(selected_option)
         self.points_sources.append("manual")
 
-        self.updatePointList() 
+        self.updatePointList()
 
         if (self.incrementFrameAfterAnAdditionCheckbox.GetValue()):
                print("Auto Incrementing")
                self.onNext(event)
         else:
-               print("Forcing Redraw")
-               self.onRedrawData(event)
+               self.onSave(event)   # persist the new point
+               self.onView()        # fast redraw on the cached base — no image re-decode/re-render
 
    def onToggleMeasure(self, event):
        self.measureMode   = not self.measureMode
@@ -2724,15 +2873,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def onRightDown(self, event):
       if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot
+        self._stat_clicks += 1
+        self._recordInteraction()
         self.x, self.y = event.GetPosition()
         self.regions_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
         self.updateRegionList()
         print("Click ",self.x,",",self.y)
         print("Rescaled Click ",int(self.x*self.clickRatioX),",",int(self.y*self.clickRatioY))
-        try:
-          self.sam_processor.select_area(int(self.x*self.clickRatioX),int(self.y*self.clickRatioY))
-        except Exception as e:
-          print("Error ",e)
         self.onView()
 
    def onMiddleDown(self, event):
@@ -2752,6 +2899,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def onKeyPress(self, event):
         keycode = event.GetKeyCode()
+        self._stat_keystrokes += 1
+        self._recordInteraction()
         if keycode == wx.WXK_LEFT:
             self.onPrevious(event)
         elif keycode == wx.WXK_RIGHT:
@@ -2760,6 +2909,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onExit(event)
         elif keycode == ord('J') or keycode == ord('j'):
             self.openJumpToFrameDialog()
+        elif keycode == ord('R') or keycode == ord('r'):
+            focus = wx.Window.FindFocus()
+            if isinstance(focus, (wx.TextCtrl, wx.ComboBox)):
+                event.Skip()  # user is typing 'r' into a field, don't refresh
+            else:
+                self.onRescan(event)
         elif keycode == ord('D') or keycode == ord('d'):
             focus = wx.Window.FindFocus()
             if isinstance(focus, (wx.TextCtrl, wx.ComboBox)):
