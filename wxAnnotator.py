@@ -2122,12 +2122,29 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             maximum=len(images), parent=self.frame,
             style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
                   | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
-        updated = 0
+        updated = skipped = 0
         for i, img in enumerate(images):
-            cont, _ = prog.Update(i, f"{i+1}/{len(images)} frames")
+            cont, _ = prog.Update(i, f"{i+1}/{len(images)} frames ({skipped} already done)")
             if not cont:
                 break
             wx.GetApp().Yield(True)
+
+            # Read the frame JSON first so we can skip frames that already have focus + light.
+            jp = resolve_annotation_json_path(img, prefer_existing=True)
+            if not jp or not checkIfFileExists(jp):
+                jp = os.path.splitext(img)[0] + ".json"
+            data = {}
+            if checkIfFileExists(jp):
+                try:
+                    with open(jp) as f:
+                        data = json.load(f)
+                except Exception:
+                    data = {}
+            if data.get("tenengradFocusMeasure") and \
+               data.get("lightDirection", "Unknown") not in ("", "Unknown"):
+                skipped += 1
+                continue  # already calculated — don't decode/recompute
+
             raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
             if raw is None:
                 continue
@@ -2139,16 +2156,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             focus = float(tenengrad_focus_measure(imgCV))
             light = determine_intensity_region(imgCV, threshold=0.1)
 
-            jp = resolve_annotation_json_path(img, prefer_existing=True)
-            if not jp or not checkIfFileExists(jp):
-                jp = os.path.splitext(img)[0] + ".json"
-            data = {}
-            if checkIfFileExists(jp):
-                try:
-                    with open(jp) as f:
-                        data = json.load(f)
-                except Exception:
-                    data = {}
             if not data:
                 data = {"width": self.width, "height": self.height, "md5hash": "",
                         "regionClicks": [], "pointClicks": [], "pointClasses": [],
@@ -2162,6 +2169,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             except Exception as e:
                 print("Finalize: focus/light write failed", jp, e)
         prog.Destroy()
+        print(f"Finalize focus/light: {updated} computed, {skipped} already had values")
         return updated
 
    def onFinalize(self, event):
