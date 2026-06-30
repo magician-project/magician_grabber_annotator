@@ -73,6 +73,14 @@ from magnifier import MagnifierFrame
 from modelUpdater import ModelUpdaterDialog
 from rlAnnotator import RLAnnotatorDialog
 
+# AutoAnnotator needs gradio_client (optional). Import lazily-safe so the GUI still
+# launches if the dependency / servers are unavailable; onAuto reports the error.
+try:
+    from AutoAnnotator import AutoAnnotator
+except Exception as _autoErr:
+    AutoAnnotator = None
+    _autoImportError = _autoErr
+
 
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
@@ -204,6 +212,7 @@ class PhotoCtrl(wx.App):
         self.points_of_interest  = []
         self.points_classes      = []
         self.points_severities   = []
+        self.points_sources      = []  # parallel to points_of_interest: "auto" | "manual"
         self.AIAnnotations       = None
 
         self.width  = 0
@@ -250,6 +259,7 @@ class PhotoCtrl(wx.App):
 
         self.magnifier_source = "left"  # or "right"
         self.magnifier = None
+        self.autoAnnotator = None  # created on first use of the Auto button
 
         self.local_base_path = "./"
         self.controlsData = []
@@ -625,6 +635,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # Action buttons
     self.autoBtn = wx.Button(parent, label='Auto')
     self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
+    self.fullAutoBtn = wx.Button(parent, label='Full Auto')
+    self.fullAutoBtn.Bind(wx.EVT_BUTTON, self.onFullAuto)
     self.saveBtn = wx.Button(parent, label='Save')
     self.saveBtn.Bind(wx.EVT_BUTTON, self.onSave)
     self.deleteMetadataBtn = wx.Button(parent, label='Delete')
@@ -632,6 +644,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     comboButtons = wx.BoxSizer(wx.HORIZONTAL)
     comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
+    comboButtons.Add(self.fullAutoBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
 
@@ -639,8 +652,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.incrementFrameAfterAnAdditionCheckbox = wx.CheckBox(parent, label="Increment frame after defect annotation")        
     self.incrementFrameAfterAnAddition=True
     self.incrementFrameAfterAnAdditionCheckbox.SetValue(self.incrementFrameAfterAnAddition)
-    self.guessLightingCheckbox = wx.CheckBox(parent, label="Guess lighting direction")
-    self.guessLightingCheckbox.SetValue(True)
+    self.guessLightingCheckbox = wx.CheckBox(parent, label="Calculate Focus & Light Direction")
+    self.guessLightingCheckbox.SetValue(False)
 
     # Layout stack for Annotator tab
     s.Add(self.datasetLabel, 0, wx.ALL | wx.EXPAND, 5)
@@ -1248,6 +1261,16 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 self.points_classes = data['pointClasses']
             if 'pointSeverities' in data:
                 self.points_severities = data['pointSeverities']
+            # Origin of each point. Legacy JSONs have no 'pointSources' field -> assume manual.
+            if 'pointSources' in data:
+                self.points_sources = list(data['pointSources'])
+            else:
+                self.points_sources = ["manual"] * len(self.points_of_interest)
+            # Keep parallel array aligned with the points in case of malformed input.
+            if len(self.points_sources) < len(self.points_of_interest):
+                self.points_sources += ["manual"] * (len(self.points_of_interest) - len(self.points_sources))
+            else:
+                self.points_sources = self.points_sources[:len(self.points_of_interest)]
             if 'regionClicks' in data:
                 self.regions_of_interest = data['regionClicks']
 
@@ -1283,7 +1306,221 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         os.system("rm %s"%jsonFile)
         self.onRedrawData(event)
 
-   def onAuto(self, event): 
+   def _ensureAutoAnnotator(self):
+      """Lazily create the AutoAnnotator (connects to the SAM3 server on first use)."""
+      if getattr(self, "autoAnnotator", None) is not None:
+          return True
+      if AutoAnnotator is None:
+          wx.MessageBox(
+              "AutoAnnotator unavailable — is gradio_client installed?\n\n"
+              f"Import error: {_autoImportError}",
+              "Auto Annotate", wx.OK | wx.ICON_ERROR)
+          return False
+      try:
+          self.autoAnnotator = AutoAnnotator()
+      except Exception as e:
+          wx.MessageBox(f"Could not initialise AutoAnnotator:\n{e}",
+                        "Auto Annotate", wx.OK | wx.ICON_ERROR)
+          return False
+      return True
+
+   def onAuto(self, event):
+      """SAM3 pen-mark assisted annotation (see AutoAnnotator.py):
+        - blank frame that has a visible mark -> detect it and place a candidate point;
+        - already-annotated frame             -> propagate the points to the NEXT frame.
+      """
+      if not self._ensureAutoAnnotator():
+          return
+
+      # --- Blank frame: detect mark(s) on THIS frame from scratch ---
+      if not self.points_of_interest:
+          prev_raw = cv2.imread(self.filepath, cv2.IMREAD_UNCHANGED)
+          if prev_raw is None:
+              wx.MessageBox("Could not load the current frame image.",
+                            "Auto Annotate", wx.OK | wx.ICON_ERROR)
+              return
+          polarity = "high" if "positive" in self.defectComboBox.GetValue().lower() else "low"
+          wx.BeginBusyCursor()
+          try:
+              dets = self.autoAnnotator.detect(prev_raw, polarity=polarity)
+          except Exception as e:
+              wx.EndBusyCursor()
+              wx.MessageBox(f"Detection failed:\n{e}", "Auto Annotate",
+                            wx.OK | wx.ICON_ERROR)
+              return
+          wx.EndBusyCursor()
+          if not dets:
+              self.instructLbl.SetLabel("Auto: no pen mark detected on this frame.")
+              return
+          for x, y, _area in dets:
+              self.points_of_interest.append((x, y))
+              self.points_classes.append(self.defectComboBox.GetValue() or options[0])
+              self.points_severities.append(self.severityComboBox.GetValue() or severities[0])
+              self.points_sources.append("auto")
+          self.updatePointList()
+          self.onView()
+          self.instructLbl.SetLabel(
+              "Auto: detected %u mark(s) on this frame — verify, then Save." % len(dets))
+          return
+
+      cur = self.folderStreamer.current()
+      nxt = cur + 1
+      if nxt > self.folderStreamer.max():
+          wx.MessageBox("Already on the last frame; nothing to propagate to.",
+                        "Auto Annotate", wx.OK | wx.ICON_INFORMATION)
+          return
+
+      prev_raw = cv2.imread(self.filepath, cv2.IMREAD_UNCHANGED)
+
+      # Resolve the next frame's image path without disturbing the current selection.
+      self.folderStreamer.select(nxt)
+      next_path = self.folderStreamer.getImage()
+      self.folderStreamer.select(cur)
+      next_raw = cv2.imread(next_path, cv2.IMREAD_UNCHANGED)
+      if prev_raw is None or next_raw is None:
+          wx.MessageBox("Could not load the current or next frame image.",
+                        "Auto Annotate", wx.OK | wx.ICON_ERROR)
+          return
+
+      # Snapshot annotations to carry class/severity across the association.
+      prev_points     = list(self.points_of_interest)
+      prev_classes    = list(self.points_classes)
+      prev_severities = list(self.points_severities)
+
+      wx.BeginBusyCursor()
+      try:
+          preds = self.autoAnnotator.propagate(prev_raw, prev_points, next_raw)
+      except Exception as e:
+          wx.EndBusyCursor()
+          wx.MessageBox(f"Propagation failed:\n{e}", "Auto Annotate",
+                        wx.OK | wx.ICON_ERROR)
+          return
+      wx.EndBusyCursor()
+
+      # Advance to the next frame (this saves the current frame and loads N+1's JSON).
+      self.gotoFrameUI(self._ui_from_stream(nxt))
+
+      matched = 0
+      for i, pred in enumerate(preds):
+          if pred is None:
+              continue
+          self.points_of_interest.append((pred[0], pred[1]))
+          self.points_classes.append(prev_classes[i] if i < len(prev_classes) else options[0])
+          self.points_severities.append(prev_severities[i] if i < len(prev_severities) else severities[0])
+          self.points_sources.append("auto")
+          matched += 1
+
+      self.updatePointList()
+      self.onView()
+      self.instructLbl.SetLabel(
+          "Auto: propagated %u/%u annotation(s) to frame %u — verify, then Save."
+          % (matched, len(prev_points), nxt))
+
+   def onFullAuto(self, event):
+      """Run SAM3 pen-mark detection across EVERY frame in the open dataset and write
+      candidate annotations where a circle is found. Frames that already have
+      annotations are skipped so manual work is never clobbered."""
+      if not self._ensureAutoAnnotator():
+          return
+
+      # The frame list is already loaded in the streamer (local_dir is not always set,
+      # e.g. when started via --from); fall back to the current frame's directory.
+      images = list(getattr(self.folderStreamer, "directoryList", None) or [])
+      if not images and self.filepath and os.path.isfile(self.filepath):
+          images = list_image_files(os.path.dirname(self.filepath))
+      if not images:
+          wx.MessageBox("No dataset frames are loaded.\nOpen a dataset directory first.",
+                        "Full Auto", wx.OK | wx.ICON_WARNING)
+          return
+
+      defect   = self.defectComboBox.GetValue() or options[0]
+      severity = self.severityComboBox.GetValue() or severities[0]
+      polarity = "high" if "positive" in defect.lower() else "low"
+
+      ask = wx.MessageDialog(
+          self.frame,
+          f"Run SAM3 auto-detection on {len(images)} frames?\n\n"
+          f"Detected marks will be labelled '{defect}' / '{severity}'.\n"
+          f"Frames that already have annotations are SKIPPED.\n"
+          f"This queries the SAM3 server once per frame and may take a while.",
+          "Full Auto", wx.YES_NO | wx.ICON_QUESTION)
+      if ask.ShowModal() != wx.ID_YES:
+          ask.Destroy()
+          return
+      ask.Destroy()
+
+      prog = wx.ProgressDialog(
+          "Full Auto", "Starting…", maximum=len(images), parent=self.frame,
+          style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
+                | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
+
+      annotated = marks = skipped = failed = 0
+      for i, img in enumerate(images):
+          cont, _ = prog.Update(
+              i, f"{i+1}/{len(images)} — {marks} mark(s) in {annotated} frame(s), {skipped} skipped")
+          if not cont:
+              break
+          wx.GetApp().Yield(True)
+
+          json_path = resolve_annotation_json_path(img, prefer_existing=True)
+          if not json_path or not checkIfFileExists(json_path):
+              json_path = os.path.splitext(img)[0] + ".json"
+
+          # Skip frames that already carry annotations.
+          if checkIfFileExists(json_path):
+              try:
+                  if json.load(open(json_path)).get("pointClicks"):
+                      skipped += 1
+                      continue
+              except Exception:
+                  pass
+
+          raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
+          if raw is None:
+              failed += 1
+              continue
+          try:
+              dets = self.autoAnnotator.detect(raw, polarity=polarity)
+          except Exception as e:
+              prog.Destroy()
+              wx.MessageBox(f"Detection failed on:\n{img}\n\n{e}",
+                            "Full Auto", wx.OK | wx.ICON_ERROR)
+              return
+          if not dets:
+              continue
+
+          data = {
+              "width":  self.width,
+              "height": self.height,
+              "md5hash": "",
+              "regionClicks": [],
+              "pointClicks":     [[x, y] for x, y, _a in dets],
+              "pointClasses":    [defect] * len(dets),
+              "pointSeverities": [severity] * len(dets),
+              "pointSources":    ["auto"] * len(dets),
+          }
+          try:
+              with open(json_path, "w") as f:
+                  json.dump(data, f, sort_keys=False)
+              annotated += 1
+              marks     += len(dets)
+          except Exception as e:
+              print(f"[Full Auto] Failed writing {json_path}: {e}")
+              failed += 1
+
+      prog.Destroy()
+      wx.MessageBox(
+          f"Full Auto complete.\n\n"
+          f"Annotated {marks} mark(s) across {annotated} frame(s).\n"
+          f"Skipped {skipped} already-annotated frame(s).\n"
+          f"{failed} frame(s) failed.",
+          "Full Auto", wx.OK | wx.ICON_INFORMATION)
+
+      # Refresh the current frame in case it was (re)annotated.
+      self.onProcessNewImageSample(self.filepath)
+      self.onView()
+
+   def onAutoOLD(self, event):
       print("Automatically retrieved annotations")
       print(self.AIAnnotations)
       print("User Submitted annotations")
@@ -1337,6 +1574,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       self.points_of_interest.extend(new_points)
       self.points_classes.extend(new_classes)
       self.points_severities.extend(new_severities)
+      self.points_sources.extend(["auto"] * len(new_points))
 
 
       print(f"Total new clean tiles: {len(new_points)}")
@@ -1364,7 +1602,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         allData["height"]  = self.height #self.sam_processor.image.shape[0] 
         allData["md5hash"] = self.filehash
 
-        allData["tenengradFocusMeasure"] = self.tenengrad_focus_measure
+        if self.tenengrad_focus_measure != 0.0:
+            allData["tenengradFocusMeasure"] = self.tenengrad_focus_measure
 
 
         allData["regionClicks"] = list()
@@ -1382,6 +1621,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         allData["pointSeverities"] = list()
         for aSeverity in self.points_severities:
               allData["pointSeverities"].append(aSeverity)
+
+        # Per-point origin ("auto" | "manual"), aligned to pointClicks. Any point lacking
+        # a recorded source (e.g. carried over from older code paths) is treated as manual.
+        allData["pointSources"] = list()
+        for i in range(len(self.points_of_interest)):
+              src = self.points_sources[i] if i < len(self.points_sources) else "manual"
+              allData["pointSources"].append(src)
 
         if (self.lightComboBox.GetValue()!="Unknown"):
               allData["lightDirection"] = self.lightComboBox.GetValue()
@@ -1410,6 +1656,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.regionList.Clear()
                self.points_classes      = []
                self.points_severities   = []
+               self.points_sources      = []
                self.regions_of_interest = []
                self.points_of_interest  = []
                self.lightComboBox.SetValue("Unknown")
@@ -1555,12 +1802,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
            # Process the image with SAM and update the second StaticBitmap
            global combineChannels
-           imgCV  = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED
+           #imgCV  = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED  # wasteful: this decode is overwritten below for 4-ch polar PNGs; imgCV is derived from imgPNM instead
            imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED) #This is to be used without changes by the classifier
 
-           if ((imgCV is None) or (imgPNM is None)):
+           if (imgPNM is None):
                   print("Could not load ",filepath)
-                  return 
+                  return
 
 
            # if we got a 4-channel PNG (p0,p45,p90,p135), repack to the original 2x2 mosaic
@@ -1572,14 +1819,20 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                print("Re-bayering .PNG file to transparently treat it as .PNM")
                imgPNM = repackPolarToMosaic(p0, p45, p90, p135)   # now 2D, as classifier expects
                imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])       # keep existing visualization logic happy
+           else:
+               # non-polar PNG (e.g. boot logo / 3-ch / gray): reproduce the old cv2.imread() 3-channel BGR
+               imgCV  = imgPNM if (imgPNM.ndim == 3 and imgPNM.shape[2] == 3) else cv2.cvtColor(imgPNM, cv2.COLOR_GRAY2BGR)
 
 
            print("Raw image dims for ",filepath," ",imgCV.shape)
            self.viewedImageFullWidth  = imgCV.shape[1]
            self.viewedImageFullHeight = imgCV.shape[0] 
 
-           self.tenengrad_focus_measure = tenengrad_focus_measure(imgCV)
-           print("Focus : ",self.tenengrad_focus_measure)
+           if self.guessLightingCheckbox.GetValue():
+               self.tenengrad_focus_measure = tenengrad_focus_measure(imgCV)
+               print("Focus : ",self.tenengrad_focus_measure)
+           else:
+               self.tenengrad_focus_measure = 0.0
            
            processingString = self.ProcessorComboBox.GetValue()
            if self.photoTxt.GetValue() == "default":
@@ -1982,6 +2235,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             dc.DrawCircle(cx, cy, r)
             dc.DrawCircle(cx, cy, r + 4)
 
+        # Badge machine-generated points with a small cyan "A" so reviewers can spot them.
+        src = self.points_sources[pointID] if pointID < len(self.points_sources) else "manual"
+        if src == "auto":
+            dc.SetTextForeground(wx.Colour(0, 255, 255))
+            dc.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+            dc.DrawText("A", cx + r + 2, cy - r - 2)
+
     dc.SelectObject(wx.NullBitmap)
     return temp_bmp
 
@@ -2059,10 +2319,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # Show absolute frame too (useful!)
     abs_frame = self._stream_from_ui(ui_cur)
-    self.instructLbl.SetLabel(
-        "Sample %u/%u (abs %u) - %0.2f%%  - Focus %0.2f"
-        % (ui_cur, ui_max, abs_frame, percent, self.tenengrad_focus_measure)
-    )
+    label = "Sample %u/%u (abs %u) - %0.2f%%" % (ui_cur, ui_max, abs_frame, percent)
+    if self.tenengrad_focus_measure != 0.0:
+        label += "  - Focus %0.2f" % self.tenengrad_focus_measure
+    self.instructLbl.SetLabel(label)
 
 
    def onScroll(self, event):
@@ -2236,6 +2496,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             del self.points_of_interest[selected_index]
             del self.points_classes[selected_index]
             del self.points_severities[selected_index]
+            if selected_index < len(self.points_sources):
+                del self.points_sources[selected_index]
             self.updatePointList()
 
    def onCopyPreviousPoints(self, event):
@@ -2276,18 +2538,23 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         pts = list(data.get('pointClicks', []))
         cls = list(data.get('pointClasses', []))
         sev = list(data.get('pointSeverities', []))
+        src = list(data.get('pointSources', []))
 
         # Normalize lengths
         if len(cls) < len(pts):
             cls.extend([options[0]] * (len(pts) - len(cls)))
         if len(sev) < len(pts):
             sev.extend([severities[0]] * (len(pts) - len(sev)))
+        if len(src) < len(pts):
+            src.extend(["manual"] * (len(pts) - len(src)))
         cls = cls[:len(pts)]
         sev = sev[:len(pts)]
+        src = src[:len(pts)]
 
         self.points_of_interest = pts
         self.points_classes = cls
         self.points_severities = sev
+        self.points_sources = src
         self.updatePointList()
         self.onNext(event)
 
@@ -2296,6 +2563,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if selected_index != -1:
             del self.regions_of_interest[selected_index]
             self.updateRegionList()
+
+   def onClearAllAnnotations(self, event):
+        """Wipe every point/region annotation on the current frame (cleanup shortcut: 'D').
+        The empty state is persisted on redraw, since navigation auto-saves the frame."""
+        self.cleanThisFrameMetaData()
+        self.onRedrawData(event)
 
    def formatPoints(self):
         result = list()
@@ -2345,6 +2618,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.points_classes.append(selected_option)
         selected_option = self.severityComboBox.GetValue()
         self.points_severities.append(selected_option)
+        self.points_sources.append("manual")
 
         self.updatePointList() 
 
@@ -2486,6 +2760,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onExit(event)
         elif keycode == ord('J') or keycode == ord('j'):
             self.openJumpToFrameDialog()
+        elif keycode == ord('D') or keycode == ord('d'):
+            focus = wx.Window.FindFocus()
+            if isinstance(focus, (wx.TextCtrl, wx.ComboBox)):
+                event.Skip()  # user is typing 'd' into a field, don't wipe
+            else:
+                self.onClearAllAnnotations(event)
         elif keycode == wx.WXK_TAB:
             if self.magnifier and self.magnifier.IsShown():
                 self.magnifier_source = "right" if self.magnifier_source == "left" else "left"

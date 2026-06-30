@@ -107,6 +107,8 @@ class FolderStreamer():
            if (pathIsDirectory):
              #----------------------------------------------------
              print("Loading image files from : ",path)
+             self.path          = path
+             self.local_dir     = path
              self.directoryList = list_image_files(path)
              self.directoryListIndex = 0
              #----------------------------------------------------

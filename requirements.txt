@@ -1,6 +1,8 @@
 wxPython
 opencv-python
 numpy
+requests
+gradio_client
 numba
 torch
 torchvision
