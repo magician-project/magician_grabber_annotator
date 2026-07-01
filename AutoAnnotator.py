@@ -38,6 +38,16 @@ import numpy as np
 from readData import readPolarPNMToRGBALive
 
 
+# Route ALL gradio_client temp files into a PRIVATE per-process dir instead of the shared
+# /tmp/gradio. gradio_client caches BOTH downloaded results AND uploaded inputs (content-sha
+# copies, ~3 MB each) under GRADIO_TEMP_DIR — which it captures at import time — so this MUST
+# be set before gradio_client is first imported (it is imported lazily in Sam3Client). Using a
+# private dir means our per-call cleanup never races with other gradio servers/clients.
+if "GRADIO_TEMP_DIR" not in os.environ:
+    os.environ["GRADIO_TEMP_DIR"] = tempfile.mkdtemp(prefix="magician_gradio_")
+_GRADIO_TMP = os.environ["GRADIO_TEMP_DIR"]
+
+
 # --- Server / behaviour defaults (edit here while experimenting) --------------
 SAM3_IP      = "127.0.0.1"   # remote server: "139.91.185.16" (e.g. via SSH tunnel)
 SAM3_PORT    = "7860"
@@ -61,8 +71,12 @@ MOSAIC_SCALE = 2.0
 # Params validated on ~56 hand-GT frames: 15/56 improved, 0 regressions (conservative).
 REFINE_DEFECT     = True   # apply DoLP refinement after detecting the ring
 REFINE_K          = 3.0    # anomaly threshold in robust-MAD units (higher = more cautious)
-REFINE_MAX_MOVE   = 0.5    # max move from centroid as a fraction of the ring radius
-REFINE_MIN_AREA   = 6      # min anomaly-cluster area (render px)
+REFINE_PEAK_K     = 5.0    # a blob must also PEAK above this (MAD units) to be accepted — gates
+                           # out weak/ambiguous anomalies (halves the negative-dent tail; positives,
+                           # which have no crisp anomaly, cleanly fall back to the ring centroid).
+                           # Tuned on 244 certified-GT rings: mean err 57->53, p90 123->114 mosaic px.
+REFINE_MAX_MOVE   = 0.45   # max move from centroid as a fraction of the ring radius
+REFINE_MIN_AREA   = 10     # min anomaly-cluster area (render px)
 REFINE_RING_DILATE = 21    # dilation (px) used to exclude the ink ring from the interior
 
 # --- Recall heuristics (validated on FORTH_NEGA/POSA hand-GT: recall 0.57 -> 0.84) ---
@@ -106,7 +120,8 @@ def dolp_to_bgr(dolp):
 
 def _dolp_anomaly(dolp, ring_mask, cx, cy, polarity="low",
                   k=REFINE_K, max_move_frac=REFINE_MAX_MOVE,
-                  min_area=REFINE_MIN_AREA, ring_dilate=REFINE_RING_DILATE):
+                  min_area=REFINE_MIN_AREA, ring_dilate=REFINE_RING_DILATE,
+                  peak_k=REFINE_PEAK_K):
     """Find the DoLP defect anomaly inside a ring. Returns (x, y) in render coords, or
     None when no confident anomaly is present (e.g. the defect is outside the frame).
 
@@ -143,7 +158,10 @@ def _dolp_anomaly(dolp, ring_mask, cx, cy, polarity="low",
         bx, by = cents[i]
         if ((bx - cx) ** 2 + (by - cy) ** 2) ** 0.5 > max_move_frac * R:
             continue
-        s = score[labels == i].mean() * np.sqrt(stats[i, cv2.CC_STAT_AREA])
+        blob = (labels == i)
+        if score[blob].max() < peak_k * mad:       # require a strong peak, not just wide+weak
+            continue
+        s = score[blob].mean() * np.sqrt(stats[i, cv2.CC_STAT_AREA])
         if s > best_score:
             best_score, best = s, (float(bx), float(by))
     return best
@@ -199,22 +217,30 @@ class Sam3Client:
     def __init__(self, ip=SAM3_IP, port=SAM3_PORT):
         self.url = f"http://{ip}:{port}"
         self._client = None
-        # Private per-process download dir. gradio_client otherwise pools downloads in the
-        # SHARED /tmp/gradio (default GRADIO_TEMP_DIR) used by every other gradio client AND
-        # server on the machine — so we isolate ours and only ever clean our own dir.
-        self._dl_dir = tempfile.mkdtemp(prefix="sam3_gradio_")
 
     def _ensure(self):
         if self._client is None:
             from gradio_client import Client      # imported lazily (optional dep)
             print(f"[AutoAnnotator] Connecting to SAM3 at {self.url}")
-            self._client = Client(self.url, download_files=self._dl_dir)
+            # downloads default to GRADIO_TEMP_DIR (our private _GRADIO_TMP); uploads go there too
+            self._client = Client(self.url, download_files=_GRADIO_TMP)
 
     def segment(self, bgr, prompt):
         """Segment everything matching `prompt`; returns a binary uint8 mask (0/255)
         the same H x W as `bgr`."""
         self._ensure()
         from gradio_client import handle_file
+
+        # gradio_client's _download_file streams each result into
+        # tempfile.gettempdir()/<40-hex-token>/ (in a worker thread, so we can't redirect it),
+        # moves the file out, and leaves the empty dir behind — one leaked inode per query.
+        # Snapshot the token dirs before the call and remove the new empty ones after.
+        tmproot = tempfile.gettempdir()
+        _is_token = lambda n: len(n) == 40 and all(c in "0123456789abcdef" for c in n)
+        try:
+            before = {n for n in os.listdir(tmproot) if _is_token(n)}
+        except OSError:
+            before = set()
 
         fd, path = tempfile.mkstemp(suffix=".png")
         os.close(fd)
@@ -229,15 +255,28 @@ class Sam3Client:
                 "Check the SAM3 server is healthy / its model is loaded.\n"
                 f"Underlying error: {e}")
         finally:
-            os.remove(path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            # remove only the NEW, now-empty staging dirs this call created (safe for other
+            # processes: their in-flight dirs aren't empty, and we skip anything non-empty)
+            try:
+                for n in os.listdir(tmproot):
+                    if _is_token(n) and n not in before:
+                        d = os.path.join(tmproot, n)
+                        if os.path.isdir(d) and not os.listdir(d):
+                            os.rmdir(d)
+            except OSError:
+                pass
 
         # Returned image encodes: R channel = instance IDs, G/B = binary mask.
         out = cv2.imread(result, cv2.IMREAD_UNCHANGED)
-        # The result was downloaded into our PRIVATE dir; wipe its contents so the download
-        # cache can't grow without bound. We never touch the shared /tmp/gradio — doing so
-        # would race with other gradio clients/servers' in-flight files.
-        for name in os.listdir(self._dl_dir):
-            p = os.path.join(self._dl_dir, name)
+        # Wipe our PRIVATE gradio temp dir (both the uploaded-input cache and downloaded
+        # results live here). Calls are sequential, so nothing is in flight once the result is
+        # read. We never touch the shared /tmp/gradio — that would race with other processes.
+        for name in os.listdir(_GRADIO_TMP):
+            p = os.path.join(_GRADIO_TMP, name)
             try:
                 shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
             except OSError:
@@ -340,7 +379,8 @@ class AutoAnnotator:
             if touches and reject_border:
                 # keep only if a DoLP anomaly proves the defect is inside the visible arc
                 an = _dolp_anomaly(dolp, ring_mask, cx, cy, polarity,
-                                   k=BORDER_REFINE_K, max_move_frac=BORDER_MAX_MOVE)
+                                   k=BORDER_REFINE_K, max_move_frac=BORDER_MAX_MOVE,
+                                   peak_k=BORDER_REFINE_K)   # keep loose: this gates RECALL, not localization
                 if an is None:
                     continue
                 cx, cy = an
