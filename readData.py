@@ -214,6 +214,7 @@ def tileImages(image,
                use_severity=False,
                use_clean_class=True,
                quarantine_px=0,
+               defect_tiles_per_point=0,
                debug=False):
     """
     Extract tiles from an image, oversampling tiles containing defects and
@@ -228,6 +229,17 @@ def tileImages(image,
         (~150 px) so ring-ink tiles stay in the clean class (they are wanted hard
         negatives: the robot works alongside humans, ink can appear in production).
         0 disables (legacy behaviour). Clean/RLClean points never quarantine.
+    defect_tiles_per_point: cap on how many (randomly chosen) tiles of the dense
+        defect enumeration are kept per annotation point. 0 = keep all
+        (~(tile_size/step)^2 per point).
+
+    Sampling structure (two phases):
+      1. CLEAN grid — the whole frame scanned WITHOUT overlap (clean_step = tile_size
+         by default) in BOTH axes: uniform area coverage, no near-duplicate cleans.
+      2. DEFECT enumeration — for every defect point, tiles are generated at
+         defect_step offsets in BOTH x and y so the defect appears at many positions
+         inside the tile (the old scan only overlapped horizontally, and its row
+         advance depended on the last tile of the row).
     """
 
     import json
@@ -251,97 +263,126 @@ def tileImages(image,
     if clean_step is None:
           clean_step = tile_size
 
-    # Loop through the image
+    def label_tile(start_x, start_y):
+        """Resolve the class text / AI flag / quarantine flag for the tile whose
+        top-left corner is (start_x, start_y). Same labeling rules as always."""
+        end_x, end_y = start_x + tile_size, start_y + tile_size
+        tile_text = ""
+        tileAnnotatedByAI = 0
+        nearDefect = False   # inside the quarantine band of a defect point
+
+        for idx, (xFull, yFull) in enumerate(point_clicks):
+            xAct, yAct = xFull // 2, yFull // 2  # <- keep your scaling
+            if quarantine_px > 0 and point_classes[idx] not in ("Clean", "RLClean"):
+                # distance from the point to the tile rectangle
+                dx = max(start_x - xAct, 0, xAct - (end_x - 1))
+                dy = max(start_y - yAct, 0, yAct - (end_y - 1))
+                if 0 < dx * dx + dy * dy < quarantine_px * quarantine_px:
+                    nearDefect = True
+            if start_x <= xAct < end_x and start_y <= yAct < end_y:
+
+                thisTileDescription = point_classes[idx]
+
+                # RLClean: automatic RL annotation — treat as Clean when
+                # includeTilesAnnotatedByAI is True, otherwise drop it.
+                if thisTileDescription == "RLClean":
+                   if includeTilesAnnotatedByAI:
+                       thisTileDescription = "Clean"
+                   else:
+                       tileAnnotatedByAI = 1  # will be filtered below
+
+                if (points_severities[idx]=="AI"):
+                   tileAnnotatedByAI = 1
+                   #points_severities[idx]="Class A" #<- Maybe package this with the rest ?
+
+                #If we care about severities, this will make description of class:
+                # PositiveDentClassA
+                if (use_severity):
+                   if (point_classes[idx]!="Clean"): #Clean tiles have no severity :P
+                      thisTileDescription += points_severities[idx]
+
+                #If we want we can consider different amounts of defects on a tile as different classes
+                if not mergeSameKindOfDefectsRegardlessOfCount:
+                   tile_text += thisTileDescription
+                else:
+                   if (tile_text == ""):
+                        tile_text += thisTileDescription
+                   elif (tile_text == thisTileDescription):
+                        pass #Merge descriptions for the same class appearing again and again
+                   else:
+                        tile_text += thisTileDescription #Combinations of classes get a new class description
+
+        return tile_text, tileAnnotatedByAI, nearDefect
+
+    def register(tile, tile_text, tileAnnotatedByAI, start_x):
+        nonlocal tiles_annotated_by_ai
+        tiles.append(tile)
+        tile_classes.append(tile_text)
+        if debug:
+            #If debuging mode is on also produce tile_info data to identify where the tile came from
+            if (tileAnnotatedByAI):
+                tiles_annotated_by_ai += 1
+            tile_info.append("%s(%u,%u)"%(json_file,start_x,start_x+tile_size))
+
+    # --- PHASE 1: CLEAN grid — whole frame WITHOUT overlap in either axis ------------
+    # (defect-containing tiles are skipped here; phase 2 samples those densely)
     y = border
     while y <= height - tile_size - border:
         x = border
         while x <= width - tile_size - border:
-            start_x, end_x = x, x + tile_size
-            start_y, end_y = y, y + tile_size
-
-            tile = image[start_y:end_y, start_x:end_x]
-
-            if tile.shape[0] == tile_size and tile.shape[1] == tile_size:
-                threshold_count = check_threshold_count(tile, low_value_tile_threshold)
-                if threshold_count > 0:
-                    # Check if tile contains any defect points
-                    tile_text = ""
-                    tileAnnotatedByAI = 0
-                    nearDefect = False   # inside the quarantine band of a defect point
-
-                    for idx, (xFull, yFull) in enumerate(point_clicks):
-                        xAct, yAct = xFull // 2, yFull // 2  # <- keep your scaling
-                        if quarantine_px > 0 and point_classes[idx] not in ("Clean", "RLClean"):
-                            # distance from the point to the tile rectangle
-                            dx = max(start_x - xAct, 0, xAct - (end_x - 1))
-                            dy = max(start_y - yAct, 0, yAct - (end_y - 1))
-                            if 0 < dx * dx + dy * dy < quarantine_px * quarantine_px:
-                                nearDefect = True
-                        if start_x <= xAct < end_x and start_y <= yAct < end_y:
-
-                            thisTileDescription = point_classes[idx]
-
-                            # RLClean: automatic RL annotation — treat as Clean when
-                            # includeTilesAnnotatedByAI is True, otherwise drop it.
-                            if thisTileDescription == "RLClean":
-                               if includeTilesAnnotatedByAI:
-                                   thisTileDescription = "Clean"
-                               else:
-                                   tileAnnotatedByAI = 1  # will be filtered below
-
-                            if (points_severities[idx]=="AI"):
-                               tileAnnotatedByAI = 1
-                               #points_severities[idx]="Class A" #<- Maybe package this with the rest ?
-
-                            #If we care about severities, this will make description of class:
-                            # PositiveDentClassA
-                            if (use_severity):
-                               if (point_classes[idx]!="Clean"): #Clean tiles have no severity :P
-                                  thisTileDescription += points_severities[idx]
-
-                            #If we want we can consider different amounts of defects on a tile as different classes
-                            if not mergeSameKindOfDefectsRegardlessOfCount:
-                               tile_text += thisTileDescription
-                            else:
-                               if (tile_text == ""):
-                                    tile_text += thisTileDescription
-                               elif (tile_text == thisTileDescription):
-                                    pass #Merge descriptions for the same class appearing again and again
-                               else:
-                                    tile_text += thisTileDescription #Combinations of classes get a new class description
-
-                    if (not use_clean_class and tile_text == ""):
-                        pass #We dont want to use the class Clean so we ignore it!
-                    elif (tileAnnotatedByAI and not includeTilesAnnotatedByAI):
-                        pass #Ignore this tile that has been annotated by AI
-                    elif (nearDefect and tile_text == ""):
-                        # Quarantine band: too close to a defect point to be trusted as
-                        # clean, but the point itself is outside -> drop the tile
-                        step_size = clean_step
-                    elif ignoreBackground and tile_text == "":
-                        # Skip background if requested
-                        step_size = clean_step
-                    else:
-                        #Register the processed tile to our lists
-                        tiles.append(tile)
-                        tile_classes.append(tile_text)
-                        if debug:
-                           #If debuging mode is on also produce tile_info data to identify where the tile came from
-                           AiAnnotationDebugString = ""
-                           if (tileAnnotatedByAI):
-                                AiAnnotationDebugString = "AIAnnotated "
-                                tiles_annotated_by_ai += 1
-                           tile_info.append("%s(%u,%u)"%(json_file,start_x,end_x))
-                        # Use smaller step if tile contains defect
-                        step_size = defect_step if tile_text != "" else clean_step
+            tile = image[y:y + tile_size, x:x + tile_size]
+            if tile.shape[0] == tile_size and tile.shape[1] == tile_size \
+               and check_threshold_count(tile, low_value_tile_threshold) > 0:
+                tile_text, tileAnnotatedByAI, nearDefect = label_tile(x, y)
+                is_clean = tile_text in ("", "Clean")
+                if not is_clean:
+                    pass  # contains a defect point -> phase 2 handles it densely
+                elif (not use_clean_class and tile_text == ""):
+                    pass #We dont want to use the class Clean so we ignore it!
+                elif (tileAnnotatedByAI and not includeTilesAnnotatedByAI):
+                    pass #Ignore this tile that has been annotated by AI
+                elif nearDefect:
+                    # Quarantine band: too close to a defect point to be trusted as
+                    # clean, but the point itself is outside -> drop the tile
+                    pass
+                elif ignoreBackground and tile_text == "":
+                    pass # Skip background if requested
                 else:
-                    # Tile has too few pixels above threshold -> treat as background
-                    step_size = clean_step
-            else:
-                step_size = clean_step
+                    register(tile, tile_text, tileAnnotatedByAI, x)
+            x += clean_step
+        y += clean_step
 
-            x += step_size
-        y += step_size
+    # --- PHASE 2: DEFECT enumeration — dense offsets in BOTH x and y per point -------
+    import random as _random
+    seen = set()
+    for idx, (xFull, yFull) in enumerate(point_clicks):
+        if point_classes[idx] in ("Clean", "RLClean"):
+            continue                      # clean-ish points are phase-1 material
+        xAct, yAct = int(xFull // 2), int(yFull // 2)
+        # all top-left corners for which the point falls inside the tile
+        x_lo = int(max(border, xAct - tile_size + 1))
+        x_hi = int(min(xAct, width - tile_size - border))
+        y_lo = int(max(border, yAct - tile_size + 1))
+        y_hi = int(min(yAct, height - tile_size - border))
+        offsets = [(x0, y0)
+                   for y0 in range(y_lo, y_hi + 1, defect_step)
+                   for x0 in range(x_lo, x_hi + 1, defect_step)]
+        if defect_tiles_per_point and len(offsets) > defect_tiles_per_point:
+            offsets = _random.sample(offsets, defect_tiles_per_point)
+        for (x0, y0) in offsets:
+            if (x0, y0) in seen:
+                continue                  # already produced for a nearby point
+            tile = image[y0:y0 + tile_size, x0:x0 + tile_size]
+            if tile.shape[0] != tile_size or tile.shape[1] != tile_size \
+               or check_threshold_count(tile, low_value_tile_threshold) <= 0:
+                continue
+            tile_text, tileAnnotatedByAI, _near = label_tile(x0, y0)
+            if tile_text in ("", "Clean"):
+                continue                  # defence: point rounding put it outside
+            if (tileAnnotatedByAI and not includeTilesAnnotatedByAI):
+                continue                  #Ignore this tile that has been annotated by AI
+            seen.add((x0, y0))
+            register(tile, tile_text, tileAnnotatedByAI, x0)
 
     return tiles, tile_classes, tile_info, tiles_annotated_by_ai
 
@@ -512,7 +553,8 @@ def loadImageAndJSON(filename,
                      use_severity=False,
                      use_clean_class=True,
                      ignoreBackground=False,
-                     quarantine_px=0):
+                     quarantine_px=0,
+                     defect_tiles_per_point=0):
 
     tiles        = []
     tile_classes = []
@@ -540,7 +582,8 @@ def loadImageAndJSON(filename,
             use_severity=use_severity,
             use_clean_class=use_clean_class,
             ignoreBackground=ignoreBackground,
-            quarantine_px=quarantine_px
+            quarantine_px=quarantine_px,
+            defect_tiles_per_point=defect_tiles_per_point
         )
 
         del rgba_image

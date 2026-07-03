@@ -420,7 +420,8 @@ class ProcessorThread(threading.Thread):
                  use_severity=False,
                  use_clean_class=True,
                  write_h5=False,
-                 quarantine_px=32):
+                 quarantine_px=32,
+                 defect_tiles_per_point=32):
         super().__init__()
         self.directories = directories
         self.target_dir = target_dir
@@ -441,6 +442,7 @@ class ProcessorThread(threading.Thread):
         self.write_h5 = write_h5          # stream tiles into dataset.h5, no PNG files
         self.h5_writer = None
         self.quarantine_px = quarantine_px  # drop unlabeled tiles this close to a defect
+        self.defect_tiles_per_point = defect_tiles_per_point  # cap of dense defect tiles
 
     def readControllerCSV(self,pathToCSV):
         self.controlsData = []
@@ -518,6 +520,7 @@ class ProcessorThread(threading.Thread):
                                                                                  use_clean_class=self.use_clean_class,
                                                                                  includeTilesAnnotatedByAI=self.includeTilesAnnotatedByAI,
                                                                                  quarantine_px=self.quarantine_px,
+                                                                                 defect_tiles_per_point=self.defect_tiles_per_point,
                                                                                  debug=True
                                                                                 )
 
@@ -771,6 +774,17 @@ class MainFrame(wx.Frame):
         grid.Add(wx.StaticText(panel, label="Threshold per tile:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.threshold_ctrl = wx.SpinCtrl(panel, min=0, max=100, initial=20)
         grid.Add(self.threshold_ctrl, 1, wx.EXPAND)
+
+        # Defect tiles per point control
+        grid.Add(wx.StaticText(panel, label="Defect tiles/point:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.defect_tiles_ctrl = wx.SpinCtrl(panel, min=0, max=256, initial=32)
+        self.defect_tiles_ctrl.SetToolTip(
+            "Each defect point is sampled with the point at many positions inside the\n"
+            "tile (step-size grid in BOTH x and y). This caps how many of those tiles\n"
+            "are kept per point (random subset). 0 = keep all (~(tile/step)^2).\n"
+            "Clean tiles always use a non-overlapping grid covering the whole frame."
+        )
+        grid.Add(self.defect_tiles_ctrl, 1, wx.EXPAND)
 
         # Defect quarantine control
         grid.Add(wx.StaticText(panel, label="Defect quarantine (px):"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -1091,7 +1105,8 @@ class MainFrame(wx.Frame):
                                          use_clean_class = self.clean_class_checkbox.GetValue(),
                                          includeTilesAnnotatedByAI = self.aiannotated_checkbox.GetValue(),
                                          write_h5        = self.direct_h5_checkbox.GetValue(),
-                                         quarantine_px   = self.quarantine_ctrl.GetValue()
+                                         quarantine_px   = self.quarantine_ctrl.GetValue(),
+                                         defect_tiles_per_point = self.defect_tiles_ctrl.GetValue()
                                          )
         self.processor.start()
         self.log(f"Started processing {len(selected_dirs)} datasets -> {target_dir}")

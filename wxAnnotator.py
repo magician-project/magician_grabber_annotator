@@ -1682,6 +1682,24 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                if ("ndc" in loadDataset) or ("negc" in loadDataset):
                    app.defectComboBox.SetValue("Negative Dent")
                    app.severityComboBox.SetValue("Class C")
+               if ("positive-dent-a" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+                   app.severityComboBox.SetValue("Class A")
+               if ("positive-dent-b" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+                   app.severityComboBox.SetValue("Class B")
+               if ("positive-dent-c" in loadDataset):
+                   app.defectComboBox.SetValue("Positive Dent")
+                   app.severityComboBox.SetValue("Class C")
+               if ("negative-dent-a" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+                   app.severityComboBox.SetValue("Class A")
+               if ("negative-dent-b" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+                   app.severityComboBox.SetValue("Class B")
+               if ("negative-dent-c" in loadDataset):
+                   app.defectComboBox.SetValue("Negative Dent")
+                   app.severityComboBox.SetValue("Class C")
 
    def openDataset(self, base_dir, streamer, is_directory=True):
     """
