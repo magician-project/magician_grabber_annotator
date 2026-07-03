@@ -78,7 +78,7 @@ from rlAnnotator import RLAnnotatorDialog
 # AutoAnnotator needs gradio_client (optional). Import lazily-safe so the GUI still
 # launches if the dependency / servers are unavailable; onAuto reports the error.
 try:
-    from AutoAnnotator import AutoAnnotator
+    from AutoAnnotator import AutoAnnotator, temporal_consensus
 except Exception as _autoErr:
     AutoAnnotator = None
     _autoImportError = _autoErr
@@ -1435,10 +1435,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
                 | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
 
+      # PASS 1 — detect on every eligible frame (the slow, SAM3-bound part).
       annotated = marks = skipped = failed = 0
+      frame_cands = []       # (scan_index, detect_ex candidates, json_path)
       for i, img in enumerate(images):
           cont, _ = prog.Update(
-              i, f"{i+1}/{len(images)} — {marks} mark(s) in {annotated} frame(s), {skipped} skipped")
+              i, f"{i+1}/{len(images)} — detecting… {skipped} skipped")
           if not cont:
               break
           wx.GetApp().Yield(True)
@@ -1461,15 +1463,23 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               failed += 1
               continue
           try:
-              dets = self.autoAnnotator.detect(raw, polarity=polarity)
+              cands = self.autoAnnotator.detect_ex(raw, polarity=polarity)
           except Exception as e:
               prog.Destroy()
               wx.MessageBox(f"Detection failed on:\n{img}\n\n{e}",
                             "Full Auto", wx.OK | wx.ICON_ERROR)
               return
+          if cands:
+              frame_cands.append((i, cands, json_path))
+
+      # PASS 2 — temporal offset consensus across the scan (pen ring and defect are
+      # physical, so the ring->defect offset is constant: the median over a ring track
+      # fixes frames whose own DoLP anomaly is weak or missing), then write the JSONs.
+      final = temporal_consensus([(i, c) for i, c, _jp in frame_cands])
+      for i, _c, json_path in frame_cands:
+          dets = final.get(i, [])
           if not dets:
               continue
-
           data = {
               "width":  self.width,
               "height": self.height,
