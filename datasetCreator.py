@@ -179,8 +179,81 @@ def add_png_comment(png_path: str, comment):
 
     img.save(png_path, "PNG", pnginfo=meta)
 
+class H5DatasetWriter:
+    """
+    Stream tiles straight into a training-ready dataset.h5 (same layout as
+    magician_vision_classifier/DatasetConverter.py) WITHOUT writing the intermediate
+    per-tile PNG files.
+
+    Layout consumed by DatasetConverter.HDF5Dataset / trainMagicianVisionClassifierTorch.py:
+      images   : (N, C, H, W) uint8, gzip, chunks=(1,C,H,W)
+      labels   : (N,) int64  (indices into the SORTED class-name list)
+      metadata : (N,) UTF-8 JSON strings
+      attrs    : class_names (JSON list, "class_<Name>" style), has_metadata,
+                 metadata_format
+    """
+    def __init__(self, h5_path):
+        import h5py                      # optional dep; only needed for direct H5 dumps
+        self._h5py = h5py
+        self.path = h5_path
+        self.file = None                 # created lazily on the first tile (needs C,H,W)
+        self.images = None
+        self.meta = None
+        self.class_labels = []           # per-sample class dir name; remapped on close
+
+    def _ensure_open(self, tile):
+        import numpy as np
+        h, w, c = tile.shape
+        f = self._h5py.File(self.path, "w")
+        self.images = f.create_dataset("images", shape=(0, c, h, w),
+                                       maxshape=(None, c, h, w), dtype=np.uint8,
+                                       compression="gzip", chunks=(1, c, h, w))
+        self.meta = f.create_dataset("metadata", shape=(0,), maxshape=(None,),
+                                     dtype=self._h5py.string_dtype(encoding="utf-8"))
+        self.file = f
+
+    def add(self, tile, class_name_no_space, meta_dict):
+        """tile: HWC uint8 (as produced by loadImageAndJSON). Replicates the legacy
+        PNG round trip byte-for-byte: cv2.imwrite -> cv2.imread(UNCHANGED) ->
+        cvtColor(RGBA2BGRA) nets out to swapping channels 0<->2, then HWC -> CHW."""
+        import numpy as np
+        if self.file is None:
+            self._ensure_open(tile)
+        if tile.shape[2] == 4:
+            img = tile[:, :, [2, 1, 0, 3]]
+        elif tile.shape[2] == 3:
+            img = tile[:, :, ::-1]
+        else:
+            img = tile
+        img = np.ascontiguousarray(np.transpose(img, (2, 0, 1)))
+        n = self.images.shape[0]
+        self.images.resize(n + 1, axis=0)
+        self.images[n] = img
+        self.meta.resize(n + 1, axis=0)
+        self.meta[n] = json.dumps(meta_dict if meta_dict is not None else {})
+        self.class_labels.append(f"class_{class_name_no_space}")
+
+    def close(self):
+        """Finalize labels/attrs (class ids follow the SORTED class-name order, exactly
+        like torchvision DatasetFolder / DatasetConverter). Returns sample count."""
+        import numpy as np
+        if self.file is None:
+            return 0                     # no tile was ever added; no file created
+        classes = sorted(set(self.class_labels))
+        index = {c: i for i, c in enumerate(classes)}
+        self.file.create_dataset(
+            "labels", data=np.array([index[c] for c in self.class_labels], dtype=np.int64))
+        self.file.attrs["class_names"] = json.dumps(classes)
+        self.file.attrs["has_metadata"] = True
+        self.file.attrs["metadata_format"] = "json-per-sample"
+        n = len(self.class_labels)
+        self.file.close()
+        self.file = None
+        return n
+
+
 #@profile
-def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_clean, outputDirectory, tile_info=None, tiles_annotated_by_ai=0, progress_callback=None):
+def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_clean, outputDirectory, tile_info=None, tiles_annotated_by_ai=0, progress_callback=None, h5_writer=None):
     """
     tiles, tile_classes: lists aligned
     occurances: dict to update
@@ -188,6 +261,8 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
     outputDirectory: str
     progress_callback: function(status_dict) called periodically with dict containing keys:
        'sample_id', 'total_samples', 'occurances', 'cleanThreshold'
+    h5_writer: optional H5DatasetWriter — tiles go straight into dataset.h5 instead of
+       one PNG file per tile (same class balancing either way)
     Returns updated (occurances, cleanThreshold)
     """
 
@@ -243,17 +318,22 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
 
         if doDump:
             thisClassNoSpace = thisClass.replace(" ", "")
-            class_dir = os.path.join(outputDirectory, f"class_{thisClassNoSpace}")
-            if not checkIfPathExists(class_dir):
-                os.makedirs(class_dir, exist_ok=True)
+            if h5_writer is not None:
+                # Direct-to-H5: no intermediate PNG files
+                h5_writer.add(tiles[tileID], thisClassNoSpace,
+                              tile_info[tileID] if tile_info is not None else {})
+            else:
+                class_dir = os.path.join(outputDirectory, f"class_{thisClassNoSpace}")
+                if not checkIfPathExists(class_dir):
+                    os.makedirs(class_dir, exist_ok=True)
 
-            targetPath = os.path.join(class_dir, f"{thisClassNoSpace}_image_{occurances[thisClass]}.png")
-            # write image
-            cv2.imwrite(targetPath, tiles[tileID])
-            if tile_info is not None:
-                add_png_comment(targetPath,tile_info[tileID])
-                #To see this comment from linux shell: 
-                #      identify -verbose path/to/data/NegativeDent_image_XXXX.png | grep -A1 "Comment"
+                targetPath = os.path.join(class_dir, f"{thisClassNoSpace}_image_{occurances[thisClass]}.png")
+                # write image
+                cv2.imwrite(targetPath, tiles[tileID])
+                if tile_info is not None:
+                    add_png_comment(targetPath,tile_info[tileID])
+                    #To see this comment from linux shell:
+                    #      identify -verbose path/to/data/NegativeDent_image_XXXX.png | grep -A1 "Comment"
             occurances[thisClass] = occurances.get(thisClass, 1) + 1
 
         # progress callback
@@ -286,7 +366,8 @@ class ProcessorThread(threading.Thread):
                  includeTilesNotAnnotated=False,
                  includeTilesAnnotatedByAI=True,
                  use_severity=False,
-                 use_clean_class=True):
+                 use_clean_class=True,
+                 write_h5=False):
         super().__init__()
         self.directories = directories
         self.target_dir = target_dir
@@ -304,6 +385,8 @@ class ProcessorThread(threading.Thread):
         self.includeTilesAnnotatedByAI   = includeTilesAnnotatedByAI
         self.total_tiles_annotated_by_ai = 0
         self.controlsData = []
+        self.write_h5 = write_h5          # stream tiles into dataset.h5, no PNG files
+        self.h5_writer = None
 
     def readControllerCSV(self,pathToCSV):
         self.controlsData = []
@@ -406,7 +489,8 @@ class ProcessorThread(threading.Thread):
                                                                         tiles, tile_classes, occurances, self.ratio_clean, outdir,
                                                                         tile_info=combinedTileInfo,
                                                                         tiles_annotated_by_ai=self.total_tiles_annotated_by_ai,
-                                                                        progress_callback=None
+                                                                        progress_callback=None,
+                                                                        h5_writer=self.h5_writer
                                                                        )
 
         del tiles
@@ -419,98 +503,111 @@ class ProcessorThread(threading.Thread):
         occurances = {'clean': 1}
         cleanThreshold = 60.0
 
+        if self.write_h5:
+            os.makedirs(os.path.abspath(self.target_dir), exist_ok=True)
+            self.h5_writer = H5DatasetWriter(
+                os.path.join(os.path.abspath(self.target_dir), "dataset.h5"))
+
         total_dirs = len(self.directories)
         dir_index = 0
-        for dataset_dir in self.directories:
-            if self._stop:
-                break
-            dir_index += 1
-            # gather files in dataset_dir (non recursive) that are images and have .json alongside
-            file_list = []
-            for entry in sorted(os.listdir(dataset_dir)):
-                entry_path = os.path.join(dataset_dir, entry)
-                if not os.path.isfile(entry_path):
-                    continue
-
-                if (self.includeTilesNotAnnotated):
-                    if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')):
-                       file_list.append(entry_path)
-                else:
-                    # Only include images that have annotations (supports legacy '*.pnm.json')
-                    if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')):
-                      ann = find_annotation_for_image(entry_path)
-                      if ann is not None:
-                        # Keep the REAL image path (png/jpg/pnm). We'll ensure a compatible
-                        # '<image>.json' sidecar exists right before processing.
-                        file_list.append(entry_path)
-
-
-            #print("Files to run on :",file_list)
-            # Apply optional frame limits from info.json (startFrame/endFrame)
-            start_frame = 0
-            end_frame = len(file_list) - 1
-            info_path = os.path.join(dataset_dir, "info.json")
-            if os.path.isfile(info_path):
-                try:
-                    with open(info_path, "r") as f:
-                        info = json.load(f)
-                    if "startFrame" in info:
-                        start_frame = int(info.get("startFrame", start_frame))
-                    if "endFrame" in info:
-                        end_frame = int(info.get("endFrame", end_frame))
-                except Exception as e:
-                    print("Warning: could not parse frame limits from", info_path, "->", e)
-
-            # Clamp + slice list (indices correspond to sorted file order)
-            if len(file_list) > 0:
-                start_frame = max(0, min(start_frame, len(file_list) - 1))
-                end_frame = max(0, min(end_frame, len(file_list) - 1))
-                if end_frame < start_frame:
-                    end_frame = start_frame
-                if start_frame != 0 or end_frame != len(file_list) - 1:
-                    print(f"Applying frame range {start_frame}..{end_frame} for {dataset_dir} (total {len(file_list)})")
-                file_list = file_list[start_frame:end_frame + 1]
-            else:
-                start_frame = 0
-                end_frame = -1
-
-            # report start of dataset
-            #wx.CallAfter(self.ui_callbacks['on_dataset_start'], dataset_dir, len(file_list), dir_index, total_dirs)
-
-            self.readControllerCSV("%s/controller.csv" % dataset_dir) 
-
-
-            files_processed = 0
-            for file_index, file_path in enumerate(file_list, start=start_frame+1):
+        try:
+            for dataset_dir in self.directories:
                 if self._stop:
                     break
+                dir_index += 1
+                # gather files in dataset_dir (non recursive) that are images and have .json alongside
+                file_list = []
+                for entry in sorted(os.listdir(dataset_dir)):
+                    entry_path = os.path.join(dataset_dir, entry)
+                    if not os.path.isfile(entry_path):
+                        continue
+
+                    if (self.includeTilesNotAnnotated):
+                        if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')):
+                           file_list.append(entry_path)
+                    else:
+                        # Only include images that have annotations (supports legacy '*.pnm.json')
+                        if entry.lower().endswith(('.jpg', '.png', '.jpeg', '.pnm')):
+                          ann = find_annotation_for_image(entry_path)
+                          if ann is not None:
+                            # Keep the REAL image path (png/jpg/pnm). We'll ensure a compatible
+                            # '<image>.json' sidecar exists right before processing.
+                            file_list.append(entry_path)
+
+
+                #print("Files to run on :",file_list)
+                # Apply optional frame limits from info.json (startFrame/endFrame)
+                start_frame = 0
+                end_frame = len(file_list) - 1
+                info_path = os.path.join(dataset_dir, "info.json")
+                if os.path.isfile(info_path):
+                    try:
+                        with open(info_path, "r") as f:
+                            info = json.load(f)
+                        if "startFrame" in info:
+                            start_frame = int(info.get("startFrame", start_frame))
+                        if "endFrame" in info:
+                            end_frame = int(info.get("endFrame", end_frame))
+                    except Exception as e:
+                        print("Warning: could not parse frame limits from", info_path, "->", e)
+
+                # Clamp + slice list (indices correspond to sorted file order)
+                if len(file_list) > 0:
+                    start_frame = max(0, min(start_frame, len(file_list) - 1))
+                    end_frame = max(0, min(end_frame, len(file_list) - 1))
+                    if end_frame < start_frame:
+                        end_frame = start_frame
+                    if start_frame != 0 or end_frame != len(file_list) - 1:
+                        print(f"Applying frame range {start_frame}..{end_frame} for {dataset_dir} (total {len(file_list)})")
+                    file_list = file_list[start_frame:end_frame + 1]
+                else:
+                    start_frame = 0
+                    end_frame = -1
+
+                # report start of dataset
+                #wx.CallAfter(self.ui_callbacks['on_dataset_start'], dataset_dir, len(file_list), dir_index, total_dirs)
+
+                self.readControllerCSV("%s/controller.csv" % dataset_dir) 
+
+
+                files_processed = 0
+                for file_index, file_path in enumerate(file_list, start=start_frame+1):
+                    if self._stop:
+                        break
  
-                frameNumber = self.get_frame_number_from_path(file_path)
-                metaData    = self.getControllerCSVRowData(frameNumber)
-                #print("File Index %u / Frame Number %u / File Path %s "%(file_index,frameNumber,file_path)," data = ",metaData)
-                print("File Index %u / Frame Number %u / File Path %s "%(file_index,frameNumber,file_path)) #Less Verbose
+                    frameNumber = self.get_frame_number_from_path(file_path)
+                    metaData    = self.getControllerCSVRowData(frameNumber)
+                    #print("File Index %u / Frame Number %u / File Path %s "%(file_index,frameNumber,file_path)," data = ",metaData)
+                    print("File Index %u / Frame Number %u / File Path %s "%(file_index,frameNumber,file_path)) #Less Verbose
           
                 
-                if (frameNumber is None):
-                     print("Frame Number was not correctly resolved, stopping execution")
-                     sys.exit(1)
+                    if (frameNumber is None):
+                         print("Frame Number was not correctly resolved, stopping execution")
+                         sys.exit(1)
 
-                #if (metaData is None):
-                #     print("Metadata was not correctly resolved, stopping execution")
-                #     sys.exit(1) 
+                    #if (metaData is None):
+                    #     print("Metadata was not correctly resolved, stopping execution")
+                    #     sys.exit(1) 
 
-                okToProcessFile = (frameNumber is not None)
-                if (self.ignoreSamplesWithNoMetadata):
-                      okToProcessFile = (metaData is not None) and (frameNumber is not None)
+                    okToProcessFile = (frameNumber is not None)
+                    if (self.ignoreSamplesWithNoMetadata):
+                          okToProcessFile = (metaData is not None) and (frameNumber is not None)
  
-                if okToProcessFile: #Only process metadata
-                   self.process_a_file(file_index,file_path,metaData,occurances)
-                   files_processed += 1
-                else:
-                   print("Metadata was not correctly resolved / file ignored because of ignoreSamplesWithNoMetadata")
-                #wx.CallAfter(self.ui_callbacks['on_file_done'], dataset_dir, file_path, files_processed, len(file_list))
+                    if okToProcessFile: #Only process metadata
+                       self.process_a_file(file_index,file_path,metaData,occurances)
+                       files_processed += 1
+                    else:
+                       print("Metadata was not correctly resolved / file ignored because of ignoreSamplesWithNoMetadata")
+                    #wx.CallAfter(self.ui_callbacks['on_file_done'], dataset_dir, file_path, files_processed, len(file_list))
 
-            wx.CallAfter(self.ui_callbacks['on_dataset_done'], dataset_dir)
+                wx.CallAfter(self.ui_callbacks['on_dataset_done'], dataset_dir)
+        finally:
+            # Always finalize the H5 (labels/attrs are written on close); otherwise a
+            # crashed run leaves a locked, labels-less file behind.
+            if self.h5_writer is not None:
+                n = self.h5_writer.close()
+                print(f"Wrote {n} samples directly to dataset.h5 (no PNG tiles)")
+                self.h5_writer = None
 
         print("Done running")
         wx.CallAfter(self.ui_callbacks['on_all_done'], self.target_dir)
@@ -623,10 +720,18 @@ class MainFrame(wx.Frame):
         self.severity_checkbox.SetValue(True)
         self.clean_class_checkbox = wx.CheckBox(panel, label="Clean Class")
         self.clean_class_checkbox.SetValue(True)
-        comboButtons      = wx.BoxSizer(wx.HORIZONTAL)  
+        self.direct_h5_checkbox = wx.CheckBox(panel, label="Direct H5")
+        self.direct_h5_checkbox.SetValue(True)
+        self.direct_h5_checkbox.SetToolTip(
+            "Stream tiles straight into dataset.h5 (training-ready, same format as\n"
+            "DatasetConverter.py) instead of writing one PNG file per tile.\n"
+            "Uncheck to get the legacy class_*/  PNG folder layout."
+        )
+        comboButtons      = wx.BoxSizer(wx.HORIZONTAL)
         comboButtons.Add(self.filter_checkbox, 0, wx.ALL, 5)
         comboButtons.Add(self.severity_checkbox, 0, wx.ALL, 5)
         comboButtons.Add(self.clean_class_checkbox, 0, wx.ALL, 5)
+        comboButtons.Add(self.direct_h5_checkbox, 0, wx.ALL, 5)
         grid.Add(comboButtons)
 
         # RLClean / AI Annotation checkbox
@@ -912,7 +1017,8 @@ class MainFrame(wx.Frame):
                                          tile_size       = self.tile_size_ctrl.GetValue(),
                                          use_severity    = self.severity_checkbox.GetValue(),
                                          use_clean_class = self.clean_class_checkbox.GetValue(),
-                                         includeTilesAnnotatedByAI = self.aiannotated_checkbox.GetValue()
+                                         includeTilesAnnotatedByAI = self.aiannotated_checkbox.GetValue(),
+                                         write_h5        = self.direct_h5_checkbox.GetValue()
                                          )
         self.processor.start()
         self.log(f"Started processing {len(selected_dirs)} datasets -> {target_dir}")
@@ -964,9 +1070,12 @@ class MainFrame(wx.Frame):
 
         # Optional next steps (same as GUI buttons / typical flow)
         lines.append(f'python3 mergeDatasets.py "{target_dir}"  # optional (same as "Merge Outputs")')
-        lines.append(f'python3 ../magician_vision_classifier/DatasetConverter.py "{target_dir}"  # same as "H5 Package"')
-        lines.append('# Training step (adjust to your training script / entrypoint):')
-        lines.append(f'# python3 ../magician_vision_classifier/train.py --dataset "{target_dir}"')
+        if self.direct_h5_checkbox.GetValue():
+            lines.append(f'# dataset.h5 is written DIRECTLY by the dump (Direct H5 checked) — no conversion step needed')
+        else:
+            lines.append(f'python3 ../magician_vision_classifier/DatasetConverter.py "{target_dir}"  # same as "H5 Package"')
+        lines.append('# Training step (set "training_dataset" in the config to the output folder):')
+        lines.append(f'# python3 ../magician_vision_classifier/trainMagicianVisionClassifierTorch.py <config.json>')
 
         cmd_text = "\n".join(lines)
 
@@ -1107,7 +1216,13 @@ class MainFrame(wx.Frame):
 
         # ---------------------------------------------------
         # Ask if user wants to convert dataset to HDF5
+        # (not needed when the dump already wrote dataset.h5 directly)
         # ---------------------------------------------------
+        if self.processor is not None and getattr(self.processor, "write_h5", False):
+            self.log(f"dataset.h5 was written directly to {target_dir} — ready for "
+                     f"trainMagicianVisionClassifierTorch.py (set training_dataset to this folder).")
+            return
+
         dlg = wx.MessageDialog(
             self,
             f"Do you want to package the dataset into HDF5 format (dataset.h5)?\n\n"
