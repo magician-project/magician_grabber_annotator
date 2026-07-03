@@ -2237,8 +2237,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             f"Total defects: {total_defects}\n"
             f"Defect types: {defect_counts}\n"
             f"Severities: {severity_counts}\n"
-            f"(info.json updated with effort statistics.)",
+            f"(info.json updated with effort statistics.)\n\n"
+            f"The Upload Annotations dialog will open next (Cancel there to skip).",
             "Finalize", wx.OK | wx.ICON_INFORMATION)
+
+        # A finalized dataset is ready for the server: kick off File->Upload Annotations
+        # (the dialog still lets the user cancel).
+        self.onUploadAnnotations(None)
 
    def populateMetaData(self,path):
          self.metadata = None
