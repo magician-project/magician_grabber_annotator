@@ -179,6 +179,13 @@ def add_png_comment(png_path: str, comment):
 
     img.save(png_path, "PNG", pnginfo=meta)
 
+# When streaming into H5, cleans are accepted at CLEAN_STREAM_OVERSAMPLE x the target
+# ratio and then EXACTLY subsampled (uniformly across the whole run) on close. This
+# removes the order bias of pure streaming, where early datasets/frames fill the clean
+# quota and late ones are almost entirely skipped.
+CLEAN_STREAM_OVERSAMPLE = 2.0
+
+
 class H5DatasetWriter:
     """
     Stream tiles straight into a training-ready dataset.h5 (same layout as
@@ -233,12 +240,30 @@ class H5DatasetWriter:
         self.meta[n] = json.dumps(meta_dict if meta_dict is not None else {})
         self.class_labels.append(f"class_{class_name_no_space}")
 
-    def close(self):
+    def close(self, ratio_clean=None, tiles_annotated_by_ai=0):
         """Finalize labels/attrs (class ids follow the SORTED class-name order, exactly
-        like torchvision DatasetFolder / DatasetConverter). Returns sample count."""
+        like torchvision DatasetFolder / DatasetConverter). Returns sample count.
+
+        ratio_clean: if given, the clean class is EXACTLY subsampled (uniformly over the
+        whole run) down to ratio_clean * non_clean + tiles_annotated_by_ai samples. The
+        stream over-accepts cleans (see CLEAN_STREAM_OVERSAMPLE), so this final uniform
+        draw removes the order bias where early datasets/frames win the clean quota."""
         import numpy as np
         if self.file is None:
             return 0                     # no tile was ever added; no file created
+
+        if ratio_clean is not None and "class_clean" in self.class_labels:
+            clean_idx = [i for i, c in enumerate(self.class_labels) if c == "class_clean"]
+            non_clean = len(self.class_labels) - len(clean_idx)
+            quota = int(ratio_clean * non_clean) + tiles_annotated_by_ai
+            if len(clean_idx) > quota:
+                keep_clean = set(random.sample(clean_idx, quota))
+                keep = [i for i in range(len(self.class_labels))
+                        if self.class_labels[i] != "class_clean" or i in keep_clean]
+                print(f"\nH5 finalize: subsampling clean {len(clean_idx)} -> {quota} "
+                      f"(non-clean {non_clean}, ratio {ratio_clean})")
+                self._rewrite(keep)
+
         classes = sorted(set(self.class_labels))
         index = {c: i for i, c in enumerate(classes)}
         self.file.create_dataset(
@@ -250,6 +275,30 @@ class H5DatasetWriter:
         self.file.close()
         self.file = None
         return n
+
+    def _rewrite(self, keep):
+        """Rewrite the H5 keeping only the samples in `keep` (sorted indices), then
+        atomically replace the original file. One sequential pass, low memory."""
+        import numpy as np
+        tmp_path = self.path + ".tmp"
+        shape = self.images.shape
+        f2 = self._h5py.File(tmp_path, "w")
+        images2 = f2.create_dataset("images", shape=(len(keep),) + shape[1:],
+                                    dtype=np.uint8, compression="gzip",
+                                    chunks=(1,) + shape[1:])
+        meta2 = f2.create_dataset("metadata", shape=(len(keep),),
+                                  dtype=self._h5py.string_dtype(encoding="utf-8"))
+        for j, i in enumerate(keep):
+            images2[j] = self.images[i]
+            meta2[j] = self.meta[i]
+        self.class_labels = [self.class_labels[i] for i in keep]
+        self.file.close()
+        f2.close()
+        os.replace(tmp_path, self.path)
+        # reopen in append mode so close() can add labels/attrs
+        self.file = self._h5py.File(self.path, "a")
+        self.images = self.file["images"]
+        self.meta = self.file["metadata"]
 
 
 #@profile
@@ -278,7 +327,16 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
 
     total = len(tiles)
     for tileID in range(len(tiles)):
- 
+
+        # Resolve THIS tile's class first — the skip probability below must be computed
+        # for the tile being decided, not the previous one (old bug: cleans following a
+        # non-clean tile were always accepted).
+        thisClass = tile_classes[tileID]
+        if (thisClass == ""):
+            thisClass = "clean"
+        elif (thisClass == "Clean"):
+            thisClass = "clean"
+
         # Compute current non-clean sum and clean count
         non_clean_sum = sum_non_clean_entries(occurances)
         clean_count   = occurances.get("clean", 0)
@@ -302,14 +360,8 @@ def dump_dataset_to_keras_data_loader(tiles, tile_classes, occurances, ratio_cle
                 if max_clean_allowed > 0:
                     ratio = clean_count / max_clean_allowed
                     skip_clean_prob = min(1.0, max(0.0, ratio))
- 
-        print("Tile ",tileID,"/",len(tiles)," | Clean ",clean_count," / Non-Clean ",non_clean_sum," / AI-Ann ",tiles_annotated_by_ai," | ",len(tiles)," tiles |  Accept Clean Prob % 0.2f      " % (1.0-skip_clean_prob),end="\r")
 
-        thisClass = tile_classes[tileID]
-        if (thisClass == ""):
-            thisClass = "clean"
-        elif (thisClass == "Clean"):
-            thisClass = "clean"
+        print("Tile ",tileID,"/",len(tiles)," | Clean ",clean_count," / Non-Clean ",non_clean_sum," / AI-Ann ",tiles_annotated_by_ai," | ",len(tiles)," tiles |  Accept Clean Prob % 0.2f      " % (1.0-skip_clean_prob),end="\r")
 
         doDump = True
         if (thisClass == "clean"):
@@ -367,7 +419,8 @@ class ProcessorThread(threading.Thread):
                  includeTilesAnnotatedByAI=True,
                  use_severity=False,
                  use_clean_class=True,
-                 write_h5=False):
+                 write_h5=False,
+                 quarantine_px=32):
         super().__init__()
         self.directories = directories
         self.target_dir = target_dir
@@ -387,6 +440,7 @@ class ProcessorThread(threading.Thread):
         self.controlsData = []
         self.write_h5 = write_h5          # stream tiles into dataset.h5, no PNG files
         self.h5_writer = None
+        self.quarantine_px = quarantine_px  # drop unlabeled tiles this close to a defect
 
     def readControllerCSV(self,pathToCSV):
         self.controlsData = []
@@ -463,6 +517,7 @@ class ProcessorThread(threading.Thread):
                                                                                  use_severity=self.use_severity,
                                                                                  use_clean_class=self.use_clean_class,
                                                                                  includeTilesAnnotatedByAI=self.includeTilesAnnotatedByAI,
+                                                                                 quarantine_px=self.quarantine_px,
                                                                                  debug=True
                                                                                 )
 
@@ -485,8 +540,13 @@ class ProcessorThread(threading.Thread):
         #print("combinedTileInfo ",combinedTileInfo)
 
 
+        # H5 path: over-accept cleans during the stream; the exact ratio is enforced by a
+        # uniform subsample in H5DatasetWriter.close() (removes stream-order bias).
+        effective_ratio = self.ratio_clean * CLEAN_STREAM_OVERSAMPLE \
+                          if self.h5_writer is not None else self.ratio_clean
+
         occurances, cleanThreshold = dump_dataset_to_keras_data_loader(
-                                                                        tiles, tile_classes, occurances, self.ratio_clean, outdir,
+                                                                        tiles, tile_classes, occurances, effective_ratio, outdir,
                                                                         tile_info=combinedTileInfo,
                                                                         tiles_annotated_by_ai=self.total_tiles_annotated_by_ai,
                                                                         progress_callback=None,
@@ -605,7 +665,8 @@ class ProcessorThread(threading.Thread):
             # Always finalize the H5 (labels/attrs are written on close); otherwise a
             # crashed run leaves a locked, labels-less file behind.
             if self.h5_writer is not None:
-                n = self.h5_writer.close()
+                n = self.h5_writer.close(ratio_clean=self.ratio_clean,
+                                         tiles_annotated_by_ai=self.total_tiles_annotated_by_ai)
                 print(f"Wrote {n} samples directly to dataset.h5 (no PNG tiles)")
                 self.h5_writer = None
 
@@ -710,6 +771,17 @@ class MainFrame(wx.Frame):
         grid.Add(wx.StaticText(panel, label="Threshold per tile:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.threshold_ctrl = wx.SpinCtrl(panel, min=0, max=100, initial=20)
         grid.Add(self.threshold_ctrl, 1, wx.EXPAND)
+
+        # Defect quarantine control
+        grid.Add(wx.StaticText(panel, label="Defect quarantine (px):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.quarantine_ctrl = wx.SpinCtrl(panel, min=0, max=128, initial=32)
+        self.quarantine_ctrl.SetToolTip(
+            "Tiles closer than this to a defect point WITHOUT containing it are dropped\n"
+            "(they likely contain defect pixels and would poison the clean class).\n"
+            "Keep well below the pen-ring radius (~150 px): ink-ring tiles stay clean on\n"
+            "purpose (hard negatives — marked panels can appear in production). 0 = off."
+        )
+        grid.Add(self.quarantine_ctrl, 1, wx.EXPAND)
 
         # Filtering checkbox
         grid.Add(wx.StaticText(panel, label="Options:"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -1018,7 +1090,8 @@ class MainFrame(wx.Frame):
                                          use_severity    = self.severity_checkbox.GetValue(),
                                          use_clean_class = self.clean_class_checkbox.GetValue(),
                                          includeTilesAnnotatedByAI = self.aiannotated_checkbox.GetValue(),
-                                         write_h5        = self.direct_h5_checkbox.GetValue()
+                                         write_h5        = self.direct_h5_checkbox.GetValue(),
+                                         quarantine_px   = self.quarantine_ctrl.GetValue()
                                          )
         self.processor.start()
         self.log(f"Started processing {len(selected_dirs)} datasets -> {target_dir}")

@@ -213,13 +213,21 @@ def tileImages(image,
                includeTilesAnnotatedByAI=True,
                use_severity=False,
                use_clean_class=True,
+               quarantine_px=0,
                debug=False):
     """
-    Extract tiles from an image, oversampling tiles containing defects and 
+    Extract tiles from an image, oversampling tiles containing defects and
     undersampling clean tiles to balance the dataset.
-    
+
     defect_step: step size for tiles containing defects (smaller -> more tiles)
     clean_step: step size for tiles without defects (larger -> fewer tiles)
+    quarantine_px: tiles that come CLOSER than this to a defect point without
+        containing it are dropped entirely (neither clean nor defect). The dent
+        extends beyond the click point, so such tiles likely contain defect pixels
+        and would poison the clean class. Keep this well below the pen-ring radius
+        (~150 px) so ring-ink tiles stay in the clean class (they are wanted hard
+        negatives: the robot works alongside humans, ink can appear in production).
+        0 disables (legacy behaviour). Clean/RLClean points never quarantine.
     """
 
     import json
@@ -259,9 +267,16 @@ def tileImages(image,
                     # Check if tile contains any defect points
                     tile_text = ""
                     tileAnnotatedByAI = 0
+                    nearDefect = False   # inside the quarantine band of a defect point
 
                     for idx, (xFull, yFull) in enumerate(point_clicks):
                         xAct, yAct = xFull // 2, yFull // 2  # <- keep your scaling
+                        if quarantine_px > 0 and point_classes[idx] not in ("Clean", "RLClean"):
+                            # distance from the point to the tile rectangle
+                            dx = max(start_x - xAct, 0, xAct - (end_x - 1))
+                            dy = max(start_y - yAct, 0, yAct - (end_y - 1))
+                            if 0 < dx * dx + dy * dy < quarantine_px * quarantine_px:
+                                nearDefect = True
                         if start_x <= xAct < end_x and start_y <= yAct < end_y:
 
                             thisTileDescription = point_classes[idx]
@@ -299,6 +314,10 @@ def tileImages(image,
                         pass #We dont want to use the class Clean so we ignore it!
                     elif (tileAnnotatedByAI and not includeTilesAnnotatedByAI):
                         pass #Ignore this tile that has been annotated by AI
+                    elif (nearDefect and tile_text == ""):
+                        # Quarantine band: too close to a defect point to be trusted as
+                        # clean, but the point itself is outside -> drop the tile
+                        step_size = clean_step
                     elif ignoreBackground and tile_text == "":
                         # Skip background if requested
                         step_size = clean_step
@@ -492,7 +511,8 @@ def loadImageAndJSON(filename,
                      includeTilesAnnotatedByAI=True,
                      use_severity=False,
                      use_clean_class=True,
-                     ignoreBackground=False):
+                     ignoreBackground=False,
+                     quarantine_px=0):
 
     tiles        = []
     tile_classes = []
@@ -519,7 +539,8 @@ def loadImageAndJSON(filename,
             includeTilesAnnotatedByAI=includeTilesAnnotatedByAI,
             use_severity=use_severity,
             use_clean_class=use_clean_class,
-            ignoreBackground=ignoreBackground
+            ignoreBackground=ignoreBackground,
+            quarantine_px=quarantine_px
         )
 
         del rgba_image
