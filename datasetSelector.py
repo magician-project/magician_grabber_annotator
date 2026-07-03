@@ -10,7 +10,14 @@ import os
 import wx
 import requests
 import json
+import time
 from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+
+# Cached "Check Annotations" report (the scan costs 2+ HTTP requests per dataset).
+# Shown immediately when the dialog opens; pressing "Check Annotations" rescans
+# the server and replaces it.
+ANNOTATION_STATUS_CACHE = "annotationStatusCache.json"
+
 
 class DatasetSelector(wx.Dialog):
     def __init__(self, local_base_path="./", parent=None, credentials="server.json"):
@@ -99,6 +106,31 @@ class DatasetSelector(wx.Dialog):
         self.select_button.Bind(wx.EVT_BUTTON, self.onSelectDataset)
         self.cancel_button.Bind(wx.EVT_BUTTON, lambda evt: self.EndModal(wx.ID_CANCEL))
         self.dropdown.Bind(wx.EVT_CHOICE, self.onDropdownSelection)
+
+        # Show the cached annotation report right away (no server rescan needed);
+        # "Check Annotations" refreshes it.
+        self._loadStatusCache()
+
+    # ---------- Annotation-status cache ----------
+    def _loadStatusCache(self):
+        try:
+            with open(ANNOTATION_STATUS_CACHE) as f:
+                cache = json.load(f)
+            if cache.get("url") == self.url_input.GetValue().strip() and cache.get("text"):
+                self.results_box.SetValue(
+                    f"[cached {cache.get('timestamp', '?')} — press 'Check Annotations' to refresh]\n"
+                    + cache["text"])
+        except Exception:
+            pass    # no/unreadable cache: results box just stays empty
+
+    def _saveStatusCache(self, text):
+        try:
+            with open(ANNOTATION_STATUS_CACHE, "w") as f:
+                json.dump({"url": self.url_input.GetValue().strip(),
+                           "timestamp": time.strftime("%Y/%m/%d %H:%M"),
+                           "text": text}, f)
+        except Exception as e:
+            print("Could not save annotation status cache:", e)
 
     # ---------- Credentials ----------
     def load_credentials(self):
@@ -378,7 +410,9 @@ class DatasetSelector(wx.Dialog):
             f" — {not_annotated_datasets} not annotated"
         )
 
-        self.results_box.SetValue("\n".join(lines))
+        text = "\n".join(lines)
+        self.results_box.SetValue(text)
+        self._saveStatusCache(text)    # replace the cached report with this fresh scan
 
      except Exception as e:
         wx.MessageBox(
