@@ -11,7 +11,7 @@ pytorch-lightning
 pillow
 wandb
 numpy
-tensorflow
+#tensorflow
 matplotlib
 seaborn
 h5py
