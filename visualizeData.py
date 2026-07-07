@@ -70,19 +70,33 @@ def tenengrad_focus_measure(image, ksize=3):
     return np.mean(gxy)
 
 
-def determine_intensity_region(image, threshold=0.1):
+def determine_intensity_region(image, threshold=0.1, dark_threshold=18.0):
     """
     Determines the region of the image with the highest intensity values.
 
     Parameters:
         image (numpy.ndarray): A 4-channel image (H, W, 4) with intensity values.
         threshold (float): A value between 0 and 1 to decide if intensity changes are significant.
+        dark_threshold (float): Per-channel mean brightness (0-255) below which the whole
+            frame is considered unlit — e.g. one of the 6 scene lights has malfunctioned.
+            Default 18.0 was calibrated on FORTH_PORTAPISW_WELDPOSNEG_650: dead-light frames
+            cluster at the ~15 sensor black floor (topping out at 17.7), with a clean gap to
+            the dimmest genuinely-lit frame at 19.2.
 
     Returns:
-        str: One of "Unknown", "Bottom Left", "Top Left", "Top", "Top Right", "Bottom Right", or "Bottom".
+        str: One of "No Light", "Unknown", "Bottom Left", "Top Left", "Top", "Top Right",
+             "Bottom Right", or "Bottom".
     """
     #if image.shape[-1] != 4:
     #    raise ValueError("Input image must have 4 channels.")
+
+    # Malfunctioned-light detection: a dead light leaves the whole frame sitting near the
+    # sensor's black floor. Flag it before trying to infer a direction from noise.
+    frame_brightness = float(np.mean(image))
+    if frame_brightness < dark_threshold:
+        print(f"determine_intensity_region: frame too dark ({frame_brightness:.2f} < "
+              f"{dark_threshold}) — light appears to have malfunctioned")
+        return "No Light"
 
     # Convert image to grayscale by summing up all channels
     gray_image = np.sum(image, axis=-1)

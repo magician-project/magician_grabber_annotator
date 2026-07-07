@@ -48,7 +48,7 @@ benchmark       = False #<- Set to True to run a forward-pass timing test on eac
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean", "RLClean"]
 severities      = ["Class A","Class B","Class C"]
-directions      = ["Unknown","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
+directions      = ["Unknown","No Light","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
 processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Normals", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible"]
 
 
