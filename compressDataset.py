@@ -14,10 +14,12 @@ def debayerPolarImage(image):
     return polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg
 
 
-# Max number of missing bytes we're willing to pad at the end of a truncated PNM.
-# The known failure is a 1-byte short frame; keep this small so genuinely broken
-# files still error out instead of being silently filled with garbage.
-MAX_PNM_PAD_BYTES = 8
+# How much tail truncation we're willing to pad on a truncated PNM, expressed as
+# whole scanlines (rows). Observed truncations run from a single byte up to a few
+# dozen bytes; allowing a handful of rows recovers those while keeping badly
+# broken files (missing large chunks) erroring out instead of being filled with
+# garbage.
+MAX_PNM_PAD_ROWS = 8
 
 
 def _parse_pnm_header(data: bytes):
@@ -82,15 +84,17 @@ def _read_pnm_autopad(pnm_path: str):
     magic, width, height, maxval, offset = header
     channels = 1 if magic == b"P5" else 3
     bytes_per_sample = 1 if maxval < 256 else 2
-    expected = offset + width * height * channels * bytes_per_sample
+    row_bytes = width * channels * bytes_per_sample
+    expected = offset + height * row_bytes
     missing = expected - len(data)
 
-    if missing <= 0 or missing > MAX_PNM_PAD_BYTES:
+    if missing <= 0 or missing > MAX_PNM_PAD_ROWS * row_bytes:
         return None
 
     pad_byte = data[-1:] if data else b"\x00"
     padded = data + pad_byte * missing
-    print(f"  [autopad] {pnm_path}: padded {missing} missing byte(s) to recover a truncated frame")
+    rows = missing / row_bytes if row_bytes else 0
+    print(f"  [autopad] {pnm_path}: padded {missing} missing byte(s) (~{rows:.2f} row(s)) to recover a truncated frame")
     return cv2.imdecode(np.frombuffer(padded, np.uint8), cv2.IMREAD_UNCHANGED)
 
 
