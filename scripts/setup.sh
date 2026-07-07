@@ -91,6 +91,9 @@ else
      git clone git@github.com:magician-project/magician_grabber_annotator.git
      cd magician_grabber_annotator
 
+     sudo apt install -y build-essential libgtk-3-dev libcurl4-openssl-dev libjpeg-dev libtiff-dev libsdl2-dev libnotify-dev libgstreamer-plugins-base1.0-dev  freeglut3-dev libwebkit2gtk-4.1-dev libpng-dev
+
+
      cd "$DIR"
   fi
 fi
