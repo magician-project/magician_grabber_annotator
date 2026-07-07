@@ -14,9 +14,89 @@ def debayerPolarImage(image):
     return polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg
 
 
+# Max number of missing bytes we're willing to pad at the end of a truncated PNM.
+# The known failure is a 1-byte short frame; keep this small so genuinely broken
+# files still error out instead of being silently filled with garbage.
+MAX_PNM_PAD_BYTES = 8
+
+
+def _parse_pnm_header(data: bytes):
+    """Parse a binary PNM (P5/P6) header.
+
+    Returns (magic, width, height, maxval, data_offset) or None if the header
+    can't be parsed.
+    """
+    if len(data) < 2 or data[0:1] != b"P" or data[1:2] not in (b"5", b"6"):
+        return None
+    magic = data[0:2]
+    n = len(data)
+    i = 2
+
+    def skip_ws_comments(i):
+        while i < n:
+            c = data[i:i + 1]
+            if c in b" \t\r\n":
+                i += 1
+            elif c == b"#":
+                while i < n and data[i:i + 1] != b"\n":
+                    i += 1
+            else:
+                break
+        return i
+
+    vals = []
+    while len(vals) < 3:
+        i = skip_ws_comments(i)
+        start = i
+        while i < n and data[i:i + 1] not in b" \t\r\n#":
+            i += 1
+        if start == i:
+            return None
+        try:
+            vals.append(int(data[start:i]))
+        except ValueError:
+            return None
+    # Exactly one whitespace byte separates the header from the raster data.
+    i += 1
+    width, height, maxval = vals
+    return magic, width, height, maxval, i
+
+
+def _read_pnm_autopad(pnm_path: str):
+    """Read a binary PNM, auto-padding a slightly-truncated file's raster.
+
+    Returns a numpy image, or None if the file is missing / unparseable / too
+    truncated to safely recover.
+    """
+    with open(pnm_path, "rb") as f:
+        data = f.read()
+
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+    if img is not None:
+        return img
+
+    header = _parse_pnm_header(data)
+    if header is None:
+        return None
+
+    magic, width, height, maxval, offset = header
+    channels = 1 if magic == b"P5" else 3
+    bytes_per_sample = 1 if maxval < 256 else 2
+    expected = offset + width * height * channels * bytes_per_sample
+    missing = expected - len(data)
+
+    if missing <= 0 or missing > MAX_PNM_PAD_BYTES:
+        return None
+
+    pad_byte = data[-1:] if data else b"\x00"
+    padded = data + pad_byte * missing
+    print(f"  [autopad] {pnm_path}: padded {missing} missing byte(s) to recover a truncated frame")
+    return cv2.imdecode(np.frombuffer(padded, np.uint8), cv2.IMREAD_UNCHANGED)
+
+
 # --- Write PNG ---
 def write_polar_png_from_pnm(pnm_path: str, out_png_path: str):
-    img = cv2.imread(pnm_path, cv2.IMREAD_UNCHANGED)
+    img = _read_pnm_autopad(pnm_path)
     if img is None:
         raise FileNotFoundError(f"Could not read: {pnm_path}")
     if img.ndim != 2:
