@@ -100,9 +100,26 @@ def _read_pnm_autopad(pnm_path: str):
 
 # --- Write PNG ---
 def write_polar_png_from_pnm(pnm_path: str, out_png_path: str):
+    """Convert one PNM frame to a polar RGBA PNG.
+
+    Normally decodes + debayers the frame. If the frame is unrecoverably corrupt
+    (e.g. a badly truncated capture that auto-pad can't rescue), touches an empty
+    (0-byte) .png in its place instead of aborting the whole dataset, so downstream
+    frame numbering and 1:1 png/json correspondence are preserved. The zero-size
+    file makes the corrupt frame obvious rather than fabricating image data.
+
+    Returns True if a placeholder was written, False for a normal conversion.
+    """
     img = _read_pnm_autopad(pnm_path)
+
     if img is None:
-        raise FileNotFoundError(f"Could not read: {pnm_path}")
+        os.makedirs(os.path.dirname(out_png_path) or ".", exist_ok=True)
+        # Touch an empty file; do not encode anything.
+        open(out_png_path, "wb").close()
+        print(f"  [placeholder] {pnm_path}: unrecoverable frame -> wrote empty "
+              f"(0-byte) PNG to preserve numbering")
+        return True
+
     if img.ndim != 2:
         raise ValueError(f"Expected 1-channel image, got shape {img.shape} for {pnm_path}")
 
@@ -113,6 +130,7 @@ def write_polar_png_from_pnm(pnm_path: str, out_png_path: str):
     ok = cv2.imwrite(out_png_path, rgba)
     if not ok:
         raise IOError(f"Failed to write: {out_png_path}")
+    return False
 
 
 def ensure_dir(path: str):
@@ -135,12 +153,13 @@ def copy_tree_and_convert_pnm(input_dir: str, output_dir: str) -> int:
       - Copies subdirectories structure
       - Skips copying *.pnm (because converted)
       - Skips *.pnm.json being treated as pnm (it will be copied as a normal file)
-    Returns: number of converted pnm files
+    Returns: (number of converted pnm files, list of rel paths replaced by blanks)
     """
     input_dir = os.path.abspath(input_dir)
     output_dir = os.path.abspath(output_dir)
 
     converted = 0
+    placeholders = []        # rel paths of corrupt frames replaced with 0-byte PNGs
 
     for root, dirs, files in os.walk(input_dir):
         rel_root = os.path.relpath(root, input_dir)
@@ -158,9 +177,15 @@ def copy_tree_and_convert_pnm(input_dir: str, output_dir: str) -> int:
             # Convert only files that end EXACTLY with ".pnm"
             if fname.lower().endswith(".pnm"):
                 out_png = os.path.join(out_root, os.path.splitext(fname)[0] + ".png")
-                write_polar_png_from_pnm(in_path, out_png)
-                print(f"Converted: {os.path.join(rel_root, fname)} -> {os.path.join(rel_root, os.path.basename(out_png))}")
-                converted += 1
+                is_placeholder = write_polar_png_from_pnm(in_path, out_png)
+                rel_out = os.path.join(rel_root, os.path.basename(out_png))
+                rel_in = os.path.join(rel_root, fname)
+                if is_placeholder:
+                    placeholders.append(rel_in)
+                    print(f"Placeholder: {rel_in} -> {rel_out} (empty)")
+                else:
+                    converted += 1
+                    print(f"Converted: {rel_in} -> {rel_out}")
                 continue
 
             # Otherwise copy as-is (json/csv/whatever, including *.pnm.json)
@@ -168,7 +193,7 @@ def copy_tree_and_convert_pnm(input_dir: str, output_dir: str) -> int:
             # Optional: print copies (can be noisy)
             # print(f"Copied   : {os.path.join(rel_root, fname)}")
 
-    return converted
+    return converted, placeholders
 
 def _atomic_replace_dir(src_new: str, dst_final: str):
     """
@@ -240,7 +265,13 @@ def main():
         print(f"Temp output directory      : {temp_out}")
 
         ensure_dir(temp_out)
-        num = copy_tree_and_convert_pnm(input_dir, temp_out)
+        num, placeholders = copy_tree_and_convert_pnm(input_dir, temp_out)
+
+        if placeholders:
+            print(f"\nWARNING: {len(placeholders)} unrecoverable frame(s) replaced "
+                  f"with empty (0-byte) placeholder PNGs:")
+            for p in placeholders:
+                print(f"  - {p}")
 
         print(f"\nConverted {num} .pnm files. Swapping temp into place...")
         _atomic_replace_dir(temp_out, input_dir)
@@ -258,7 +289,13 @@ def main():
     print(f"Input directory : {input_dir}")
     print(f"Output directory: {output_dir}")
 
-    num = copy_tree_and_convert_pnm(input_dir, output_dir)
+    num, placeholders = copy_tree_and_convert_pnm(input_dir, output_dir)
+
+    if placeholders:
+        print(f"\nWARNING: {len(placeholders)} unrecoverable frame(s) replaced "
+              f"with blank placeholder PNGs:")
+        for p in placeholders:
+            print(f"  - {p}")
 
     print(f"\nDone. Converted {num} .pnm files and copied everything else.")
 
