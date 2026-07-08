@@ -119,6 +119,14 @@ def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
+def _has_pnm(input_dir: str) -> bool:
+    """Return True if input_dir contains at least one *.pnm file (recursively)."""
+    for _root, _dirs, files in os.walk(input_dir):
+        if any(f.lower().endswith(".pnm") for f in files):
+            return True
+    return False
+
+
 def copy_tree_and_convert_pnm(input_dir: str, output_dir: str) -> int:
     """
     Walks input_dir recursively:
@@ -214,6 +222,11 @@ def main():
 
     # --- In-place mode ---
     if output_dir is None:
+        # Skip the (expensive) full copy+swap if there's nothing to convert.
+        if not _has_pnm(input_dir):
+            print(f"No .pnm files found in {input_dir}; already compressed. Skipping.")
+            return
+
         parent = os.path.dirname(input_dir)
         base = os.path.basename(input_dir.rstrip(os.sep))
         temp_out = os.path.join(parent, f".{base}.tmp_compress")
