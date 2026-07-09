@@ -676,9 +676,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     datasetListSize = wx.Size(-1, 80)
     self.datasetList  = wx.ListBox(parent, size=datasetListSize, choices=[], style=wx.LB_SINGLE)
 
-    # Image Regions
+    # Image Regions (usually empty: keep it a compact single row)
     self.regionLabel = wx.StaticText(parent, label="Image Regions")
-    regionListSize = wx.Size(-1, 40)
+    regionListSize = wx.Size(-1, 24)
     self.regionList = wx.ListBox(parent, size=regionListSize, choices=[], style=wx.LB_SINGLE)
     self.regionList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
     self.removeRegionBtn = wx.Button(parent, label='Remove Selected Point')
@@ -704,7 +704,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # Points
     self.pointLabel = wx.StaticText(parent, label="Image Points")
-    self.pointList = wx.ListBox(parent, choices=[], style=wx.LB_SINGLE)
+    # Real minimum height: without it the surrounding fixed-size widgets squeeze
+    # this (the only stretchable item) to almost nothing; proportion 1 in the
+    # sizer still lets it absorb any extra space.
+    self.pointList = wx.ListBox(parent, size=wx.Size(-1, 200), choices=[], style=wx.LB_SINGLE)
     self.pointList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
     self.removePointBtn = wx.Button(parent, label='Remove Selected Point')
     self.removePointBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
@@ -1570,9 +1573,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       return fp
 
    def _streamIndexOfFrame(self, name):
-      """Stream index of the frame with this basename, or None."""
-      for i, p in enumerate(getattr(self.folderStreamer, "directoryList", []) or []):
-          if os.path.basename(p) == name:
+      """Stream index of the frame with this basename, or None.
+      FolderStreamer keeps its frames in directoryList, HTTPFolderStreamer in
+      file_list; extensions may differ between the remote listing (.pnm) and
+      the local cache (.png), so frames are matched on the stem."""
+      frames = (getattr(self.folderStreamer, "directoryList", None)
+                or getattr(self.folderStreamer, "file_list", None) or [])
+      stem = os.path.splitext(name)[0]
+      for i, p in enumerate(frames):
+          if os.path.splitext(os.path.basename(p))[0] == stem:
               return i
       return None
 
