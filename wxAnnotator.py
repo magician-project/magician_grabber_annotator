@@ -286,6 +286,7 @@ class PhotoCtrl(wx.App):
         self.points_sources      = []  # parallel to points_of_interest: "auto" | "manual"
         self.tracking            = None  # list of inter-frame transform records from the Track button (persisted as 'tracking' in the JSON)
         self._light_fp_cache     = {}    # path -> lighting fingerprint vector (see lightingFingerprint)
+        self.lastFrameFile       = None  # per-dataset last.frame path, set in openDataset
         self._base_cache         = None  # (img, fg, left_bmp, right_bmp, left_ok): annotation-free bases for fast onView redraws
         self.leftViewImage       = None  # processed image shown in the left panel (imageCtrl)
         self.rightViewImage      = None  # foreground/visualization image shown in the right panel (secondaryImageCtrl)
@@ -731,7 +732,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.nudgeBtn = wx.Button(parent, label='Nudge')
     self.nudgeBtn.Bind(wx.EVT_BUTTON, self.onNudgeTracking)
 
-    comboButtons = wx.BoxSizer(wx.HORIZONTAL)
+    # WrapSizer: the row folds to extra lines instead of clipping Save/Delete
+    # when the pane is narrower than the buttons.
+    comboButtons = wx.WrapSizer(wx.HORIZONTAL)
     comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.fullAutoBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.trackBtn, 0, wx.ALL, 5)
@@ -739,7 +742,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
 
-    trackButtons = wx.BoxSizer(wx.HORIZONTAL)
+    trackButtons = wx.WrapSizer(wx.HORIZONTAL)
     trackButtons.Add(self.fillTrackingBtn, 0, wx.ALL, 5)
     trackButtons.Add(self.nudgeBtn, 0, wx.ALL, 5)
 
@@ -774,8 +777,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     pointButtons.Add(self.copyPrevPointsBtn, 1, wx.ALL | wx.EXPAND, 5)
     s.Add(pointButtons, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 0)
 
-    s.Add(comboButtons, 0, wx.ALL, 5)
-    s.Add(trackButtons, 0, wx.ALL, 5)
+    s.Add(comboButtons, 0, wx.ALL | wx.EXPAND, 5)
+    s.Add(trackButtons, 0, wx.ALL | wx.EXPAND, 5)
     s.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
     s.Add(self.calcFocusLightCheckbox, 0, wx.ALL, 5)
 
@@ -2325,6 +2328,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     """
     self.folderStreamer = streamer
     self.filePathIsDirectory = is_directory
+    self.lastFrameFile = os.path.join(base_dir, "last.frame")  # per-dataset, next to the JSONs
     self._resetSessionStats()   # effort statistics accumulate per dataset session
 
     # Load metadata/controls/sensors
@@ -2367,21 +2371,26 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     #self.onView() # redundant: onProcessNewImageSample already calls onView()
 
    def _rememberLastFrame(self, filepath):
-    """Persist the current frame's basename to last.frame so reopening the editor
-    can restore where the user left off (see _restoreLastFrameUI)."""
-    if not filepath:
+    """Persist the current frame's basename to the dataset's last.frame so
+    reopening the editor can restore where the user left off (see
+    _restoreLastFrameUI). Stored per-dataset: frame names are generic
+    (colorFrame_0_XXXXX.png), so a shared file would leak across datasets."""
+    if not filepath or not self.lastFrameFile:
         return
     try:
-        with open("last.frame", "w") as f:
+        with open(self.lastFrameFile, "w") as f:
             f.write(os.path.basename(filepath))
     except Exception as e:
-        print("Could not write last.frame:", e)
+        print("Could not write %s:" % self.lastFrameFile, e)
 
    def _restoreLastFrameUI(self):
-    """UI index of the frame recorded in last.frame, clamped to the current range,
-    or 0 when the file is missing or the frame is not in this dataset."""
+    """UI index of the frame recorded in the dataset's last.frame, clamped to
+    the current range, or 0 when the file is missing or the frame is not in
+    this dataset."""
+    if not self.lastFrameFile:
+        return 0
     try:
-        with open("last.frame") as f:
+        with open(self.lastFrameFile) as f:
             name = f.read().strip()
     except Exception:
         return 0
