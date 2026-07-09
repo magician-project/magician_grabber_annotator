@@ -132,6 +132,26 @@ class DatasetSelector(wx.Dialog):
         except Exception as e:
             print("Could not save annotation status cache:", e)
 
+    def _uploadStatusReport(self, provider_url):
+        """Upload annotationStatusCache.json to the server so annotations.php can
+        show the progress publicly. Best-effort: failures are reported, not fatal."""
+        user = self.username.GetValue().strip()
+        pwd = self.password.GetValue().strip()
+        if not user or not pwd:
+            return False, "no credentials entered"
+
+        parsed = urlparse(provider_url)
+        status_url = f"{parsed.scheme}://{parsed.netloc}/magician/uploadStatus.php"
+        try:
+            with open(ANNOTATION_STATUS_CACHE, "rb") as f:
+                files = {"file": ("annotationStatusCache.json", f, "application/json")}
+                data = {"username": user, "password": pwd}
+                resp = requests.post(status_url, data=data, files=files, timeout=30)
+            resp.raise_for_status()
+            return True, resp.text.strip()
+        except Exception as e:
+            return False, str(e)
+
     # ---------- Credentials ----------
     def load_credentials(self):
         if os.path.exists(self.credentials):
@@ -413,6 +433,13 @@ class DatasetSelector(wx.Dialog):
         text = "\n".join(lines)
         self.results_box.SetValue(text)
         self._saveStatusCache(text)    # replace the cached report with this fresh scan
+
+        # Publish the report to the server (annotations.php shows it publicly).
+        ok, msg = self._uploadStatusReport(provider_url)
+        if ok:
+            self.results_box.AppendText("\n\n[report uploaded to server ✔]")
+        else:
+            self.results_box.AppendText(f"\n\n[report upload failed: {msg}]")
 
      except Exception as e:
         wx.MessageBox(
