@@ -1709,14 +1709,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
              ", fallback" if fallback else ""))
 
    def onFillTracking(self, event):
-      """Batch tracking pass over the whole dataset:
-        PASS 1 — every frame without 'tracking' records gets the measured shift from
-                 its previous frame plus the best same-lighting link (fingerprint).
-        PASS 2 — all measurements are reconciled with a weighted least-squares solve
-                 of the resulting pose graph, and each frame's optimized global
-                 position (relative to the first frame) is stored as an extra
-                 'leastSquaresGlobal' record.
-      Annotation JSONs are read-modified-written, so points/classes are untouched."""
+      """Fill Tracking button: confirm, then run the batch tracking pass and report."""
       images = list(getattr(self.folderStreamer, "directoryList", None) or [])
       if not images and self.filepath and os.path.isfile(self.filepath):
           images = list_image_files(os.path.dirname(self.filepath))
@@ -1735,6 +1728,33 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           ask.Destroy()
           return
       ask.Destroy()
+
+      res = self._fillTracking()
+      if res is None:
+          return
+      filled, skipped, failed, solved, aborted = res
+      wx.MessageBox(
+          f"Fill Tracking complete.\n\n"
+          f"Measured {filled} frame(s), {skipped} already had tracking, {failed} failed.\n"
+          f"Least-squares positions stored for {solved} frame(s)."
+          + ("\n(Aborted before completion.)" if aborted else ""),
+          "Fill Tracking", wx.OK | wx.ICON_INFORMATION)
+
+   def _fillTracking(self):
+      """Batch tracking pass over the whole dataset (also run by Finalize):
+        PASS 1 — every frame without 'tracking' records gets the measured transform
+                 from its previous frame plus the best same-lighting link.
+        PASS 2 — all measurements are reconciled with a weighted least-squares solve
+                 of the resulting pose graph, and each frame's optimized global
+                 position (relative to the first frame) is stored as an extra
+                 'leastSquaresGlobal' record.
+      Annotation JSONs are read-modified-written, so points/classes are untouched.
+      Returns (filled, skipped, failed, solved, aborted), or None with <2 frames."""
+      images = list(getattr(self.folderStreamer, "directoryList", None) or [])
+      if not images and self.filepath and os.path.isfile(self.filepath):
+          images = list_image_files(os.path.dirname(self.filepath))
+      if len(images) < 2:
+          return None
 
       # Flush the currently-open frame so its JSON is up to date before the pass.
       self.onSave(None)
@@ -1900,12 +1920,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       # The pass may have rewritten the open frame's JSON — reload it.
       self.onProcessNewImageSample(self.filepath)
       self.onView()
-      wx.MessageBox(
-          f"Fill Tracking complete.\n\n"
-          f"Measured {filled} frame(s), {skipped} already had tracking, {failed} failed.\n"
-          f"Least-squares positions stored for {solved} frame(s)."
-          + ("\n(Aborted before completion.)" if aborted else ""),
-          "Fill Tracking", wx.OK | wx.ICON_INFORMATION)
+      return filled, skipped, failed, solved, aborted
 
    def onNudgeTracking(self, event):
       """Manual tracking fix-up: shift every auto-sourced point on the current frame
@@ -2803,6 +2818,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         # If focus/light were not computed live (checkbox off), backfill them for every frame.
         if not self.calcFocusLightCheckbox.GetValue():
             self._batchComputeFocusLight(local_dir)
+
+        # Backfill inter-frame tracking for frames the Track button never visited,
+        # then reconcile everything with the least-squares pass.
+        res = self._fillTracking()
+        if res:
+            print("Finalize tracking: %u measured, %u already tracked, %u failed, "
+                  "%u least-squares positions" % res[:4])
 
         info_path = os.path.join(local_dir, "info.json")
 
