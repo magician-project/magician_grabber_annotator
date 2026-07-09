@@ -135,6 +135,105 @@ from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengra
 from uploadAnnotations import UploadDialog
 
 
+# The illumination cycles through the scene lights during acquisition, so nearby
+# frames repeat the same lighting. The Track button records a direct transform to
+# the earlier frame whose lighting fingerprint best matches the destination's —
+# scanning back at most this many frames (fingerprints, not a fixed period, so
+# this stays correct across framerates).
+SAME_LIGHT_SEARCH_MAX = 12
+# Minimum fingerprint cosine similarity to accept a frame as "same lighting"
+# (same-light pairs score >0.95 on FORTH_DoorCase_weld_650, differently-lit
+# neighbours <0.7).
+SAME_LIGHT_MIN_SIMILARITY = 0.90
+
+
+def lightingFingerprint(path, grid=4):
+    """Compact lighting signature of a frame: the per-channel × grid×grid cell mean
+    intensities, mean-subtracted and L2-normalized. Cosine similarity between two
+    fingerprints separates the scene-light cycle far better than the coarse 6-region
+    lightDirection label, which cannot when the part occupies one image corner.
+    Returns None when the image cannot be read."""
+    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if raw is None:
+        return None
+    raw = raw.astype(np.float32)
+    if raw.ndim == 2:
+        raw = raw[:, :, None]
+    H, W, C = raw.shape
+    cells = []
+    for c in range(C):
+        for gy in range(grid):
+            for gx in range(grid):
+                cells.append(raw[gy*H//grid:(gy+1)*H//grid,
+                                 gx*W//grid:(gx+1)*W//grid, c].mean())
+    v = np.array(cells, np.float32)
+    v -= v.mean()
+    n = float(np.linalg.norm(v))
+    return v / n if n > 0 else v
+
+
+def estimateFrameAffine(prev_path, next_path, block=256, step=128, min_block_resp=0.08):
+    """Estimate the transform between two consecutive frames as a similarity
+    (rotation + scale + translation): the camera motion is not purely 2D, so a
+    global translation drifts (~0.4 deg and ~0.3% scale per frame on
+    FORTH_DoorCase_weld_650). Phase correlation is the only primitive robust to
+    the frame-to-frame lighting cycle, so it is applied per block on a grid and a
+    RANSAC similarity is fitted through the block motions; when fewer than 4
+    inlier blocks survive, falls back to the global translation.
+    Returns (M, (cdx, cdy), response, inliers) with the 2x3 matrix M and the
+    displacement (cdx, cdy) of the image centre both in full-mosaic coordinates,
+    response the global phase-correlation confidence."""
+    shift_scale = 1.0
+    imgs = []
+    for path in (prev_path, next_path):
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise IOError("Could not load %s" % path)
+        if img.ndim == 3:
+            if img.shape[2] == 4:
+                shift_scale = 2.0
+            img = img.mean(axis=2)
+        imgs.append(img.astype(np.float32))
+    ia, ib = imgs
+    H, W = ia.shape
+    win = cv2.createHanningWindow((W, H), cv2.CV_32F)
+    (dx, dy), response = cv2.phaseCorrelate(ia * win, ib * win)
+
+    src, dst = [], []
+    bwin = cv2.createHanningWindow((block, block), cv2.CV_32F)
+    for y0 in range(0, H - block + 1, step):
+        for x0 in range(0, W - block + 1, step):
+            blk = ia[y0:y0 + block, x0:x0 + block]
+            if blk.std() < 8:
+                continue  # flat/dark block carries no alignment signal
+            xs, ys = int(round(x0 + dx)), int(round(y0 + dy))
+            if xs < 0 or ys < 0 or xs + block > W or ys + block > H:
+                continue
+            (bx, by), r = cv2.phaseCorrelate(
+                blk * bwin, ib[ys:ys + block, xs:xs + block] * bwin)
+            if r < min_block_resp:
+                continue
+            c = block / 2.0
+            src.append([x0 + c, y0 + c])
+            dst.append([xs + c + bx, ys + c + by])
+
+    M, inliers = None, 0
+    if len(src) >= 4:
+        M, inl = cv2.estimateAffinePartial2D(np.float32(src), np.float32(dst),
+                                             ransacReprojThreshold=4.0)
+        inliers = 0 if inl is None else int(inl.sum())
+    if M is None or inliers < 4:
+        M, inliers = np.float64([[1, 0, dx], [0, 1, dy]]), 0
+
+    # To mosaic coordinates: the linear part is scale-invariant, translation scales.
+    Mm = np.float64(M).copy()
+    Mm[:, 2] *= shift_scale
+    cx, cy = W * shift_scale / 2.0, H * shift_scale / 2.0
+    cdx = Mm[0, 0] * cx + Mm[0, 1] * cy + Mm[0, 2] - cx
+    cdy = Mm[1, 0] * cx + Mm[1, 1] * cy + Mm[1, 2] - cy
+    return Mm, (float(cdx), float(cdy)), float(response), inliers
+
+
 """
 def loadMoreClasses(filename,classes_dict):
     with open("%s.json"%filename) as json_data:
@@ -185,6 +284,8 @@ class PhotoCtrl(wx.App):
         self.points_classes      = []
         self.points_severities   = []
         self.points_sources      = []  # parallel to points_of_interest: "auto" | "manual"
+        self.tracking            = None  # list of inter-frame transform records from the Track button (persisted as 'tracking' in the JSON)
+        self._light_fp_cache     = {}    # path -> lighting fingerprint vector (see lightingFingerprint)
         self._base_cache         = None  # (img, fg, left_bmp, right_bmp, left_ok): annotation-free bases for fast onView redraws
         self.leftViewImage       = None  # processed image shown in the left panel (imageCtrl)
         self.rightViewImage      = None  # foreground/visualization image shown in the right panel (secondaryImageCtrl)
@@ -616,16 +717,28 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
     self.fullAutoBtn = wx.Button(parent, label='Full Auto')
     self.fullAutoBtn.Bind(wx.EVT_BUTTON, self.onFullAuto)
+    self.trackBtn = wx.Button(parent, label='Track')
+    self.trackBtn.Bind(wx.EVT_BUTTON, self.onTrack)
     self.saveBtn = wx.Button(parent, label='Save')
     self.saveBtn.Bind(wx.EVT_BUTTON, self.onSave)
     self.deleteMetadataBtn = wx.Button(parent, label='Delete')
     self.deleteMetadataBtn.Bind(wx.EVT_BUTTON, self.ondeleteMetadata)
 
+    self.fillTrackingBtn = wx.Button(parent, label='Fill Tracking')
+    self.fillTrackingBtn.Bind(wx.EVT_BUTTON, self.onFillTracking)
+    self.nudgeBtn = wx.Button(parent, label='Nudge')
+    self.nudgeBtn.Bind(wx.EVT_BUTTON, self.onNudgeTracking)
+
     comboButtons = wx.BoxSizer(wx.HORIZONTAL)
     comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.fullAutoBtn, 0, wx.ALL, 5)
+    comboButtons.Add(self.trackBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
+
+    trackButtons = wx.BoxSizer(wx.HORIZONTAL)
+    trackButtons.Add(self.fillTrackingBtn, 0, wx.ALL, 5)
+    trackButtons.Add(self.nudgeBtn, 0, wx.ALL, 5)
 
     # Checkboxes (up to Guess lighting direction)
     self.incrementFrameAfterAnAdditionCheckbox = wx.CheckBox(parent, label="Increment frame after defect annotation")        
@@ -659,6 +772,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(pointButtons, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 0)
 
     s.Add(comboButtons, 0, wx.ALL, 5)
+    s.Add(trackButtons, 0, wx.ALL, 5)
     s.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
     s.Add(self.calcFocusLightCheckbox, 0, wx.ALL, 5)
 
@@ -1257,7 +1371,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                    self.lightComboBox.SetValue(data['lightDirection'])
             else:
                    self.lightComboBox.SetValue("Unknown")
-            
+
+            # Inter-frame transform records from the Track button (see onTrack).
+            # A list of records; a bare dict (early format) is wrapped for compatibility.
+            tr = data.get('tracking', None)
+            self.tracking = [tr] if isinstance(tr, dict) else tr
+
             self.updatePointList()
             self.updateRegionList()
 
@@ -1396,6 +1515,451 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       self.instructLbl.SetLabel(
           "Auto: propagated %u/%u annotation(s) to frame %u — verify, then Save."
           % (matched, len(prev_points), nxt))
+
+   def _lightDirectionForFrame(self, idx):
+      """Return the lightDirection label for stream frame idx. Uses the label stored
+      in the frame's JSON when present; otherwise estimates it exactly like Finalize's
+      batch pass (determine_intensity_region) and persists it into an existing JSON so
+      it is not recomputed on later calls."""
+      cur = self.folderStreamer.current()
+      try:
+          self.folderStreamer.select(idx)
+          img_path = self.folderStreamer.getImage()
+      finally:
+          self.folderStreamer.select(cur)
+
+      jp = resolve_annotation_json_path(img_path, prefer_existing=True)
+      if not jp or not checkIfFileExists(jp):
+          jp = os.path.splitext(img_path)[0] + ".json"
+      data = {}
+      if checkIfFileExists(jp):
+          try:
+              with open(jp) as f:
+                  data = json.load(f)
+          except Exception:
+              data = {}
+      light = data.get("lightDirection", "Unknown")
+      if light not in ("", "Unknown"):
+          return light
+
+      raw = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+      if raw is None:
+          return "Unknown"
+      light = determine_intensity_region(raw, threshold=0.1)
+      if data:
+          data["lightDirection"] = light
+          try:
+              with open(jp, "w") as f:
+                  json.dump(data, f, sort_keys=False)
+          except Exception as e:
+              print("Track: light direction write failed", jp, e)
+      return light
+
+   def _lightFingerprintCached(self, path):
+      fp = self._light_fp_cache.get(path)
+      if fp is None:
+          fp = lightingFingerprint(path)
+          if fp is not None:
+              self._light_fp_cache[path] = fp
+      return fp
+
+   def _findSameLightFrame(self, nxt, next_path):
+      """Return (path, similarity) of the frame lit most like frame nxt among the
+      SAME_LIGHT_SEARCH_MAX frames before nxt-1, or (None, 0.0) when nothing scores
+      above SAME_LIGHT_MIN_SIMILARITY. nxt-1 is excluded — it is already tracking
+      record [0]."""
+      fp_next = self._lightFingerprintCached(next_path)
+      if fp_next is None:
+          return None, 0.0
+      cur = self.folderStreamer.current()
+      best_path, best_sim = None, 0.0
+      try:
+          for idx in range(nxt - 2, max(-1, nxt - 2 - SAME_LIGHT_SEARCH_MAX), -1):
+              self.folderStreamer.select(idx)
+              path = self.folderStreamer.getImage()
+              fp = self._lightFingerprintCached(path)
+              if fp is None:
+                  continue
+              sim = float(fp_next @ fp)
+              if sim > best_sim:
+                  best_path, best_sim = path, sim
+      finally:
+          self.folderStreamer.select(cur)
+      if best_sim < SAME_LIGHT_MIN_SIMILARITY:
+          return None, 0.0
+      return best_path, best_sim
+
+   def onTrack(self, event):
+      """Propagate the current frame's points to the NEXT frame using a locally
+      estimated global shift (phase correlation — no SAM3 server needed), then
+      advance to it. The estimated inter-frame transforms are stored in the
+      destination frame's JSON under 'tracking': a list of records, one per
+      reference frame — the previous frame plus (when found) the most recent
+      frame with the same lightDirection label, computed on demand the same way
+      Finalize's batch pass does."""
+      if not self.points_of_interest:
+          self.instructLbl.SetLabel("Track: no points on this frame to propagate.")
+          return
+
+      cur = self.folderStreamer.current()
+      nxt = cur + 1
+      if nxt > self.folderStreamer.max():
+          wx.MessageBox("Already on the last frame; nothing to track to.",
+                        "Track", wx.OK | wx.ICON_INFORMATION)
+          return
+
+      prev_path = self.filepath
+      # Resolve the next frame's image path without disturbing the current
+      # selection (this also forces the download when streaming over HTTP).
+      self.folderStreamer.select(nxt)
+      next_path = self.folderStreamer.getImage()
+      self.folderStreamer.select(cur)
+
+      # Estimate (and later persist) the destination's light direction label so
+      # tracking never runs ahead of the Finalize light pass.
+      target_light = self._lightDirectionForFrame(nxt)
+      # Same-lighting reference: the earlier frame lit most like the destination,
+      # by lighting fingerprint. nxt-1 is skipped — it is already record [0].
+      same_light_path, same_light_sim = self._findSameLightFrame(nxt, next_path)
+
+      # The shift that brought us to THIS frame doubles as a smooth-motion prior
+      # (the previous-frame record is always first in the list).
+      prior = self.tracking[0] if self.tracking else None
+
+      wx.BeginBusyCursor()
+      try:
+          M, (dx, dy), response, inliers = estimateFrameAffine(prev_path, next_path)
+      except Exception as e:
+          wx.EndBusyCursor()
+          wx.MessageBox(f"Transform estimation failed:\n{e}", "Track",
+                        wx.OK | wx.ICON_ERROR)
+          return
+      records = []
+      if same_light_path:
+          try:
+              sM, (sdx, sdy), sresp, sinl = estimateFrameAffine(same_light_path, next_path)
+              records.append({"fromFrame": os.path.basename(same_light_path),
+                              "shift": [sdx, sdy],
+                              "affine": sM.tolist(),
+                              "response": sresp,
+                              "inliers": sinl,
+                              "method": "phaseCorrelateAffine" if sinl else "phaseCorrelate",
+                              "fallback": False,
+                              "lightSimilarity": round(same_light_sim, 3)})
+          except Exception as e:
+              print("Track: same-lighting transform estimation failed:", e)
+      wx.EndBusyCursor()
+
+      # Trust the block consensus when it exists; otherwise a weak global response
+      # falls back to the smooth-motion prior.
+      fallback = False
+      if response < 0.05 and not inliers and prior and prior.get("shift"):
+          dx, dy = prior["shift"]
+          M = np.float64([[1, 0, dx], [0, 1, dy]])
+          fallback = True
+
+      # Snapshot annotations to carry class/severity across the shift.
+      prev_points     = list(self.points_of_interest)
+      prev_classes    = list(self.points_classes)
+      prev_severities = list(self.points_severities)
+
+      # Advance to the next frame (this saves the current frame and loads N+1's JSON).
+      self.gotoFrameUI(self._ui_from_stream(nxt))
+
+      # Persist the light estimate computed above if the frame didn't have one yet.
+      if target_light not in ("", "Unknown", "No Light") and \
+         self.lightComboBox.GetValue() in ("", "Unknown"):
+          self.lightComboBox.SetValue(target_light)
+
+      W, H = self.viewedImageFullWidth, self.viewedImageFullHeight
+      carried = 0
+      for i, (x, y) in enumerate(prev_points):
+          tx = M[0, 0] * x + M[0, 1] * y + M[0, 2]
+          ty = M[1, 0] * x + M[1, 1] * y + M[1, 2]
+          if not (0 <= tx < W and 0 <= ty < H):
+              continue
+          # Skip predictions landing on a point the frame already has (re-pressing
+          # Track or tracking onto a partially annotated frame must not double up).
+          if any((tx - ex) ** 2 + (ty - ey) ** 2 < 30.0 ** 2
+                 for ex, ey in self.points_of_interest):
+              continue
+          self.points_of_interest.append((tx, ty))
+          self.points_classes.append(prev_classes[i] if i < len(prev_classes) else options[0])
+          self.points_severities.append(prev_severities[i] if i < len(prev_severities) else severities[0])
+          self.points_sources.append("auto")
+          carried += 1
+
+      self.tracking = [{"fromFrame": os.path.basename(prev_path),
+                        "shift": [dx, dy],
+                        "affine": M.tolist() if hasattr(M, "tolist") else M,
+                        "response": response,
+                        "inliers": inliers,
+                        "method": "phaseCorrelateAffine" if inliers else "phaseCorrelate",
+                        "fallback": fallback}] + records
+
+      self._stat_points_added += carried
+      self.updatePointList()
+      self.onView()
+      self.onSave(None)
+      rot = np.degrees(np.arctan2(M[1, 0], M[0, 0]))
+      self.instructLbl.SetLabel(
+          "Track: carried %u/%u point(s) to frame %u (shift %+.0f,%+.0f rot %+.2f° "
+          "resp %.2f, %u blocks%s) — verify."
+          % (carried, len(prev_points), nxt, dx, dy, rot, response, inliers,
+             ", fallback" if fallback else ""))
+
+   def onFillTracking(self, event):
+      """Batch tracking pass over the whole dataset:
+        PASS 1 — every frame without 'tracking' records gets the measured shift from
+                 its previous frame plus the best same-lighting link (fingerprint).
+        PASS 2 — all measurements are reconciled with a weighted least-squares solve
+                 of the resulting pose graph, and each frame's optimized global
+                 position (relative to the first frame) is stored as an extra
+                 'leastSquaresGlobal' record.
+      Annotation JSONs are read-modified-written, so points/classes are untouched."""
+      images = list(getattr(self.folderStreamer, "directoryList", None) or [])
+      if not images and self.filepath and os.path.isfile(self.filepath):
+          images = list_image_files(os.path.dirname(self.filepath))
+      if len(images) < 2:
+          wx.MessageBox("Need at least two frames in a dataset.", "Fill Tracking",
+                        wx.OK | wx.ICON_WARNING)
+          return
+
+      ask = wx.MessageDialog(
+          self.frame,
+          f"Measure inter-frame tracking for {len(images)} frames?\n\n"
+          f"Frames that already have tracking records are skipped, then a global\n"
+          f"least-squares pass reconciles all measurements. Annotations are untouched.",
+          "Fill Tracking", wx.YES_NO | wx.ICON_QUESTION)
+      if ask.ShowModal() != wx.ID_YES:
+          ask.Destroy()
+          return
+      ask.Destroy()
+
+      # Flush the currently-open frame so its JSON is up to date before the pass.
+      self.onSave(None)
+
+      def json_path_for(img):
+          jp = resolve_annotation_json_path(img, prefer_existing=True)
+          if not jp or not checkIfFileExists(jp):
+              jp = os.path.splitext(img)[0] + ".json"
+          return jp
+
+      def read_json(jp):
+          if checkIfFileExists(jp):
+              try:
+                  with open(jp) as f:
+                      return json.load(f)
+              except Exception:
+                  pass
+          return {}
+
+      def tracking_list(data):
+          tr = data.get("tracking", None)
+          return [tr] if isinstance(tr, dict) else (tr or [])
+
+      prog = wx.ProgressDialog(
+          "Fill Tracking", "Measuring inter-frame shifts…", maximum=len(images),
+          parent=self.frame,
+          style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
+                | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
+
+      # PASS 1 — measure missing records.
+      filled = skipped = failed = 0
+      aborted = False
+      for i in range(1, len(images)):
+          cont, _ = prog.Update(
+              i, f"{i+1}/{len(images)} — {filled} filled, {skipped} had tracking")
+          if not cont:
+              aborted = True
+              break
+          wx.GetApp().Yield(True)
+
+          jp = json_path_for(images[i])
+          data = read_json(jp)
+          if tracking_list(data):
+              skipped += 1
+              continue
+
+          try:
+              M, (dx, dy), response, inliers = estimateFrameAffine(images[i - 1], images[i])
+          except Exception as e:
+              print("Fill Tracking: shift failed for", images[i], ":", e)
+              failed += 1
+              continue
+          records = [{"fromFrame": os.path.basename(images[i - 1]),
+                      "shift": [dx, dy],
+                      "affine": M.tolist(),
+                      "response": response,
+                      "inliers": inliers,
+                      "method": "phaseCorrelateAffine" if inliers else "phaseCorrelate",
+                      "fallback": False}]
+
+          # Best same-lighting link among the preceding frames (i-1 excluded).
+          fp_i = self._lightFingerprintCached(images[i])
+          best_j, best_sim = None, 0.0
+          if fp_i is not None:
+              for j in range(i - 2, max(-1, i - 2 - SAME_LIGHT_SEARCH_MAX), -1):
+                  fp_j = self._lightFingerprintCached(images[j])
+                  if fp_j is None:
+                      continue
+                  sim = float(fp_i @ fp_j)
+                  if sim > best_sim:
+                      best_j, best_sim = j, sim
+          if best_j is not None and best_sim >= SAME_LIGHT_MIN_SIMILARITY:
+              try:
+                  sM, (sdx, sdy), sresp, sinl = estimateFrameAffine(images[best_j], images[i])
+                  records.append({"fromFrame": os.path.basename(images[best_j]),
+                                  "shift": [sdx, sdy],
+                                  "affine": sM.tolist(),
+                                  "response": sresp,
+                                  "inliers": sinl,
+                                  "method": "phaseCorrelateAffine" if sinl else "phaseCorrelate",
+                                  "fallback": False,
+                                  "lightSimilarity": round(best_sim, 3)})
+              except Exception as e:
+                  print("Fill Tracking: same-light shift failed for", images[i], ":", e)
+
+          if not data:
+              data = {"width": self.width, "height": self.height, "md5hash": "",
+                      "regionClicks": [], "pointClicks": [], "pointClasses": [],
+                      "pointSeverities": [], "pointSources": []}
+          data["tracking"] = records
+          try:
+              with open(jp, "w") as f:
+                  json.dump(data, f, sort_keys=False)
+              filled += 1
+          except Exception as e:
+              print("Fill Tracking: write failed", jp, e)
+              failed += 1
+
+      prog.Destroy()
+
+      # PASS 2 — weighted least squares over the pose graph: solve for per-frame
+      # global positions p_i (p_0 = 0) from all pairwise measurements p_b - p_a = s.
+      solved = 0
+      if not aborted:
+          name2idx = {os.path.basename(p): i for i, p in enumerate(images)}
+          frame_json = []   # (json_path, data) per frame, aligned with images
+          measurements = []  # (a, b, dx, dy, weight)
+          for i, img in enumerate(images):
+              jp = json_path_for(img)
+              data = read_json(jp)
+              frame_json.append((jp, data))
+              for r in tracking_list(data):
+                  if r.get("method") == "leastSquaresGlobal":
+                      continue
+                  a = name2idx.get(r.get("fromFrame", ""))
+                  s = r.get("shift")
+                  if a is None or a == i or not s:
+                      continue
+                  w = max(float(r.get("response") or 0.0), 0.01)
+                  if r.get("fallback"):
+                      w *= 0.3
+                  if r.get("method") == "manual":
+                      w = 2.0   # hand-corrected shifts outweigh any estimate
+                  measurements.append((a, i, float(s[0]), float(s[1]), w))
+
+          if measurements:
+              N = len(images)
+              A  = np.zeros((len(measurements), N - 1), np.float64)
+              bx = np.zeros(len(measurements), np.float64)
+              by = np.zeros(len(measurements), np.float64)
+              constrained = set()
+              for row, (a, b, dx, dy, w) in enumerate(measurements):
+                  if b > 0:
+                      A[row, b - 1] += w
+                  if a > 0:
+                      A[row, a - 1] -= w
+                  bx[row] = w * dx
+                  by[row] = w * dy
+                  constrained.update((a, b))
+              px = np.linalg.lstsq(A, bx, rcond=None)[0]
+              py = np.linalg.lstsq(A, by, rcond=None)[0]
+
+              first = os.path.basename(images[0])
+              for i in range(1, N):
+                  if i not in constrained:
+                      continue  # unmeasured frame: a stored zero would be a lie
+                  jp, data = frame_json[i]
+                  if not data:
+                      continue
+                  recs = [r for r in tracking_list(data)
+                          if r.get("method") != "leastSquaresGlobal"]
+                  recs.append({"fromFrame": first,
+                               "shift": [float(px[i - 1]), float(py[i - 1])],
+                               "method": "leastSquaresGlobal"})
+                  data["tracking"] = recs
+                  try:
+                      with open(jp, "w") as f:
+                          json.dump(data, f, sort_keys=False)
+                      solved += 1
+                  except Exception as e:
+                      print("Fill Tracking: write failed", jp, e)
+
+      # The pass may have rewritten the open frame's JSON — reload it.
+      self.onProcessNewImageSample(self.filepath)
+      self.onView()
+      wx.MessageBox(
+          f"Fill Tracking complete.\n\n"
+          f"Measured {filled} frame(s), {skipped} already had tracking, {failed} failed.\n"
+          f"Least-squares positions stored for {solved} frame(s)."
+          + ("\n(Aborted before completion.)" if aborted else ""),
+          "Fill Tracking", wx.OK | wx.ICON_INFORMATION)
+
+   def onNudgeTracking(self, event):
+      """Manual tracking fix-up: shift every auto-sourced point on the current frame
+      as one block with arrow buttons. The correction is folded into tracking
+      record [0] and marked method 'manual', which the Fill Tracking optimizer
+      treats as ground truth."""
+      if not any(s == "auto" for s in self.points_sources):
+          self.instructLbl.SetLabel("Nudge: no auto points on this frame to adjust.")
+          return
+
+      dlg = wx.Dialog(self.frame, title="Nudge Tracking")
+      panel = wx.Panel(dlg)
+      step = wx.SpinCtrl(panel, min=1, max=200, initial=10)
+
+      def nudge(ddx, ddy):
+          for i, src in enumerate(self.points_sources):
+              if src == "auto" and i < len(self.points_of_interest):
+                  x, y = self.points_of_interest[i]
+                  self.points_of_interest[i] = (x + ddx, y + ddy)
+          if self.tracking:
+              rec = self.tracking[0]
+              sx, sy = rec.get("shift", [0, 0])
+              rec["shift"]  = [sx + ddx, sy + ddy]
+              aff = rec.get("affine")
+              if aff:
+                  aff[0][2] += ddx
+                  aff[1][2] += ddy
+              rec["method"] = "manual"
+          self.updatePointList()
+          self.onView()
+
+      up    = wx.Button(panel, label="▲");  up.Bind(wx.EVT_BUTTON,    lambda e: nudge(0, -step.GetValue()))
+      down  = wx.Button(panel, label="▼");  down.Bind(wx.EVT_BUTTON,  lambda e: nudge(0,  step.GetValue()))
+      left  = wx.Button(panel, label="◀");  left.Bind(wx.EVT_BUTTON,  lambda e: nudge(-step.GetValue(), 0))
+      right = wx.Button(panel, label="▶");  right.Bind(wx.EVT_BUTTON, lambda e: nudge( step.GetValue(), 0))
+      done  = wx.Button(panel, label="Done"); done.Bind(wx.EVT_BUTTON, lambda e: dlg.EndModal(wx.ID_OK))
+
+      grid = wx.GridSizer(3, 3, 2, 2)
+      for item in (wx.StaticText(panel), up, wx.StaticText(panel),
+                   left, done, right,
+                   wx.StaticText(panel), down, wx.StaticText(panel)):
+          grid.Add(item, 0, wx.EXPAND)
+      col = wx.BoxSizer(wx.VERTICAL)
+      row = wx.BoxSizer(wx.HORIZONTAL)
+      row.Add(wx.StaticText(panel, label="Step (mosaic px):"), 0,
+              wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
+      row.Add(step, 0)
+      col.Add(grid, 0, wx.ALL | wx.ALIGN_CENTER, 8)
+      col.Add(row, 0, wx.ALL | wx.ALIGN_CENTER, 8)
+      panel.SetSizerAndFit(col)
+      dlg.Fit()
+      dlg.ShowModal()
+      dlg.Destroy()
+      self.onSave(None)
 
    def onFullAuto(self, event):
       """Run SAM3 pen-mark detection across EVERY frame in the open dataset and write
@@ -1619,6 +2183,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if (self.lightComboBox.GetValue()!="Unknown"):
               allData["lightDirection"] = self.lightComboBox.GetValue()
 
+        if self.tracking:
+              allData["tracking"] = self.tracking
+
         #primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
         #fallback_json = f"{self.filepath}.json"
 
@@ -1648,6 +2215,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.points_of_interest  = []
                self.lightComboBox.SetValue("Unknown")
                self.tenengrad_focus_measure = 0.0  # restored from JSON below if the frame has a saved value
+               self.tracking            = None     # restored from JSON below if the frame has a saved value
 
 
 
@@ -3061,6 +3629,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 event.Skip()  # user is typing 'd' into a field, don't wipe
             else:
                 self.onClearAllAnnotations(event)
+        elif keycode == ord('T') or keycode == ord('t'):
+            focus = wx.Window.FindFocus()
+            if isinstance(focus, (wx.TextCtrl, wx.ComboBox)):
+                event.Skip()  # user is typing 't' into a field, don't track
+            else:
+                self.onTrack(event)
         elif keycode == wx.WXK_TAB:
             if self.magnifier and self.magnifier.IsShown():
                 self.magnifier_source = "right" if self.magnifier_source == "left" else "left"
