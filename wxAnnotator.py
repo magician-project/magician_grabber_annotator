@@ -2200,6 +2200,29 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         print(f"Finalize focus/light: {updated} computed, {skipped} already had values")
         return updated
 
+   def _detectLeadingDarkFrames(self, local_dir):
+        """Count the consecutive dark ('No Light') frames at the very start of the dataset —
+        caused by the latency between disabling the light safety and the scene light actually
+        operating — so Finalize can set startFrame past them. Scans in sorted order and stops
+        at the first correctly-lit frame; a dark frame later in the dataset (a genuine light
+        failure) is left alone. An unreadable/placeholder leading frame counts as dark too."""
+        images = list(getattr(self.folderStreamer, "directoryList", None) or [])
+        if not images and self.filepath and os.path.isfile(self.filepath):
+            images = list_image_files(os.path.dirname(self.filepath))
+        leading = 0
+        for img in images:
+            raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
+            if raw is not None:
+                if raw.ndim == 3 and raw.shape[2] == 4:
+                    mosaic = repackPolarToMosaic(raw[:, :, 0], raw[:, :, 1], raw[:, :, 2], raw[:, :, 3])
+                    imgCV  = cv2.merge([mosaic, mosaic, mosaic])
+                else:
+                    imgCV  = raw if (raw.ndim == 3 and raw.shape[2] == 3) else cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+                if determine_intensity_region(imgCV, threshold=0.1) != "No Light":
+                    break  # first correctly-lit frame — stop
+            leading += 1
+        return leading
+
    def onFinalize(self, event):
         """Finalize the dataset: write/augment info.json with certification info, the
         accumulated annotation-effort statistics, and the dataset-wide defect/severity totals."""
@@ -2223,6 +2246,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                     info = json.load(f)
             except Exception as e:
                 print(f"Finalize: existing info.json unreadable ({e}); starting fresh.")
+
+        # Auto-skip the leading dark frames caused by light-safety-off latency: when no
+        # startFrame has been set yet, point it at the first correctly-lit frame.
+        if "startFrame" not in info:
+            leading_dark = self._detectLeadingDarkFrames(local_dir)
+            if leading_dark > 0:
+                info["startFrame"] = leading_dark
+                print(f"Finalize: detected {leading_dark} leading dark frame(s); "
+                      f"setting startFrame={leading_dark}")
 
         # Commit this session's active time before reading the counters.
         self._recordInteraction()
