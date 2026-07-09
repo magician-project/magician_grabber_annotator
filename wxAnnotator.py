@@ -717,8 +717,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.autoBtn.Bind(wx.EVT_BUTTON, self.onAuto)
     self.fullAutoBtn = wx.Button(parent, label='Full Auto')
     self.fullAutoBtn.Bind(wx.EVT_BUTTON, self.onFullAuto)
-    self.trackBtn = wx.Button(parent, label='Track')
+    self.trackBtn = wx.Button(parent, label='Track →')
     self.trackBtn.Bind(wx.EVT_BUTTON, self.onTrack)
+    self.trackBackBtn = wx.Button(parent, label='Track ←')
+    self.trackBackBtn.Bind(wx.EVT_BUTTON, self.onTrackBack)
     self.saveBtn = wx.Button(parent, label='Save')
     self.saveBtn.Bind(wx.EVT_BUTTON, self.onSave)
     self.deleteMetadataBtn = wx.Button(parent, label='Delete')
@@ -733,6 +735,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     comboButtons.Add(self.autoBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.fullAutoBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.trackBtn, 0, wx.ALL, 5)
+    comboButtons.Add(self.trackBackBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.saveBtn, 0, wx.ALL, 5)
     comboButtons.Add(self.deleteMetadataBtn, 0, wx.ALL, 5)
 
@@ -1563,18 +1566,30 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               self._light_fp_cache[path] = fp
       return fp
 
-   def _findSameLightFrame(self, nxt, next_path):
+   def _streamIndexOfFrame(self, name):
+      """Stream index of the frame with this basename, or None."""
+      for i, p in enumerate(getattr(self.folderStreamer, "directoryList", []) or []):
+          if os.path.basename(p) == name:
+              return i
+      return None
+
+   def _findSameLightFrame(self, nxt, next_path, direction=1):
       """Return (path, similarity) of the frame lit most like frame nxt among the
-      SAME_LIGHT_SEARCH_MAX frames before nxt-1, or (None, 0.0) when nothing scores
-      above SAME_LIGHT_MIN_SIMILARITY. nxt-1 is excluded — it is already tracking
-      record [0]."""
+      SAME_LIGHT_SEARCH_MAX frames on the source side of it (behind when tracking
+      forward, ahead when tracking backward), or (None, 0.0) when nothing scores
+      above SAME_LIGHT_MIN_SIMILARITY. The adjacent source frame is excluded — it
+      is already tracking record [0]."""
       fp_next = self._lightFingerprintCached(next_path)
       if fp_next is None:
           return None, 0.0
       cur = self.folderStreamer.current()
+      n_total = self.folderStreamer.max()
       best_path, best_sim = None, 0.0
       try:
-          for idx in range(nxt - 2, max(-1, nxt - 2 - SAME_LIGHT_SEARCH_MAX), -1):
+          for k in range(2, 2 + SAME_LIGHT_SEARCH_MAX):
+              idx = nxt - direction * k
+              if not (0 <= idx < n_total):
+                  break
               self.folderStreamer.select(idx)
               path = self.folderStreamer.getImage()
               fp = self._lightFingerprintCached(path)
@@ -1590,26 +1605,34 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       return best_path, best_sim
 
    def onTrack(self, event):
-      """Propagate the current frame's points to the NEXT frame using a locally
-      estimated global shift (phase correlation — no SAM3 server needed), then
-      advance to it. The estimated inter-frame transforms are stored in the
-      destination frame's JSON under 'tracking': a list of records, one per
-      reference frame — the previous frame plus (when found) the most recent
-      frame with the same lightDirection label, computed on demand the same way
-      Finalize's batch pass does."""
+      """Track →: propagate the current frame's points to the next frame."""
+      self._track(direction=1)
+
+   def onTrackBack(self, event):
+      """Track ←: propagate the current frame's points to the previous frame."""
+      self._track(direction=-1)
+
+   def _track(self, direction):
+      """Propagate the current frame's points to the adjacent frame in the given
+      direction (+1 next / -1 previous) using a locally estimated similarity
+      transform (blockwise phase correlation — no SAM3 server needed), then move
+      to it. The estimated inter-frame transforms are stored in the destination
+      frame's JSON under 'tracking': a list of records, one per reference frame —
+      the source frame plus (when found) the best same-lighting frame."""
       if not self.points_of_interest:
           self.instructLbl.SetLabel("Track: no points on this frame to propagate.")
           return
 
       cur = self.folderStreamer.current()
-      nxt = cur + 1
-      if nxt > self.folderStreamer.max():
-          wx.MessageBox("Already on the last frame; nothing to track to.",
+      nxt = cur + direction
+      if not (0 <= nxt < self.folderStreamer.max()):
+          wx.MessageBox("Already on the %s frame; nothing to track to."
+                        % ("last" if direction > 0 else "first"),
                         "Track", wx.OK | wx.ICON_INFORMATION)
           return
 
       prev_path = self.filepath
-      # Resolve the next frame's image path without disturbing the current
+      # Resolve the destination frame's image path without disturbing the current
       # selection (this also forces the download when streaming over HTTP).
       self.folderStreamer.select(nxt)
       next_path = self.folderStreamer.getImage()
@@ -1618,13 +1641,22 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       # Estimate (and later persist) the destination's light direction label so
       # tracking never runs ahead of the Finalize light pass.
       target_light = self._lightDirectionForFrame(nxt)
-      # Same-lighting reference: the earlier frame lit most like the destination,
-      # by lighting fingerprint. nxt-1 is skipped — it is already record [0].
-      same_light_path, same_light_sim = self._findSameLightFrame(nxt, next_path)
+      # Same-lighting reference: the frame lit most like the destination, by
+      # lighting fingerprint, on the source side of it.
+      same_light_path, same_light_sim = self._findSameLightFrame(nxt, next_path, direction)
 
-      # The shift that brought us to THIS frame doubles as a smooth-motion prior
-      # (the previous-frame record is always first in the list).
-      prior = self.tracking[0] if self.tracking else None
+      # Smooth-motion prior: the adjacent-frame record already on THIS frame,
+      # sign-corrected for our direction of travel.
+      prior_shift = None
+      if self.tracking:
+          rec = self.tracking[0]
+          s = rec.get("shift")
+          a = self._streamIndexOfFrame(rec.get("fromFrame", ""))
+          if s and a is not None:
+              if a == cur - direction:
+                  prior_shift = (s[0], s[1])
+              elif a == cur + direction:
+                  prior_shift = (-s[0], -s[1])
 
       wx.BeginBusyCursor()
       try:
@@ -1653,8 +1685,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       # Trust the block consensus when it exists; otherwise a weak global response
       # falls back to the smooth-motion prior.
       fallback = False
-      if response < 0.05 and not inliers and prior and prior.get("shift"):
-          dx, dy = prior["shift"]
+      if response < 0.05 and not inliers and prior_shift:
+          dx, dy = prior_shift
           M = np.float64([[1, 0, dx], [0, 1, dy]])
           fallback = True
 
@@ -1663,7 +1695,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       prev_classes    = list(self.points_classes)
       prev_severities = list(self.points_severities)
 
-      # Advance to the next frame (this saves the current frame and loads N+1's JSON).
+      # Move to the destination frame (this saves the current frame and loads its JSON).
       self.gotoFrameUI(self._ui_from_stream(nxt))
 
       # Persist the light estimate computed above if the frame didn't have one yet.
@@ -3655,6 +3687,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             focus = wx.Window.FindFocus()
             if isinstance(focus, (wx.TextCtrl, wx.ComboBox)):
                 event.Skip()  # user is typing 't' into a field, don't track
+            elif event.ShiftDown():
+                self.onTrackBack(event)   # Shift+T tracks backward
             else:
                 self.onTrack(event)
         elif keycode == wx.WXK_TAB:
