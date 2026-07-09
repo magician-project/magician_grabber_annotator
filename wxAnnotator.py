@@ -2343,8 +2343,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     self.sensibleDefaults(base_dir)
 
-    # Jump to first visible frame in range
-    self.gotoFrameUI(0)
+    # Jump to the last frame the user was on (last.frame), or the first in range
+    self.gotoFrameUI(self._restoreLastFrameUI())
 
     # Optional: reset placeholders
     self._initializeSensorPlotPlaceholders(parent=self.controlsPanel)
@@ -2361,9 +2361,34 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
     self.filepath = self.folderStreamer.getImage()
+    self._rememberLastFrame(self.filepath)
     self.onProcessNewImageSample(self.filepath)
     self.updateMinMaxSlider()
     #self.onView() # redundant: onProcessNewImageSample already calls onView()
+
+   def _rememberLastFrame(self, filepath):
+    """Persist the current frame's basename to last.frame so reopening the editor
+    can restore where the user left off (see _restoreLastFrameUI)."""
+    if not filepath:
+        return
+    try:
+        with open("last.frame", "w") as f:
+            f.write(os.path.basename(filepath))
+    except Exception as e:
+        print("Could not write last.frame:", e)
+
+   def _restoreLastFrameUI(self):
+    """UI index of the frame recorded in last.frame, clamped to the current range,
+    or 0 when the file is missing or the frame is not in this dataset."""
+    try:
+        with open("last.frame") as f:
+            name = f.read().strip()
+    except Exception:
+        return 0
+    stream_idx = self._streamIndexOfFrame(name)
+    if stream_idx is None:
+        return 0
+    return max(0, min(self._ui_from_stream(stream_idx), self._ui_max()))
 
 
 
