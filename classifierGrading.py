@@ -302,7 +302,7 @@ class AnnotationCorrelationStats:
         def _section(title, stats_dict):
             out = [f"\n--- {title} ---"]
             all_p, all_r, all_f1 = [], [], []
-            for name, s in sorted(stats_dict.items()):
+            for name, s in sorted(stats_dict.items(), key=lambda kv: str(kv[0])):
                 tp, fp, fn = s["tp"], s["fp"], s["fn"]
                 if tp + fp + fn == 0:
                     continue

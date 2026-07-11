@@ -462,10 +462,25 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               _min_hz = float(self.ensembleMinHz.GetValue())
            except Exception:
               _min_hz = 0.0
-           self.EnsembleClassifierPnm = EnsembleClassifierPnm(
+           _ensemble_initial = ("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json")
+           _ensemble_models  = self._scan_allclass_models(classifier_relative_directory)
+           if (not _ensemble_models) or (not os.path.isfile(_ensemble_initial[0])) or (not os.path.isfile(_ensemble_initial[1])):
+              wx.MessageBox(
+                  "Ensemble classifier disabled: no usable models found.\n\n"
+                  f"The ensemble scans {classifier_relative_directory} for pairs named\n"
+                  "allclass_<name>.pth + allclass_<name>.json, and additionally needs\n"
+                  "allclass_verysmall_cnn.pth/.json as the fast pre-filter model.\n\n"
+                  "Train models (or symlink existing .pth/.json pairs to allclass_* names)\n"
+                  "to enable the ensemble. The single-model classifier still works.",
+                  "Ensemble Models Not Found",
+                  wx.OK | wx.ICON_WARNING
+              )
+              self.EnsembleClassifierPnm = None
+           else:
+              self.EnsembleClassifierPnm = EnsembleClassifierPnm(
                                                             #("../magician_vision_classifier/binary_small_cnn.pth","../magician_vision_classifier/binary_small_cnn.json")
-                                                            initial_model_cfg = ("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json"),
-                                                            model_cfg_list=self._scan_allclass_models(classifier_relative_directory),
+                                                            initial_model_cfg = _ensemble_initial,
+                                                            model_cfg_list=_ensemble_models,
                                                             min_hz=_min_hz,
                                                             precache=benchmark)
 
@@ -956,6 +971,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             val = float(self.ensembleMinHz.GetValue())
         except ValueError:
             return
+        if getattr(self, 'EnsembleClassifierPnm', None) is None:
+            return
         self.EnsembleClassifierPnm.apply_min_hz(val)
         self.classifierInfo.SetLabel(
             f"Ensemble filter: {len(self.EnsembleClassifierPnm.classifiers)}"
@@ -1074,6 +1091,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         classifier = (self.EnsembleClassifierPnm
                       if self.classifierTwoStage.GetValue()
                       else self.ClassifierPnm)
+        if classifier is None:
+            wx.MessageBox("Two-stage mode needs ensemble models (allclass_*.pth/.json),\n"
+                          "but none were loaded — falling back to the single classifier.",
+                          "Ensemble Not Available", wx.OK | wx.ICON_WARNING)
+            classifier = self.ClassifierPnm
 
         dlg = RLAnnotatorDialog(self.frame, classifier, local_dir, radius)
         dlg.ShowModal()
@@ -2648,6 +2670,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
                 if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
                   self.AIAnnotations=None
+                  if self.classifierTwoStage.GetValue() and getattr(self, 'EnsembleClassifierPnm', None) is None:
+                     print("2-stage ensemble requested but no allclass_* models are loaded — using single classifier")
+                     self.classifierTwoStage.SetValue(False)
                   if self.classifierTwoStage.GetValue():
                      print("Image classification done through 2-stage ensemble classifier")
                      self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
