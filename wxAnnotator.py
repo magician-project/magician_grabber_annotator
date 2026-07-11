@@ -881,8 +881,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # --- 4. Threshold slider ---
     thrRow = wx.BoxSizer(wx.HORIZONTAL)
     thrLbl = wx.StaticText(parent, label="Threshold")
-    self.classifierThreshold = wx.Slider(parent, value=0, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
-    self.classifierThresholdValue = wx.StaticText(parent, label="0.00")
+    self.classifierThreshold = wx.Slider(parent, value=85, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
+    self.classifierThresholdValue = wx.StaticText(parent, label="0.85")
     def _on_thr(evt):
         self.classifierThresholdValue.SetLabel(f"{self.classifierThreshold.GetValue()/100.0:.2f}")
         evt.Skip()
@@ -2702,6 +2702,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 current_hz = (self.EnsembleClassifierPnm.hz
                               if self.classifierTwoStage.GetValue()
                               else self.ClassifierPnm.hz)
+                # The classifier runs on the DEMOSAICED (half-res) image, so its
+                # activation coords are half the user-click (full mosaic) coords.
+                # Scale AI points x2 so the spatial matcher compares like with like.
+                ai_ann_scaled = self.AIAnnotations
+                if ai_ann_scaled and ai_ann_scaled.get("points"):
+                    ai_ann_scaled = dict(ai_ann_scaled)
+                    ai_ann_scaled["points"] = [(2 * x, 2 * y) for (x, y) in ai_ann_scaled["points"]]
                 self.stats.update(
                                  frame_id=self.filepath,
                                  user_ann={
@@ -2709,7 +2716,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                                            "classes":    self.points_classes,
                                            "severities": self.points_severities,
                                           },
-                                 ai_ann=self.AIAnnotations,
+                                 ai_ann=ai_ann_scaled,
                                  hz=current_hz
                                )
                 self.classifierInfo.SetLabel(self.stats.get_summary_string())
@@ -3918,6 +3925,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self.classifierTileSize.SetValue(stepSize)
                self.onNext(event)
                wx.Yield()
+           thr = self.classifierThreshold.GetValue() / 100.0
+           if alterStep:
+               step_info = f"step={stepSizeMinimumBenchmark}..{stepSizeMaximumBenchmark} (cycled)"
+           else:
+               step_info = f"step={self.classifierTileSize.GetValue()}"
+           self.stats.run_info = (f"threshold={thr:.2f}  {step_info}  "
+                                  f"tile={self.ClassifierPnm.tile_size}  hit_radius={self.stats.hit_radius}")
            self.stats.print_stats()
 
         else:

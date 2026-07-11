@@ -283,8 +283,11 @@ class AnnotationCorrelationStats:
             f" Annotation Statistics  [{self.classifier_name}]",
             f" Frames processed: {self.frames_processed}",
             hz_line,
-            "=" * 58,
         ]
+        run_info = getattr(self, "run_info", "")
+        if run_info:
+            lines.append(f" Run settings:     {run_info}")
+        lines.append("=" * 58)
 
         if self.classifier_name.startswith("binary_"):
             tp = self.binary_stats["tp"]
