@@ -820,6 +820,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     else:
         available_models = ["(none)"]
 
+    # Models on the online zip repository (CameraV2Models). Already-local names
+    # are listed too — downloading them fetches the server's newest archive.
+    def _list_remote(local_models):
+        try:
+            from ModelDownload import remote_model_names
+            local = set(local_models)
+            return [n + (" [have local copy]" if n in local else "")
+                    for n in remote_model_names(timeout=5)]
+        except Exception as e:
+            print(f"[Models] Online repository unavailable: {e}")
+            return []
+    self._list_remote = _list_remote
+
     self.initializeModels() #<- initialize models here
 
     # --- 2. Model selection combo box ---
@@ -833,6 +846,78 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.classifierModelCombo.SetValue(available_models[0])
     modelRow.Add(modelLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
     modelRow.Add(self.classifierModelCombo, 1, wx.EXPAND)
+
+    # --- 2b. Online repository row: separate list of downloadable models ---
+    LOCAL_MARK = " [have local copy]"
+    remoteRow = wx.BoxSizer(wx.HORIZONTAL)
+    self.remoteModelsLbl = wx.StaticText(parent, label="Online")
+    remote_models = self._list_remote(available_models)
+
+    def _remote_summary(remote):
+        if not remote:
+            return "Online (repository unreachable)"
+        have = sum(1 for m in remote if m.endswith(LOCAL_MARK))
+        return f"Online ({len(remote)} models, {have} already downloaded)"
+
+    self.remoteModelsLbl.SetLabel(_remote_summary(remote_models))
+    self.classifierRemoteCombo = wx.ComboBox(
+        parent,
+        choices=remote_models if remote_models else ["(repository unreachable)"],
+        style=wx.CB_READONLY
+    )
+    self.classifierRemoteCombo.SetValue((remote_models or ["(repository unreachable)"])[0])
+    self.downloadModelBtn = wx.Button(parent, label="Download && Use")
+    remoteRow.Add(self.remoteModelsLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    remoteRow.Add(self.classifierRemoteCombo, 1, wx.EXPAND | wx.RIGHT, 8)
+    remoteRow.Add(self.downloadModelBtn, 0)
+
+    def _refresh_model_lists(select=None):
+        local = ClassifierPnm.model_scan(model_dir)
+        self.classifierModelCombo.Clear()
+        for m in local:
+            self.classifierModelCombo.Append(m)
+        if select and select in local:
+            self.classifierModelCombo.SetValue(select)
+        elif local:
+            self.classifierModelCombo.SetValue(local[0])
+        remote = self._list_remote(local)
+        self.remoteModelsLbl.SetLabel(_remote_summary(remote))
+        self.classifierRemoteCombo.Clear()
+        for m in (remote if remote else ["(repository unreachable)"]):
+            self.classifierRemoteCombo.Append(m)
+        self.classifierRemoteCombo.SetValue((remote or ["(repository unreachable)"])[0])
+        remoteRow.Layout()
+    self._refresh_model_lists = _refresh_model_lists
+
+    def onDownloadModel(_evt):
+        name = self.classifierRemoteCombo.GetValue()
+        if not name or name.startswith("("):
+            return
+        if name.endswith(LOCAL_MARK):
+            name = name[:-len(LOCAL_MARK)]
+        self.classifierInfo.SetLabel(f"Downloading '{name}' from the model repository...")
+        busy = wx.BusyCursor()
+        wx.Yield()
+        try:
+            from ModelDownload import download_model
+            download_model(name, model_dir)
+        except Exception as e:
+            wx.MessageBox(f"Failed to download '{name}':\n{e}",
+                          "Model Download Error", wx.OK | wx.ICON_ERROR)
+            return
+        finally:
+            del busy
+        _refresh_model_lists(select=name)
+        # Load the freshly downloaded model right away
+        if useClassifier and self.ClassifierPnm is not None:
+            if self.ClassifierPnm.reload_model(model_dir, name):
+                self.stats.classifier_name = name.lower()
+                self.stats.reset()
+                self.classifierInfo.SetLabel(f"Downloaded and switched to '{name}'.")
+            else:
+                wx.MessageBox(f"Downloaded '{name}' but failed to load it.",
+                              "Model Load Error", wx.OK | wx.ICON_ERROR)
+    self.downloadModelBtn.Bind(wx.EVT_BUTTON, onDownloadModel)
 
     # --- 3. Callback to reload model when changed ---
     def onClassifierModelChanged(evt):
@@ -988,6 +1073,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # --- 9. Layout ---
     s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
+    s.Add(remoteRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
