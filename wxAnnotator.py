@@ -855,13 +855,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     def _remote_summary(remote):
         if not remote:
-            return "Online (repository unreachable)"
+            return "Online (offline)"
         have = sum(1 for m in remote if m.endswith(LOCAL_MARK))
-        return f"Online ({len(remote)} models, {have} already downloaded)"
+        return f"Online ({have}/{len(remote)} local)"
 
     self.remoteModelsLbl.SetLabel(_remote_summary(remote_models))
+    self.remoteModelsLbl.SetToolTip("Models on the online repository; entries marked "
+                                    "[have local copy] re-download the newest archive")
+    # Fixed min width: long entries otherwise inflate the row's minimum size
+    # beyond the panel width and GTK paints overflowing children over neighbors
     self.classifierRemoteCombo = wx.ComboBox(
         parent,
+        size=(200, -1),
         choices=remote_models if remote_models else ["(repository unreachable)"],
         style=wx.CB_READONLY
     )
