@@ -70,6 +70,12 @@ import os
 
 FALLBACK_SCREEN_RES = (1920, 1080)
 
+# Usable desktop for the annotator window, empirically what this setup grants:
+# LxQt taskbar eats vertical space and a terminal stays visible on the extended
+# desktop (measured optimum: frame 2427x1048). The detected desktop is clamped
+# to this so the window/view sizing targets space the WM will actually grant.
+USABLE_DESKTOP = (2427, 1048)
+
 def detect_screen_resolution():
     """Return the total desktop resolution (width, height) as a tuple of ints.
 
@@ -316,15 +322,23 @@ class PhotoCtrl(wx.App):
 
         screen_width, screen_height = detect_screen_resolution()
         print("Screen Resolution: {}x{}".format(screen_width, screen_height))
+        usable_w = min(screen_width,  USABLE_DESKTOP[0])
+        usable_h = min(screen_height, USABLE_DESKTOP[1])
+        print("Usable desktop for the annotator: {}x{}".format(usable_w, usable_h))
 
-        # Fit two side-by-side panels + right tab pane (~390px chrome) and the
-        # controls under the images (~260px) inside the detected desktop.
-        # 100% of the native 1224x1024 image is the hard ceiling.
-        avail_w = max(300, (screen_width - 390) // 2)
-        avail_h = max(260, screen_height - 260)
+        # Invert the window formula (300 + 2*panelW, panelH + 220) to get the
+        # largest panel box that fits the usable desktop; the image (1224x1024,
+        # aspect-preserved) is fitted inside that box, 100% native = hard ceiling.
+        self._usableDesktop = (usable_w, usable_h)
+        # conservative first guess (the real chrome is MEASURED after startup by
+        # _calibrateWindowToUsableDesktop and the panels resized to fit exactly)
+        avail_w = max(300, (usable_w - 340) // 2)
+        avail_h = max(260, usable_h - 310)
         self._viewScaleMax = min(avail_w / 1224.0, avail_h / 1024.0, 1.0)
         self.PhotoMaxSizeWidth   = int(1224 * self._viewScaleMax)
         self.PhotoMaxSizeHeight  = int(1024 * self._viewScaleMax)
+        print("View scale ceiling %.2f -> panels %ux%u" %
+              (self._viewScaleMax, self.PhotoMaxSizeWidth, self.PhotoMaxSizeHeight))
          
         windowTitle = 'Magician Annotator Tool v%s'%version
         windowPosition = wx.Point(10,10)
@@ -376,6 +390,10 @@ class PhotoCtrl(wx.App):
         self.frame.SetSize(windowPosition.x, windowPosition.y, -1, -1)  # Initialize frame position
         self.frame.SetClientSize(windowSize)  # Set the exact client area size
         self.frame.Centre()  # Optional: Center the frame on the screen
+        # After startup loading (classifier, online model listing, first frame
+        # render) settles, measure the REAL window chrome and fit the panels to
+        # the usable desktop exactly — the +220-era estimates undershot in Y.
+        wx.CallLater(800, self._calibrateWindowToUsableDesktop)
         print("Final Frame Size: ", self.frame.GetSize())
         print("Final Client Size: ", self.frame.GetClientSize())
         self.x = 0 
@@ -742,6 +760,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         dw, dh = wx.DisplaySize()
         clamped = " (CLAMPED to display!)" if fw >= dw or fh >= dh else ""
         print(f"[Resize] frame -> {fw}x{fh}{clamped}")
+        # Keep the View slider ceiling in sync with the frame the WM actually
+        # grants (manual drags can exceed what programmatic resizes get) —
+        # cheap: only the slider max moves; the user pulls it up to enlarge.
+        try:
+            wx.CallAfter(self._applyViewCeiling)  # client size settles after the event
+        except Exception:
+            pass
         evt.Skip()
     self.frame.Bind(wx.EVT_SIZE, _onFrameSize)
 
@@ -953,15 +978,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # beyond the panel width and GTK paints overflowing children over neighbors
     self.classifierRemoteCombo = wx.ComboBox(
         parent,
-        size=(200, -1),
         choices=remote_models if remote_models else ["(repository unreachable)"],
         style=wx.CB_READONLY
     )
     self.classifierRemoteCombo.SetValue((remote_models or ["(repository unreachable)"])[0])
     self.downloadModelBtn = wx.Button(parent, label="Download && Use")
+    # label + combo on one row, download button below -> fits a narrow tab pane
     remoteRow.Add(self.remoteModelsLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
-    remoteRow.Add(self.classifierRemoteCombo, 1, wx.EXPAND | wx.RIGHT, 8)
-    remoteRow.Add(self.downloadModelBtn, 0)
+    remoteRow.Add(self.classifierRemoteCombo, 1, wx.EXPAND)
 
     def _refresh_model_lists(select=None):
         local = ClassifierPnm.model_scan(model_dir)
@@ -1170,7 +1194,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # --- 9. Layout ---
     s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
-    s.Add(remoteRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+    s.Add(remoteRow, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 10)
+    s.Add(self.downloadModelBtn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
@@ -2600,6 +2625,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
    def sensibleDefaults(self,loadDatasetCase):
                loadDataset = loadDatasetCase.lower()
                #Small check (this will need to  be updated if defects change)..
+               if ("weld" in loadDataset):
+                   app.defectComboBox.SetValue("Welding")
+                   app.severityComboBox.SetValue("Class A")
                if ("positive" in loadDataset):
                    app.defectComboBox.SetValue("Positive Dent")
                if ("negative" in loadDataset):
@@ -3453,6 +3481,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             from HTTPStream import HTTPFolderStreamer 
             self.folderStreamer = HTTPFolderStreamer(provider=dlg.selectedProvider, dataset=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
 
+            # Must be set BEFORE openDataset: the classifier trigger checks
+            # photoTxt != "default" while processing the FIRST frame
+            app.photoTxt.SetValue(dlg.selectedDirectory)
 
             self.openDataset(
                              base_dir=selectedDirectory,   # cache dir where info.json/controller.csv live
@@ -3468,7 +3499,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             self.onNext(event)
             self.onPrevious(event)
             """
-            app.photoTxt.SetValue(dlg.selectedDirectory)
         dlg.Destroy()
 
 
@@ -3710,9 +3740,71 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.contrast_offset = self.contrastSlider.GetValue()
         self.onRedrawData(event)
 
+   def _computeViewCeiling(self):
+        """Max view scale that fits the CURRENT client area. Horizontal reserve
+        is the tab pane + margins; vertical reserve is MEASURED from the fixed-
+        height widgets above/below the image (instruction label + under-image
+        control strip + borders) — never subtract the image itself, that is
+        circular and freezes the ceiling at the current size."""
+        cw, ch = self.frame.GetClientSize()
+        try:
+            top_h = self.instructLbl.GetSize().height
+            bot_h = self.underImage.GetSize().height
+            chrome_h = top_h + bot_h + 70   # StaticLine + ~6 sizer borders of 5px + safety
+        except Exception:
+            chrome_h = 130
+        pane_w = 290   # tab pane (250) + inter-column margins
+        avail_w = max(300, (cw - pane_w) // 2)
+        avail_h = max(260, ch - chrome_h)
+        smax = min(avail_w / 1224.0, avail_h / 1024.0, 1.0)
+        print(f"[ViewCeiling] client {cw}x{ch} chrome_h {chrome_h} -> "
+              f"avail {avail_w}x{avail_h} -> {int(100*smax)}%")
+        return smax
+
+   def _applyViewCeiling(self, set_to_max=False):
+        smax = self._computeViewCeiling()
+        self._viewScaleMax = smax
+        vmax = max(41, int(100 * smax))
+        if vmax != self.viewSizeSlider.GetMax():
+            self.viewSizeSlider.SetMax(vmax)
+            self.viewSizeSlider.SetToolTip(f"Size of the two image panels as % of native "
+                                           f"1224x1024 (max {vmax}% fits the current window)")
+        if set_to_max:
+            self.viewSizeSlider.SetValue(vmax)
+        return smax
+
+   def _calibrateWindowToUsableDesktop(self):
+        """One-shot post-startup calibration. The WM (LxQt) may clamp
+        programmatic resizes to the current monitor, so: request the usable
+        budget once, then size the image panels from the frame size ACTUALLY
+        granted, reserving a fixed width for the right tab pane (its
+        GetBestSize lies upward because WrapSizer rows report unwrapped)."""
+        try:
+            usable_w, usable_h = self._usableDesktop
+            PANE_W = 250   # right tab pane reservation (controls fit; images get the rest)
+            self.rightBook.SetMinSize((PANE_W, -1))
+            self.frame.SetSize(wx.Size(usable_w, usable_h))
+
+            def _finish():
+                print(f"[Calibrate] frame now {tuple(self.frame.GetSize())} "
+                      f"(asked {usable_w}x{usable_h})")
+                smax = self._applyViewCeiling(set_to_max=True)
+                newW, newH = int(1224 * smax), int(1024 * smax)
+                if abs(newW - self.PhotoMaxSizeWidth) > 4 or abs(newH - self.PhotoMaxSizeHeight) > 4:
+                    self.PhotoMaxSizeWidth, self.PhotoMaxSizeHeight = newW, newH
+                    with self._prefetch_lock:
+                        self._prefetch = None
+                    self.onRedrawData(None)
+                # Layout INSIDE the granted frame; Fit would re-fight the WM
+                self.panel.Layout()
+            wx.CallLater(600, _finish)
+        except Exception as e:
+            print(f"[Calibrate] failed (leaving startup sizing as-is): {e}")
+
    def on_view_size_slider(self, event):
         """Resize both image panels; 100% = native 1224x1024 demosaic resolution."""
-        scale = self.viewSizeSlider.GetValue() / 100.0
+        self._applyViewCeiling()   # keep the max honest w.r.t. the current window
+        scale = min(self.viewSizeSlider.GetValue() / 100.0, self._viewScaleMax)
         self.PhotoMaxSizeWidth  = int(1224 * scale)
         self.PhotoMaxSizeHeight = int(1024 * scale)
         # prefetched renders were produced at the old size — drop them
@@ -3722,7 +3814,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               f"PhotoMaxSize {self.PhotoMaxSizeWidth}x{self.PhotoMaxSizeHeight}")
         self.onRedrawData(event)
         self.panel.Layout()
-        self.mainSizer.Fit(self.frame)
         def _report():
             iw, ih = self.imageCtrl.GetSize()
             bmp = self.imageCtrl.GetBitmap()
