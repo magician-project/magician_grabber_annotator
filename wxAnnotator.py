@@ -42,7 +42,7 @@ from datetime import datetime
 Configurations in one central place
 """
 
-version         = "0.70"
+version         = "0.72"
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
 combineChannels = True
