@@ -68,6 +68,64 @@ import wx.lib.newevent
 import sys
 import os
 
+FALLBACK_SCREEN_RES = (1920, 1080)
+
+def detect_screen_resolution():
+    """Return the total desktop resolution (width, height) as a tuple of ints.
+
+    Tries four methods in order, most-reliable first:
+      1. xrandr monitor bounding box — spans all monitors in extended desktops
+         even when 'Screen 0: current' underreports (Wayland/XWayland/multi-GPU).
+      2. xrandr 'Screen 0: current W x H'.
+      3. xdpyinfo 'dimensions: WxH pixels'.
+      4. tkinter root window geometry.
+    Falls back to FALLBACK_SCREEN_RES if every method fails.
+    """
+    import re as _re
+    import subprocess as _sp
+    try:
+        out = _sp.run(["xrandr"], capture_output=True, text=True, timeout=3)
+        if out.returncode == 0:
+            monitors = _re.findall(
+                r'\bconnected\b(?:\s+primary)?\s+(\d+)x(\d+)\+(\d+)\+(\d+)',
+                out.stdout,
+            )
+            if monitors:
+                total_w = max(int(mx) + int(mw) for mw, mh, mx, my in monitors)
+                total_h = max(int(my) + int(mh) for mw, mh, mx, my in monitors)
+                print(f"Screen resolution computed from {len(monitors)} active "
+                      f"xrandr monitor(s): {total_w}x{total_h}")
+                return total_w, total_h
+            m = _re.search(r'current\s+(\d+)\s*x\s*(\d+)', out.stdout)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+                print(f"Screen resolution detected via xrandr (Screen 0 current): {w}x{h}")
+                return w, h
+    except Exception:
+        pass
+    try:
+        out = _sp.run(["xdpyinfo"], capture_output=True, text=True, timeout=3)
+        if out.returncode == 0:
+            m = _re.search(r'dimensions:\s+(\d+)x(\d+)', out.stdout)
+            if m:
+                w, h = int(m.group(1)), int(m.group(2))
+                print(f"Screen resolution detected via xdpyinfo: {w}x{h}")
+                return w, h
+    except Exception:
+        pass
+    try:
+        import tkinter as tk
+        root = tk.Tk(); root.withdraw()
+        w, h = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.destroy()
+        print(f"Screen resolution detected via tkinter: {w}x{h}")
+        return w, h
+    except Exception:
+        pass
+    print(f"Could not detect screen resolution; using fallback "
+          f"{FALLBACK_SCREEN_RES[0]}x{FALLBACK_SCREEN_RES[1]}")
+    return FALLBACK_SCREEN_RES
+
 from folderStream import FolderStreamer
 from classifierGrading import AnnotationCorrelationStats
 from downloadAllFrames import BatchProcessDialog
@@ -256,17 +314,17 @@ class PhotoCtrl(wx.App):
         wx.App.__init__(self, redirect, filename)
 
 
-        screen = wx.Display(0)  # Get the primary display
-        screen_width, screen_height = screen.GetGeometry().GetSize()
-        #screen_width = 1900
+        screen_width, screen_height = detect_screen_resolution()
         print("Screen Resolution: {}x{}".format(screen_width, screen_height))
 
-        if (screen_width>=1920):
-          self.PhotoMaxSizeWidth   = 800
-          self.PhotoMaxSizeHeight  = 620
-        else:
-          self.PhotoMaxSizeWidth   = 475 #<- Small monitor
-          self.PhotoMaxSizeHeight  = 400
+        # Fit two side-by-side panels + right tab pane (~390px chrome) and the
+        # controls under the images (~260px) inside the detected desktop.
+        # 100% of the native 1224x1024 image is the hard ceiling.
+        avail_w = max(300, (screen_width - 390) // 2)
+        avail_h = max(260, screen_height - 260)
+        self._viewScaleMax = min(avail_w / 1224.0, avail_h / 1024.0, 1.0)
+        self.PhotoMaxSizeWidth   = int(1224 * self._viewScaleMax)
+        self.PhotoMaxSizeHeight  = int(1024 * self._viewScaleMax)
          
         windowTitle = 'Magician Annotator Tool v%s'%version
         windowPosition = wx.Point(10,10)
@@ -560,23 +618,28 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.scrollBar.SetTickFreq(50)
     self.scrollBar.Bind(wx.EVT_SLIDER, self.onScroll)
 
-    # Brightness controls
-    self.minusButton = wx.Button(self.panel, label="-", size=(40, 30))
-    self.minusButton.Bind(wx.EVT_BUTTON, self.decrease_brightness)
-    self.brightnessLabel = wx.StaticText(self.panel, label="Br.")
-    self.brightnessText = wx.TextCtrl(self.panel, value="0", size=(50, 30), style=wx.TE_CENTER)
-    self.brightnessText.Bind(wx.EVT_TEXT, self.on_brightness_change)
-    self.plusButton = wx.Button(self.panel, label="+", size=(40, 30))
-    self.plusButton.Bind(wx.EVT_BUTTON, self.increase_brightness)
+    # Brightness / contrast: one compact slider each (integer range 0..5)
+    self.brightnessLabel  = wx.StaticText(self.panel, label="Br")
+    self.brightnessSlider = wx.Slider(self.panel, value=0, minValue=0, maxValue=5,
+                                      size=(90, -1), style=wx.SL_HORIZONTAL)
+    self.brightnessSlider.SetToolTip("Brightness offset (0-5)")
+    self.brightnessSlider.Bind(wx.EVT_SCROLL_CHANGED, self.on_brightness_slider)
+    self.contrastLabel  = wx.StaticText(self.panel, label="Co")
+    self.contrastSlider = wx.Slider(self.panel, value=0, minValue=0, maxValue=5,
+                                    size=(90, -1), style=wx.SL_HORIZONTAL)
+    self.contrastSlider.SetToolTip("Contrast offset (0-5)")
+    self.contrastSlider.Bind(wx.EVT_SCROLL_CHANGED, self.on_contrast_slider)
 
-    # Contrast controls
-    self.minusContrastButton = wx.Button(self.panel, label="-", size=(40, 30))
-    self.minusContrastButton.Bind(wx.EVT_BUTTON, self.decrease_contrast)
-    self.contrastLabel = wx.StaticText(self.panel, label="Co.")
-    self.contrastText = wx.TextCtrl(self.panel, value="0", size=(50, 30), style=wx.TE_CENTER)
-    self.contrastText.Bind(wx.EVT_TEXT, self.on_contrast_change)
-    self.plusContrastButton = wx.Button(self.panel, label="+", size=(40, 30))
-    self.plusContrastButton.Bind(wx.EVT_BUTTON, self.increase_contrast)
+    # View size: scales BOTH image panels, up to the native 1224x1024 resolution
+    self.viewSizeLabel  = wx.StaticText(self.panel, label="View")
+    _vmax = max(41, int(100 * getattr(self, '_viewScaleMax', 1.0)))
+    self.viewSizeSlider = wx.Slider(self.panel,
+                                    value=max(40, min(_vmax, int(100 * self.PhotoMaxSizeWidth / 1224))),
+                                    minValue=40, maxValue=_vmax,
+                                    size=(110, -1), style=wx.SL_HORIZONTAL)
+    self.viewSizeSlider.SetToolTip(f"Size of the two image panels as % of the native "
+                                   f"1224x1024 image resolution (max {_vmax}% fits this desktop)")
+    self.viewSizeSlider.Bind(wx.EVT_SCROLL_CHANGED, self.on_view_size_slider)
 
     # Under-image navigation
     self.prevBtn = wx.Button(self.panel, label='<')
@@ -661,21 +724,26 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.underImage.Add(self.ProcessorComboBox, 0, wx.ALL, 5)
     self.underImage.Add(self.canonicalLightCheckbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
-    self.underImage.Add(self.minusButton, 0, wx.ALL, 5)
-    self.underImage.Add(self.brightnessLabel, 0, wx.ALL, 5)
-    self.underImage.Add(self.brightnessText, 0, wx.ALL, 5)
-    self.underImage.Add(self.plusButton, 0, wx.ALL, 5)
-
-    self.underImage.Add(self.minusContrastButton, 0, wx.ALL, 5)
-    self.underImage.Add(self.contrastLabel, 0, wx.ALL, 5)
-    self.underImage.Add(self.contrastText, 0, wx.ALL, 5)
-    self.underImage.Add(self.plusContrastButton, 0, wx.ALL, 5)
+    self.underImage.Add(self.brightnessLabel, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+    self.underImage.Add(self.brightnessSlider, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+    self.underImage.Add(self.contrastLabel, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+    self.underImage.Add(self.contrastSlider, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+    self.underImage.Add(self.viewSizeLabel, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
+    self.underImage.Add(self.viewSizeSlider, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 3)
 
     self.mainSizer.Add(self.underImage, 0, wx.ALL | wx.EXPAND, 5)
 
     # Finalize
     self.panel.SetSizer(self.mainSizer)
     self.mainSizer.Fit(self.frame)
+
+    def _onFrameSize(evt):
+        fw, fh = evt.GetSize()
+        dw, dh = wx.DisplaySize()
+        clamped = " (CLAMPED to display!)" if fw >= dw or fh >= dh else ""
+        print(f"[Resize] frame -> {fw}x{fh}{clamped}")
+        evt.Skip()
+    self.frame.Bind(wx.EVT_SIZE, _onFrameSize)
 
     # Mouse + keys bindings on the images/panel
     self.imageCtrl.Bind(wx.EVT_LEFT_DOWN, self.onLeftDown)
@@ -3634,53 +3702,38 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     dlg.Destroy()
 
 
-   def increase_brightness(self, event):
-        if self.brightness_offset < 5:
-            self.brightness_offset += 1
-            self.brightnessText.SetValue(str(self.brightness_offset))
-        self.onRedrawData(event) 
-
-   def decrease_brightness(self, event):
-        if self.brightness_offset > 0:
-            self.brightness_offset -= 1
-            self.brightnessText.SetValue(str(self.brightness_offset))
+   def on_brightness_slider(self, event):
+        self.brightness_offset = self.brightnessSlider.GetValue()
         self.onRedrawData(event)
 
-   def on_brightness_change(self, event):
-        value = self.brightnessText.GetValue()
-        if value.isdigit():  # Check if input is a number
-            brightness_offset = int(value)
-            if 0 <= brightness_offset <= 5:
-                self.brightness_offset = brightness_offset
-            else:
-                self.brightnessText.SetValue(str(self.brightness_offset))  # Reset to last valid value
-        else:
-            self.brightnessText.SetValue(str(self.brightness_offset))  # Reset if input is invalid
-        self.onRedrawData(event) 
-
-   def increase_contrast(self, event):
-        if self.contrast_offset < 5:
-            self.contrast_offset += 1
-            self.contrastText.SetValue(str(self.contrast_offset))
-        self.onRedrawData(event) 
-
-   def decrease_contrast(self, event):
-        if self.contrast_offset > 0:
-            self.contrast_offset -= 1
-            self.contrastText.SetValue(str(self.contrast_offset))
+   def on_contrast_slider(self, event):
+        self.contrast_offset = self.contrastSlider.GetValue()
         self.onRedrawData(event)
 
-   def on_contrast_change(self, event):
-        value = self.contrastText.GetValue()
-        if value.isdigit():  # Check if input is a number
-            contrast_offset = int(value)
-            if 0 <= contrast_offset <= 5:
-                self.contrast_offset = contrast_offset
-            else:
-                self.contrastText.SetValue(str(self.contrast_offset))  # Reset to last valid value
-        else:
-            self.contrastText.SetValue(str(self.contrast_offset))  # Reset if input is invalid
-        self.onRedrawData(event) 
+   def on_view_size_slider(self, event):
+        """Resize both image panels; 100% = native 1224x1024 demosaic resolution."""
+        scale = self.viewSizeSlider.GetValue() / 100.0
+        self.PhotoMaxSizeWidth  = int(1224 * scale)
+        self.PhotoMaxSizeHeight = int(1024 * scale)
+        # prefetched renders were produced at the old size — drop them
+        with self._prefetch_lock:
+            self._prefetch = None
+        print(f"[ViewSize] slider={self.viewSizeSlider.GetValue()}% -> "
+              f"PhotoMaxSize {self.PhotoMaxSizeWidth}x{self.PhotoMaxSizeHeight}")
+        self.onRedrawData(event)
+        self.panel.Layout()
+        self.mainSizer.Fit(self.frame)
+        def _report():
+            iw, ih = self.imageCtrl.GetSize()
+            bmp = self.imageCtrl.GetBitmap()
+            bw, bh = (bmp.GetWidth(), bmp.GetHeight()) if bmp.IsOk() else (-1, -1)
+            fw, fh = self.frame.GetSize()
+            dw, dh = wx.DisplaySize()
+            print(f"[ViewSize] after Fit: frame {fw}x{fh} (display {dw}x{dh}) | "
+                  f"left imageCtrl widget {iw}x{ih} | bitmap {bw}x{bh}"
+                  + ("  <-- WIDGET SMALLER THAN BITMAP: clicks/legend will be wrong!"
+                     if (iw < bw or ih < bh) else ""))
+        wx.CallAfter(_report)
 
    def onRedrawData(self, event):
         print("Asked to redraw data")
@@ -3880,6 +3933,17 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.regionList.Set(self.formatRegions())
 
    def onLeftDown(self, event):
+       ex, ey = event.GetPosition()
+       ctrl = event.GetEventObject()
+       cw, ch = ctrl.GetSize()
+       bmp = ctrl.GetBitmap() if hasattr(ctrl, "GetBitmap") else None
+       bw, bh = (bmp.GetWidth(), bmp.GetHeight()) if (bmp and bmp.IsOk()) else (-1, -1)
+       print(f"[Click] pos=({ex},{ey}) widget={cw}x{ch} bitmap={bw}x{bh} "
+             f"viewed(view {self.viewedImageViewWidth}x{self.viewedImageViewHeight} / "
+             f"full {self.viewedImageFullWidth}x{self.viewedImageFullHeight}) "
+             f"ratio=({self.clickRatioX:.3f},{self.clickRatioY:.3f}) -> "
+             f"full=({ex*self.clickRatioX:.0f},{ey*self.clickRatioY:.0f})"
+             + ("  <-- widget/bitmap size MISMATCH" if (bw > 0 and (cw != bw or ch != bh)) else ""))
        if self.measureMode:
            mx, my = event.GetPosition()
            fullPt = (mx * self.clickRatioX, my * self.clickRatioY)
