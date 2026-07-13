@@ -4162,15 +4162,31 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        self.imageCtrl.SetBitmap(temp_bmp)
 
    def onRightDown(self, event):
-      if self.photoTxt.GetValue() != "default": #<- Don't trigger in logo on boot
-        self._stat_clicks += 1
-        self._recordInteraction()
-        self.x, self.y = event.GetPosition()
-        self.regions_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
-        self.updateRegionList()
-        print("Click ",self.x,",",self.y)
-        print("Rescaled Click ",int(self.x*self.clickRatioX),",",int(self.y*self.clickRatioY))
-        self.onView()
+      # Right-click removes the annotation point nearest to the cursor.
+      if self.photoTxt.GetValue() == "default":  # ignore in the boot logo
+          return
+      if not self.points_of_interest:
+          return
+      self._stat_clicks += 1
+      self._recordInteraction()
+      mx, my = event.GetPosition()
+      fx, fy = mx * self.clickRatioX, my * self.clickRatioY  # full-res coords, as points are stored
+      dists = [((px - fx) ** 2 + (py - fy) ** 2) for (px, py) in self.points_of_interest]
+      idx = min(range(len(dists)), key=dists.__getitem__)
+      # guard against deleting a far-away point on an empty-space click (~1.5 tiles)
+      if dists[idx] > (144 * self.clickRatioX) ** 2:
+          print("Right-click: no point near (%d,%d)" % (int(fx), int(fy)))
+          return
+      print("Right-click removing point %d at (%d,%d)" %
+            (idx, int(self.points_of_interest[idx][0]), int(self.points_of_interest[idx][1])))
+      del self.points_of_interest[idx]
+      del self.points_classes[idx]
+      del self.points_severities[idx]
+      if idx < len(self.points_sources):
+          del self.points_sources[idx]
+      self._stat_points_deleted += 1
+      self.updatePointList()
+      self.onView()
 
    def onMiddleDown(self, event):
         self.onNext(event)
