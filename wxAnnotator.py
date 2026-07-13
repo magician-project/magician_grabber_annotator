@@ -599,6 +599,16 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.ProcessorComboBox.Bind(wx.EVT_COMBOBOX, self.onProcessorComboBoxSelect)
     self.ProcessorComboBox.SetValue("DoLP")
 
+    # Canonical light view: photometrically remap whichever of the 6 strobed
+    # lights lit this frame so every frame "shows as" light #0 (see
+    # _canonicalizeLighting). Experimental visualization aid.
+    self.canonicalLightCheckbox = wx.CheckBox(self.panel, label="Canonical light")
+    self.canonicalLightCheckbox.SetToolTip(
+        "Resolve which of the strobed lights illuminates this frame (ActiveLighting "
+        "signatures) and rescale the 4 polarization channels so it renders as light #0")
+    self.canonicalLightCheckbox.Bind(wx.EVT_CHECKBOX,
+                                     lambda e: self.onProcessNewImageSample(self.filepath))
+
     # ----- Layout roots -------------------------------------------------------
     self.mainSizer  = wx.BoxSizer(wx.VERTICAL)
     self.sizer      = wx.BoxSizer(wx.HORIZONTAL)  # holds (left images) + (right tabs)
@@ -649,6 +659,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.underImage.Add(self.scrollBar, 1, wx.ALL | wx.EXPAND, 5)
     self.underImage.Add(self.cameraSettingsBtn, 0, wx.ALL, 5)
     self.underImage.Add(self.ProcessorComboBox, 0, wx.ALL, 5)
+    self.underImage.Add(self.canonicalLightCheckbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
     self.underImage.Add(self.minusButton, 0, wx.ALL, 5)
     self.underImage.Add(self.brightnessLabel, 0, wx.ALL, 5)
@@ -771,6 +782,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     self.calcFocusLightCheckbox = wx.CheckBox(parent, label="Calculate Focus & Light Direction")
     self.calcFocusLightCheckbox.SetValue(False)
 
+    self.autoUseClassifierCheckbox = wx.CheckBox(parent, label="Use classifier in Auto annotation")
+    self.autoUseClassifierCheckbox.SetToolTip(
+        "When checked, Auto and Full Auto also run the ACTIVE classifier (current "
+        "threshold/step/vote settings) and merge its detections into the annotations "
+        "(source 'classifier', severity 'AI')")
+    self.autoUseClassifierCheckbox.SetValue(False)
+
     # Layout stack for Annotator tab
     s.Add(self.datasetLabel, 0, wx.ALL | wx.EXPAND, 5)
     s.Add(self.datasetList, 0, wx.ALL | wx.EXPAND, 5)
@@ -797,6 +815,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     s.Add(comboButtons, 0, wx.ALL | wx.EXPAND, 5)
     s.Add(trackButtons, 0, wx.ALL | wx.EXPAND, 5)
+    s.Add(self.autoUseClassifierCheckbox, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
     s.Add(self.incrementFrameAfterAnAdditionCheckbox, 0, wx.ALL, 5)
     s.Add(self.calcFocusLightCheckbox, 0, wx.ALL, 5)
 
@@ -1001,9 +1020,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # --- Erode Kernel Size  ---
     erodeKernelRow        = wx.BoxSizer(wx.HORIZONTAL)
-    erodeKernelLbl        = wx.StaticText(parent, label="Erode Kernel Size")
-    self.erodeKernelSize  = wx.Slider(parent, value=0, minValue=0, maxValue=8, style=wx.SL_HORIZONTAL)
-    self.erodeKernelValue = wx.StaticText(parent, label="0")
+    erodeKernelLbl        = wx.StaticText(parent, label="Vote Neighborhood (kernel)")
+    erodeKernelLbl.SetToolTip("Radius k of the tile-voting neighborhood: votes are counted "
+                              "over the (2k+1)x(2k+1) tiles around each activation")
+    self.erodeKernelSize  = wx.Slider(parent, value=1, minValue=0, maxValue=8, style=wx.SL_HORIZONTAL)
+    self.erodeKernelValue = wx.StaticText(parent, label="1")
     def _on_erodkrnthr(evt):
         self.erodeKernelValue.SetLabel(f"{self.erodeKernelSize.GetValue()}")
         evt.Skip()
@@ -1015,9 +1036,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # --- Erode Threshold Value ---
     erodeThresholdRow        = wx.BoxSizer(wx.HORIZONTAL)
-    erodeThresholdLbl        = wx.StaticText(parent, label="Erode Min. Threshold to Keep")
-    self.erodeThreshold      = wx.Slider(parent, value=0, minValue=0, maxValue=8, style=wx.SL_HORIZONTAL)
-    self.erodeThresholdValue = wx.StaticText(parent, label="0")
+    erodeThresholdLbl        = wx.StaticText(parent, label="Min Votes to Keep Tile")
+    erodeThresholdLbl.SetToolTip("Activated tiles (including the tile itself) required inside the "
+                                 "vote neighborhood for an activation to be accepted; 0/1 = voting off. "
+                                 "Same setting as the ROS set_min_votes service.")
+    self.erodeThreshold      = wx.Slider(parent, value=2, minValue=0, maxValue=8, style=wx.SL_HORIZONTAL)
+    self.erodeThresholdValue = wx.StaticText(parent, label="2")
     def _on_erodthr(evt):
         self.erodeThresholdValue.SetLabel(f"{self.erodeThreshold.GetValue()}")
         evt.Skip()
@@ -1544,7 +1568,80 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           return False
       return True
 
+   def _classifierDetectionsForImage(self, raw, min_dist=48):
+      """Run the ACTIVE classifier on a raw frame (cv2.imread UNCHANGED output) and
+      return (points, classNames) for non-clean detections in FULL mosaic coords
+      (classifier works on the half-res demosaic -> points are scaled x2, the same
+      convention as user clicks). Detections are greedily thinned to min_dist px.
+      Uses the current GUI threshold/step/vote settings."""
+      if (not useClassifier) or self.ClassifierPnm is None or raw is None:
+          return [], []
+      img = raw
+      if img.ndim == 3 and img.shape[2] == 4:
+          img = repackPolarToMosaic(img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3])
+      if img.ndim != 2:
+          return [], []
+      self.ClassifierPnm.step = self.classifierTileSize.GetValue()
+      self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+      _hm, _occ, responses = self.ClassifierPnm.forward(
+          img,
+          majorityVote=self.classifierMajorityVoting.GetValue(),
+          legend=False,
+          erosion_kernel=self.erodeKernelSize.GetValue(),
+          erosion_threshold=self.erodeThreshold.GetValue())
+      label_map = {"NegativeDent": "Negative Dent", "PositiveDent": "Positive Dent",
+                   "MaterialDefect": "Material Defect", "Deformation": "Deformation",
+                   "Seal": "Seal", "Welding": "Welding", "Suspicious": "Suspicious"}
+      pts, cls = [], []
+      for (x, y), c in zip(responses.get("points", []), responses.get("classes", [])):
+          base = c[len("class_"):] if c.startswith("class_") else c
+          for suf in ("ClassA", "ClassB", "ClassC"):
+              if base.endswith(suf):
+                  base = base[:-len(suf)]
+          name = label_map.get(base)
+          if name is None:
+              continue
+          fx, fy = 2 * x, 2 * y
+          if any((fx - px) ** 2 + (fy - py) ** 2 < min_dist ** 2 for px, py in pts):
+              continue  # thin dense activation clusters to one point per min_dist
+          pts.append((fx, fy)); cls.append(name)
+      return pts, cls
+
+   def _mergeClassifierIntoCurrentFrame(self):
+      """Append the active classifier's detections for the CURRENT frame to the
+      annotation points (skipping any near an existing point)."""
+      raw = cv2.imread(self.filepath, cv2.IMREAD_UNCHANGED)
+      pts, cls = self._classifierDetectionsForImage(raw)
+      added = 0
+      tileFull = 96  # classifier tile is 48 at half-res
+      for (x, y), name in zip(pts, cls):
+          if any((x - px) ** 2 + (y - py) ** 2 < tileFull ** 2
+                 for px, py in self.points_of_interest):
+              continue
+          self.points_of_interest.append((x, y))
+          self.points_classes.append(name)
+          self.points_severities.append("AI")
+          self.points_sources.append("classifier")
+          added += 1
+      if added:
+          self._stat_points_added += added
+          self.updatePointList()
+          self.onView()
+      self.instructLbl.SetLabel(f"Auto: merged {added} classifier detection(s) into this frame.")
+      return added
+
    def onAuto(self, event):
+      """Auto annotation: SAM3 pen-mark flow, plus the active classifier's
+      detections when 'Use classifier in Auto annotation' is checked."""
+      use_cls = self.autoUseClassifierCheckbox.GetValue()
+      # classifier-only mode shouldn't error-popup about a missing SAM3 client
+      sam_possible = (getattr(self, "autoAnnotator", None) is not None) or (AutoAnnotator is not None)
+      if sam_possible or not use_cls:
+          self._onAutoSAM(event)
+      if use_cls:
+          self._mergeClassifierIntoCurrentFrame()
+
+   def _onAutoSAM(self, event):
       """SAM3 pen-mark assisted annotation (see AutoAnnotator.py):
         - blank frame that has a visible mark -> detect it and place a candidate point;
         - already-annotated frame             -> propagate the points to the NEXT frame.
@@ -2174,6 +2271,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       # PASS 1 — detect on every eligible frame (the slow, SAM3-bound part).
       annotated = marks = skipped = failed = 0
       frame_cands = []       # (scan_index, detect_ex candidates, json_path)
+      use_classifier = self.autoUseClassifierCheckbox.GetValue()
+      classifier_dets = {}   # json_path -> (points_fullres, classNames)
       for i, img in enumerate(images):
           cont, _ = prog.Update(
               i, f"{i+1}/{len(images)} — detecting… {skipped} skipped")
@@ -2205,6 +2304,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               wx.MessageBox(f"Detection failed on:\n{img}\n\n{e}",
                             "Full Auto", wx.OK | wx.ICON_ERROR)
               return
+          if use_classifier:
+              c_pts, c_cls = self._classifierDetectionsForImage(raw)
+              if c_pts:
+                  classifier_dets[json_path] = (c_pts, c_cls)
           if cands:
               frame_cands.append((i, cands, json_path))
 
@@ -2212,19 +2315,32 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       # physical, so the ring->defect offset is constant: the median over a ring track
       # fixes frames whose own DoLP anomaly is weak or missing), then write the JSONs.
       final = temporal_consensus([(i, c) for i, c, _jp in frame_cands])
+      classifier_marks = 0
       for i, _c, json_path in frame_cands:
           dets = final.get(i, [])
-          if not dets:
+          if not dets and json_path not in classifier_dets:
               continue
+          points     = [[x, y] for x, y, _a in dets]
+          classes    = [defect] * len(dets)
+          sevs       = [severity] * len(dets)
+          sources    = ["auto"] * len(dets)
+          # merge classifier detections that don't overlap a SAM point
+          c_pts, c_cls = classifier_dets.pop(json_path, ([], []))
+          for (cx, cy), cname in zip(c_pts, c_cls):
+              if any((cx - px) ** 2 + (cy - py) ** 2 < 96 ** 2 for px, py in points):
+                  continue
+              points.append([cx, cy]); classes.append(cname)
+              sevs.append("AI"); sources.append("classifier")
+              classifier_marks += 1
           data = {
               "width":  self.width,
               "height": self.height,
               "md5hash": "",
               "regionClicks": [],
-              "pointClicks":     [[x, y] for x, y, _a in dets],
-              "pointClasses":    [defect] * len(dets),
-              "pointSeverities": [severity] * len(dets),
-              "pointSources":    ["auto"] * len(dets),
+              "pointClicks":     points,
+              "pointClasses":    classes,
+              "pointSeverities": sevs,
+              "pointSources":    sources,
           }
           try:
               with open(json_path, "w") as f:
@@ -2235,10 +2351,32 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               print(f"[Full Auto] Failed writing {json_path}: {e}")
               failed += 1
 
+      # Frames where ONLY the classifier found something (no pen mark)
+      for json_path, (c_pts, c_cls) in classifier_dets.items():
+          data = {
+              "width":  self.width,
+              "height": self.height,
+              "md5hash": "",
+              "regionClicks": [],
+              "pointClicks":     [[x, y] for x, y in c_pts],
+              "pointClasses":    list(c_cls),
+              "pointSeverities": ["AI"] * len(c_pts),
+              "pointSources":    ["classifier"] * len(c_pts),
+          }
+          try:
+              with open(json_path, "w") as f:
+                  json.dump(data, f, sort_keys=False)
+              annotated += 1
+              classifier_marks += len(c_pts)
+          except Exception as e:
+              print(f"[Full Auto] Failed writing {json_path}: {e}")
+              failed += 1
+
       prog.Destroy()
       wx.MessageBox(
           f"Full Auto complete.\n\n"
-          f"Annotated {marks} mark(s) across {annotated} frame(s).\n"
+          f"Annotated {marks} pen mark(s) + {classifier_marks} classifier "
+          f"detection(s) across {annotated} frame(s).\n"
           f"Skipped {skipped} already-annotated frame(s).\n"
           f"{failed} frame(s) failed.",
           "Full Auto", wx.OK | wx.ICON_INFORMATION)
@@ -2533,8 +2671,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            return None
        if (imgPNM.ndim == 3) and (imgPNM.shape[2] == 4):
            imgPNM = repackPolarToMosaic(imgPNM[:, :, 0], imgPNM[:, :, 1], imgPNM[:, :, 2], imgPNM[:, :, 3])
+           if self.canonicalLightCheckbox.GetValue():
+               imgPNM = self._canonicalizeLighting(imgPNM, filepath)
            imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])
        else:
+           if (imgPNM.ndim == 2) and self.canonicalLightCheckbox.GetValue():
+               imgPNM = self._canonicalizeLighting(imgPNM, filepath)
            imgCV  = imgPNM if (imgPNM.ndim == 3 and imgPNM.shape[2] == 3) else cv2.cvtColor(imgPNM, cv2.COLOR_GRAY2BGR)
        src, w = imgCV, way
        if w == 3:                       # Sobel pre-step, mirrors onProcessNewImageSample
@@ -2591,6 +2733,67 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self._prefetch = (key, data)
        self._prefetch_thread = threading.Thread(target=work, daemon=True)
        self._prefetch_thread.start()
+
+   def _canonicalizeLighting(self, mosaic, filepath, numLights=6):
+      """Remap the strobed light of this frame so it renders as light #0.
+
+      Light identity is resolved with the ActiveLighting signature (per-channel
+      global mean proportions — position independent). Exemplars come from the
+      dataset's first numLights frames, assumed to be one clean strobe cycle
+      (same bootstrap as ActiveLighting). The remap is a per-channel gain
+      exemplar0/exemplarK applied on the 2x2 mosaic quadrants, so it works for
+      both .pnm mosaics and re-bayered .png frames.
+      """
+      if mosaic is None or mosaic.ndim != 2:
+          return mosaic
+      dirpath = os.path.dirname(filepath)
+      if getattr(self, '_canonLightDir', None) != dirpath:
+          self._canonLightDir = dirpath
+          self._canonExemplars = None
+          # first numLights frames of the dataset = one clean strobe cycle
+          try:
+              import glob as _glob
+              frames = sorted(_glob.glob(os.path.join(dirpath, "colorFrame_0_*.pnm")) +
+                              _glob.glob(os.path.join(dirpath, "colorFrame_0_*.png")))[:numLights]
+              exemplars = []
+              for f in frames:
+                  img = cv2.imread(f, cv2.IMREAD_UNCHANGED)
+                  if img is not None and img.ndim == 3 and img.shape[2] == 4:
+                      img = repackPolarToMosaic(img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3])
+                  if img is None or img.ndim != 2:
+                      continue
+                  quads = (img[0::2, 0::2], img[0::2, 1::2], img[1::2, 0::2], img[1::2, 1::2])
+                  means = np.array([float(q.mean()) for q in quads], dtype=np.float32)
+                  exemplars.append({'means': np.maximum(means, 1e-6),
+                                    'sig': means / max(float(means.sum()), 1e-6)})
+              if len(exemplars) == numLights:
+                  self._canonExemplars = exemplars
+                  print(f"[CanonicalLight] bootstrapped {numLights} light exemplars from {dirpath}")
+              else:
+                  print(f"[CanonicalLight] bootstrap failed ({len(exemplars)}/{numLights} usable frames)")
+          except Exception as e:
+              print(f"[CanonicalLight] bootstrap error: {e}")
+      if not self._canonExemplars:
+          return mosaic
+
+      quads = (mosaic[0::2, 0::2], mosaic[0::2, 1::2], mosaic[1::2, 0::2], mosaic[1::2, 1::2])
+      means = np.array([float(q.mean()) for q in quads], dtype=np.float32)
+      sig = means / max(float(means.sum()), 1e-6)
+      dists = [float(np.linalg.norm(sig - e['sig'])) for e in self._canonExemplars]
+      k = int(np.argmin(dists))
+      srt = sorted(dists)
+      print(f"[CanonicalLight] frame light={k} (distance {srt[0]:.4f}, margin {srt[1]-srt[0]:.4f})"
+            + ("" if k else " — already canonical"))
+      if k == 0:
+          return mosaic
+      gains = self._canonExemplars[0]['means'] / self._canonExemplars[k]['means']
+      maxval = 65535.0 if mosaic.dtype == np.uint16 else 255.0
+      out = mosaic.astype(np.float32)
+      out[0::2, 0::2] *= float(gains[0])
+      out[0::2, 1::2] *= float(gains[1])
+      out[1::2, 0::2] *= float(gains[2])
+      out[1::2, 1::2] *= float(gains[3])
+      return np.clip(out, 0, maxval).astype(mosaic.dtype)
 
    def onProcessNewImageSample(self,filepath):
            # Always start from a clean frame; we may restore JSON or apply carried points below
@@ -2666,8 +2869,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                p135 = imgPNM[:, :, 3]
                print("Re-bayering .PNG file to transparently treat it as .PNM")
                imgPNM = repackPolarToMosaic(p0, p45, p90, p135)   # now 2D, as classifier expects
+               if self.canonicalLightCheckbox.GetValue():
+                   imgPNM = self._canonicalizeLighting(imgPNM, filepath)
                imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])       # keep existing visualization logic happy
            else:
+               if (imgPNM.ndim == 2) and self.canonicalLightCheckbox.GetValue():
+                   imgPNM = self._canonicalizeLighting(imgPNM, filepath)  # .pnm mosaic path
                # non-polar PNG (e.g. boot logo / 3-ch / gray): reproduce the old cv2.imread() 3-channel BGR
                imgCV  = imgPNM if (imgPNM.ndim == 3 and imgPNM.shape[2] == 3) else cv2.cvtColor(imgPNM, cv2.COLOR_GRAY2BGR)
 
@@ -4022,7 +4229,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            else:
                step_info = f"step={self.classifierTileSize.GetValue()}"
            self.stats.run_info = (f"threshold={thr:.2f}  {step_info}  "
-                                  f"tile={self.ClassifierPnm.tile_size}  hit_radius={self.stats.hit_radius}")
+                                  f"tile={self.ClassifierPnm.tile_size}  hit_radius={self.stats.hit_radius}  "
+                                  f"erode_kernel={self.erodeKernelSize.GetValue()}  "
+                                  f"min_votes={self.erodeThreshold.GetValue()}  "
+                                  f"majority_vote={self.classifierMajorityVoting.GetValue()}")
            self.stats.print_stats()
 
         else:
