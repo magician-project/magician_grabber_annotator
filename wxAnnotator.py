@@ -702,13 +702,17 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     datasetListSize = wx.Size(-1, 80)
     self.datasetList  = wx.ListBox(parent, size=datasetListSize, choices=[], style=wx.LB_SINGLE)
 
-    # Image Regions (usually empty: keep it a compact single row)
+    # Image Regions: widgets kept alive (regionList is used by restore/update
+    # code paths) but hidden and not added to the sizer — the tab was too crammed
     self.regionLabel = wx.StaticText(parent, label="Image Regions")
     regionListSize = wx.Size(-1, 24)
     self.regionList = wx.ListBox(parent, size=regionListSize, choices=[], style=wx.LB_SINGLE)
     self.regionList.Bind(wx.EVT_LISTBOX, self.onSelectPoint)
     self.removeRegionBtn = wx.Button(parent, label='Remove Selected Point')
     self.removeRegionBtn.Bind(wx.EVT_BUTTON, self.onRemovePoint)
+    self.regionLabel.Hide()
+    self.regionList.Hide()
+    self.removeRegionBtn.Hide()
 
     # Classification + Severity (combo row)
     self.defectLabel = wx.StaticText(parent, label="Defect Classification")
@@ -792,10 +796,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # Layout stack for Annotator tab
     s.Add(self.datasetLabel, 0, wx.ALL | wx.EXPAND, 5)
     s.Add(self.datasetList, 0, wx.ALL | wx.EXPAND, 5)
-
-    s.Add(self.regionLabel, 0, wx.ALL | wx.EXPAND, 5)
-    s.Add(self.regionList, 0, wx.ALL | wx.EXPAND, 5)
-    s.Add(self.removeRegionBtn, 0, wx.ALL, 5)
 
     s.Add(wx.StaticLine(parent), 0, wx.ALL | wx.EXPAND, 5)
 
