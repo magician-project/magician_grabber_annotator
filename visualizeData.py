@@ -168,6 +168,8 @@ def adjust_contrast(image: np.ndarray, factor: float):
 def convertRGBCVMATToRGB(rgb_image,brightness=0,contrast=0):
     brightnessValue = 10* brightness
     contrastValue   = 1.0 + contrast/10
+    if (brightnessValue != 0):
+        rgb_image = np.clip(rgb_image.astype(np.float32) + brightnessValue, 0, 255).astype(np.uint8)
     rgb_image = adjust_contrast(rgb_image,contrastValue)
     return rgb_image
 
@@ -209,42 +211,42 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
 
     # Assign each polarization image to a specific channel
     if (way==0):
-      rgb_image[:, :, 0] = np.clip(polarization_0_deg.astype(np.float32)   + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_45_deg.astype(np.float32)  + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_90_deg.astype(np.float32)  + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(polarization_0_deg.astype(np.float32)   , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_45_deg.astype(np.float32)  , 0, 255)
+      rgb_image[:, :, 2] = np.clip(polarization_90_deg.astype(np.float32)  , 0, 255)
     elif (way==1):
-      rgb_image[:, :, 0] = np.clip(polarization_45_deg.astype(np.float32)  + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_90_deg.astype(np.float32)  + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(polarization_45_deg.astype(np.float32)  , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_90_deg.astype(np.float32)  , 0, 255)
+      rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) , 0, 255)
     elif (way==2):
-      rgb_image[:, :, 0] = np.clip( ( polarization_0_deg.astype(np.float32) +  polarization_45_deg.astype(np.float32) ) / 2   + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_45_deg  + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip( ( polarization_90_deg.astype(np.float32) + polarization_135_deg.astype(np.float32) ) / 2  + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip( ( polarization_0_deg.astype(np.float32) +  polarization_45_deg.astype(np.float32) ) / 2   , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_45_deg  , 0, 255)
+      rgb_image[:, :, 2] = np.clip( ( polarization_90_deg.astype(np.float32) + polarization_135_deg.astype(np.float32) ) / 2  , 0, 255)
     elif (way==4):
       #this needs some care so that values are not clipped
       sumMat = (polarization_0_deg.astype(np.float32) + 
                   polarization_45_deg.astype(np.float32) + 
                   polarization_90_deg.astype(np.float32) + 
                   polarization_135_deg.astype(np.float32)) / 4
-      rgb_image[:, :, 0] = np.clip(sumMat.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(sumMat.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(sumMat.astype(np.float32) + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(sumMat.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 1] = np.clip(sumMat.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 2] = np.clip(sumMat.astype(np.float32) , 0, 255)
     elif (way==5):
-      rgb_image[:, :, 0] = np.clip(polarization_0_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_0_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_0_deg.astype(np.float32) + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(polarization_0_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_0_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 2] = np.clip(polarization_0_deg.astype(np.float32) , 0, 255)
     elif (way==6):
-      rgb_image[:, :, 0] = np.clip(polarization_45_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_45_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_45_deg.astype(np.float32) + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(polarization_45_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_45_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 2] = np.clip(polarization_45_deg.astype(np.float32) , 0, 255)
     elif (way==7):
-      rgb_image[:, :, 0] = np.clip(polarization_90_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_90_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_90_deg.astype(np.float32) + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(polarization_90_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_90_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 2] = np.clip(polarization_90_deg.astype(np.float32) , 0, 255)
     elif (way==8):
-      rgb_image[:, :, 0] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 1] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
-      rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) + brightnessValue, 0, 255)
+      rgb_image[:, :, 0] = np.clip(polarization_135_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 1] = np.clip(polarization_135_deg.astype(np.float32) , 0, 255)
+      rgb_image[:, :, 2] = np.clip(polarization_135_deg.astype(np.float32) , 0, 255)
     elif (way>=9) and (way<=22):
       # --- Polarization analysis / Stokes-based visualizations ---
       # NOTE:
@@ -267,7 +269,7 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
 
       # Intensity (average of the 4 angles; stays in 0..255 domain)
       intensity_f = (I0 + I45 + I90 + I135) / 4.0
-      intensity_u8 = np.clip(intensity_f + brightnessValue, 0, 255).astype(np.uint8)
+      intensity_u8 = np.clip(intensity_f , 0, 255).astype(np.uint8)
 
       # DoLP (linear) and DoP (total)
       dolp = np.sqrt(S1*S1 + S2*S2) / (S0 + eps)
@@ -307,7 +309,7 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
       retard_u8 = (retard_mag * 255.0).astype(np.uint8)
 
       # Helpers for s0..s3 visualization
-      s0_u8 = np.clip((S0 * 0.5) + brightnessValue, 0, 255).astype(np.uint8)  # divide by 2 to fit in 8-bit
+      s0_u8 = np.clip((S0 * 0.5) , 0, 255).astype(np.uint8)  # divide by 2 to fit in 8-bit
       # s1,s2,s3 in ~[-255,255] -> map to [0,255] with mid=128
       def _stokes_signed_to_u8(S):
           S = np.clip(S, -255.0, 255.0)
@@ -456,6 +458,9 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
           rgb_image[:, :, 1] = min_u8   # G
           rgb_image[:, :, 2] = max_u8   # R
           print("\n\n\nMIN/MAX/AVG vis ",np.min(max_img), np.max(max_img), np.mean(avg_img) )
+
+    if (brightnessValue != 0):
+           rgb_image = np.clip(rgb_image.astype(np.float32) + brightnessValue, 0, 255).astype(np.uint8)
 
     if (contrastValue!=0.0):
            rgb_image = adjust_contrast(rgb_image,contrastValue)

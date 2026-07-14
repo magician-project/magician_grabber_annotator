@@ -638,9 +638,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     # Brightness / contrast: one compact slider each (integer range 0..5)
     self.brightnessLabel  = wx.StaticText(self.panel, label="Br")
-    self.brightnessSlider = wx.Slider(self.panel, value=0, minValue=0, maxValue=5,
+    self.brightnessSlider = wx.Slider(self.panel, value=0, minValue=0, maxValue=25,
                                       size=(90, -1), style=wx.SL_HORIZONTAL)
-    self.brightnessSlider.SetToolTip("Brightness offset (0-5)")
+    self.brightnessSlider.SetToolTip("Brightness offset (0-25; adds 10x per step to pixel values)")
     self.brightnessSlider.Bind(wx.EVT_SCROLL_CHANGED, self.on_brightness_slider)
     self.contrastLabel  = wx.StaticText(self.panel, label="Co")
     self.contrastSlider = wx.Slider(self.panel, value=0, minValue=0, maxValue=5,
