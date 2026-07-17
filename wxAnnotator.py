@@ -169,7 +169,7 @@ if useClassifier:
   parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
   try:
-    from liveClassifierTorch import ClassifierPnm
+    from liveClassifierTorch import ClassifierPnm, GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF
     from EnsembleClassifier  import EnsembleClassifierPnm
   except Exception as e:
     print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in wxAnnotator.py")
@@ -178,6 +178,10 @@ if useClassifier:
     print(f"Exact error was : {e}")
     sys.exit(1)
 else:
+  # Mirror liveClassifierTorch's gate names so the GUI builds without the classifier.
+  GATE_DEFECT_MASS = "defect_mass"
+  GATE_MAX_PROB    = "max_prob"
+  GATE_OFF         = "off"
   class ClassifierPnm:
     def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
         print("Classifier PNM is disabled, please start with --classifier or change the useClassifier variable in wxAnnotator to use it!")
@@ -1079,18 +1083,79 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
     self.classifierModelCombo.Bind(wx.EVT_COMBOBOX, onClassifierModelChanged)
 
-    # --- 4. Threshold slider ---
+    # --- 4. Decision gate: how a tile becomes "clean" vs "some defect" -------
+    # The threshold slider below cuts on THIS mode's score, so the same slider
+    # value means different things per mode and is not portable between them.
+    gateRow = wx.BoxSizer(wx.HORIZONTAL)
+    gateLbl = wx.StaticText(parent, label="Gate")
+    self.classifierGateMode = wx.ComboBox(
+        parent,
+        choices=[GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF],
+        style=wx.CB_READONLY
+    )
+    self.classifierGateMode.SetValue(GATE_DEFECT_MASS)
+    self.classifierGateMode.SetToolTip(
+        "How a tile is judged clean vs defect (liveClassifierTorch.gate_tiles):\n"
+        "  defect_mass : score = 1 - P(clean), the total probability on ANY defect\n"
+        "                class. Flags tiles the model is sure are defective even\n"
+        "                when it cannot say which defect. Recommended.\n"
+        "  max_prob    : score = max class probability (legacy). Throws away a\n"
+        "                0.40 Welding / 0.40 Seal / 0.20 clean tile as clean even\n"
+        "                though it is 80% likely a defect.\n"
+        "  off         : no gate, plain argmax; the threshold is ignored.\n"
+        "On val_altinay/customwide at THIS slider's default 0.85: max_prob gives\n"
+        "false-alarm 4.2% / miss 74.7%, defect_mass gives 10.6% / 41.6%."
+    )
+    self.classifierBestDefectClass = wx.CheckBox(parent, label="Best defect class")
+    self.classifierBestDefectClass.SetValue(True)
+    self.classifierBestDefectClass.SetToolTip(
+        "Above the gate, label the tile with its best DEFECT class instead of the\n"
+        "plain argmax, which can still be clean when the probability mass is\n"
+        "spread thinly across defect classes (0.8% of gate-passing tiles). Off,\n"
+        "those tiles pass the gate and are then labelled clean anyway, so they go\n"
+        "undetected. Only applies to the defect_mass gate."
+    )
+    gateRow.Add(gateLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
+    gateRow.Add(self.classifierGateMode, 1, wx.RIGHT, 8)
+    gateRow.Add(self.classifierBestDefectClass, 0, wx.ALIGN_CENTER_VERTICAL)
+
+    # --- 4b. Threshold slider (cuts on the gate mode's score) ---
     thrRow = wx.BoxSizer(wx.HORIZONTAL)
     thrLbl = wx.StaticText(parent, label="Threshold")
     self.classifierThreshold = wx.Slider(parent, value=85, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
     self.classifierThresholdValue = wx.StaticText(parent, label="0.85")
+
+    def _gate_hint():
+        """Spell out what the slider currently thresholds — it changes per mode."""
+        mode = self.classifierGateMode.GetValue()
+        thr  = self.classifierThreshold.GetValue() / 100.0
+        if mode == GATE_OFF:
+            self.classifierThreshold.Enable(False)
+            self.classifierBestDefectClass.Enable(False)
+            thrLbl.SetLabel("Threshold (unused)")
+        else:
+            self.classifierThreshold.Enable(True)
+            self.classifierBestDefectClass.Enable(mode == GATE_DEFECT_MASS)
+            thrLbl.SetLabel("Defect mass >=" if mode == GATE_DEFECT_MASS else "Max prob >=")
+        self.classifierThresholdValue.SetLabel(f"{thr:.2f}")
+
     def _on_thr(evt):
-        self.classifierThresholdValue.SetLabel(f"{self.classifierThreshold.GetValue()/100.0:.2f}")
+        _gate_hint()
+        evt.Skip()
+    def _on_gate(evt):
+        _gate_hint()
+        # Thresholds are not comparable between modes; say so rather than silently
+        # reinterpreting the slider the user already set.
+        print(f"[Gate] mode={self.classifierGateMode.GetValue()} "
+              f"threshold={self.classifierThreshold.GetValue()/100.0:.2f} "
+              f"— thresholds are NOT comparable across modes, re-tune the slider.")
         evt.Skip()
     self.classifierThreshold.Bind(wx.EVT_SLIDER, _on_thr)
+    self.classifierGateMode.Bind(wx.EVT_COMBOBOX, _on_gate)
     thrRow.Add(thrLbl, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
     thrRow.Add(self.classifierThreshold, 1, wx.RIGHT, 8)
     thrRow.Add(self.classifierThresholdValue, 0, wx.ALIGN_CENTER_VERTICAL)
+    _gate_hint()
 
     # --- 5. Majority voting checkbox ---
     self.classifierMajorityVoting = wx.CheckBox(parent, label="Use majority voting")
@@ -1196,6 +1261,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     s.Add(modelRow, 0, wx.ALL | wx.EXPAND, 10)
     s.Add(remoteRow, 0, wx.LEFT | wx.RIGHT | wx.TOP | wx.EXPAND, 10)
     s.Add(self.downloadModelBtn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
+    s.Add(gateRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(thrRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
     s.Add(self.classifierMajorityVoting, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
     s.Add(tileRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 10)
@@ -1661,6 +1727,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           return False
       return True
 
+   def _applyGateSettings(self, classifier):
+      """Push the GUI's decision-gate settings onto a classifier before a forward().
+
+      Keeps the single- and two-stage paths on one definition. See
+      liveClassifierTorch.gate_tiles() for what the knobs do; note the threshold
+      cuts on the selected mode's score, so it is not portable between modes."""
+      if classifier is None:
+          return
+      classifier.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+      classifier.gateMode                = self.classifierGateMode.GetValue()
+      classifier.assignBestDefectClass   = self.classifierBestDefectClass.GetValue()
+
    def _classifierDetectionsForImage(self, raw, min_dist=48):
       """Run the ACTIVE classifier on a raw frame (cv2.imread UNCHANGED output) and
       return (points, classNames) for non-clean detections in FULL mosaic coords
@@ -1675,7 +1753,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       if img.ndim != 2:
           return [], []
       self.ClassifierPnm.step = self.classifierTileSize.GetValue()
-      self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+      self._applyGateSettings(self.ClassifierPnm)
       _hm, _occ, responses = self.ClassifierPnm.forward(
           img,
           majorityVote=self.classifierMajorityVoting.GetValue(),
@@ -3070,7 +3148,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   if self.classifierTwoStage.GetValue():
                      print("Image classification done through 2-stage ensemble classifier")
                      self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
-                     self.EnsembleClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
+                     self._applyGateSettings(self.EnsembleClassifierPnm) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
                      imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=False, multimodel=self.parallellTwoStage.GetValue())
                      imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                      processed_img = imgRGBFromClassifier
@@ -3079,7 +3157,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   else:
                      print("Image classification done through regular 1-stage classifier")
                      self.ClassifierPnm.step = self.classifierTileSize.GetValue()
-                     self.ClassifierPnm.maxProbabilityThreshold = float(self.classifierThreshold.GetValue() / 100.0)
+                     self._applyGateSettings(self.ClassifierPnm)
                      imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
                      imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
                      processed_img = imgRGBFromClassifier
@@ -4399,7 +4477,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                step_info = f"step={stepSizeMinimumBenchmark}..{stepSizeMaximumBenchmark} (cycled)"
            else:
                step_info = f"step={self.classifierTileSize.GetValue()}"
-           self.stats.run_info = (f"threshold={thr:.2f}  {step_info}  "
+           # gate mode is part of the operating point: a threshold means a
+           # different thing per mode, so benchmarks without it are uncomparable
+           self.stats.run_info = (f"gate={self.classifierGateMode.GetValue()}  "
+                                  f"threshold={thr:.2f}  {step_info}  "
                                   f"tile={self.ClassifierPnm.tile_size}  hit_radius={self.stats.hit_radius}  "
                                   f"erode_kernel={self.erodeKernelSize.GetValue()}  "
                                   f"min_votes={self.erodeThreshold.GetValue()}  "
