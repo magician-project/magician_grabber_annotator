@@ -166,7 +166,7 @@ def adjust_contrast(image: np.ndarray, factor: float):
 
 
 def convertRGBCVMATToRGB(rgb_image,brightness=0,contrast=0):
-    brightnessValue = 10* brightness
+    brightnessValue = 1* brightness
     contrastValue   = 1.0 + contrast/10
     if (brightnessValue != 0):
         rgb_image = np.clip(rgb_image.astype(np.float32) + brightnessValue, 0, 255).astype(np.uint8)
@@ -204,7 +204,7 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
     # Create an RGB image
     rgb_image = np.zeros((int(height/2),int(width/2), 3), dtype=np.uint8)
 
-    brightnessValue = 10* brightness
+    brightnessValue = 1* brightness
     contrastValue   = 1.0 + contrast/10
 
     print("Image Visualization using: ",way)
