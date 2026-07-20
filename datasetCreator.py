@@ -507,6 +507,17 @@ class ProcessorThread(threading.Thread):
             # (tileImages should then treat it as missing / empty)
             json_path = f"{file_path}.json"
 
+        # Skip frames marked as having no scene light: a malfunctioned light leaves
+        # the whole frame near the sensor black floor, so its tiles are unusable.
+        # The label lives in the annotation JSON as lightDirection == "No Light".
+        try:
+            with open(json_path) as _jf:
+                if json.load(_jf).get("lightDirection") == "No Light":
+                    print(" -> lightDirection 'No Light', skipping frame")
+                    return occurances
+        except (OSError, ValueError):
+            pass
+
         # Use the explicit loader that accepts a json path
         tiles, tile_classes, tile_info, tiles_annotated_by_ai = loadImageAndJSON(
                                                                                  file_path,
