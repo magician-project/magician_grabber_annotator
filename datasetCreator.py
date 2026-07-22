@@ -510,11 +510,19 @@ class ProcessorThread(threading.Thread):
         # Skip frames marked as having no scene light: a malfunctioned light leaves
         # the whole frame near the sensor black floor, so its tiles are unusable.
         # The label lives in the annotation JSON as lightDirection == "No Light".
+        # The same read also harvests the decoded light (lightDecoder, written by the
+        # annotator's Finalize) so every tile carries the corrected, wiring-invariant
+        # light — trusted over the raw controller.csv, which has ~7-16% latency jitter.
+        frame_light = {}
         try:
             with open(json_path) as _jf:
-                if json.load(_jf).get("lightDirection") == "No Light":
-                    print(" -> lightDirection 'No Light', skipping frame")
-                    return occurances
+                _fj = json.load(_jf)
+            if _fj.get("lightDirection") == "No Light":
+                print(" -> lightDirection 'No Light', skipping frame")
+                return occurances
+            for _k in ("lightDirection", "lightNumber", "lightConfidence"):
+                if _fj.get(_k) is not None:
+                    frame_light[_k] = _fj[_k]
         except (OSError, ValueError):
             pass
 
@@ -547,7 +555,7 @@ class ProcessorThread(threading.Thread):
                metaData = {} 
 
         combinedTileInfo = [
-                            {"source": one_tile_info, **metaData}
+                            {"source": one_tile_info, **metaData, **frame_light}
                             for one_tile_info in tile_info
                            ]
         #print("tile_info ",tile_info)

@@ -200,6 +200,8 @@ else:
 
 from readData import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
 from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
+import re
+import lightDecoder
 from uploadAnnotations import UploadDialog
 
 
@@ -3300,26 +3302,50 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         return defect_counts, severity_counts, total
 
    def _batchComputeFocusLight(self, local_dir):
-        """Compute Tenengrad focus + light direction for every frame and store them in each
-        frame's JSON. Used by Finalize when live focus/light calculation was left disabled."""
+        """Compute Tenengrad focus + a latency-corrected light direction for every
+        frame and store them in each frame's JSON. Light is decoded SEQUENTIALLY by
+        lightDecoder (drift-free CSV cycle corrected by the observed signature — see
+        lightDecoder.py): it fixes the controller's per-frame latency stalls, tags a
+        wiring-invariant canonical direction, and preserves the 'No Light' malfunction
+        flag (same mean<18 test). Falls back to per-frame brightest-region when there
+        is no controller.csv."""
         images = list(getattr(self.folderStreamer, "directoryList", None) or [])
         if not images and self.filepath and os.path.isfile(self.filepath):
             images = list_image_files(os.path.dirname(self.filepath))
         if not images:
             return 0
+
+        def _frameno(p):
+            m = re.search(r"colorFrame_\d+_(\d+)", os.path.basename(p))
+            return int(m.group(1)) if m else None
+
+        # Decode order = capture order (frame number); frames without one sort last.
+        images = sorted(images, key=lambda p: (_frameno(p) is None, _frameno(p) or 0))
+        img_dir = os.path.dirname(images[0])
+        csv_rows = None
+        csv_path = os.path.join(img_dir, "controller.csv")
+        if os.path.isfile(csv_path):
+            try:
+                with open(csv_path, newline="") as cf:
+                    csv_rows = list(csv.DictReader(cf))
+            except Exception as e:
+                print("Finalize: controller.csv unreadable —", e)
+
         prog = wx.ProgressDialog(
             "Finalize — focus & light", "Computing focus and light direction…",
             maximum=len(images), parent=self.frame,
             style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
                   | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
-        updated = skipped = 0
+
+        # Pass 1: read every frame once; gather focus + the decoder's observations.
+        jps, datas, focus_list = [], [], []
+        sigs, dark, csvl, dirs = [], [], [], []
         for i, img in enumerate(images):
-            cont, _ = prog.Update(i, f"{i+1}/{len(images)} frames ({skipped} already done)")
+            cont, _ = prog.Update(i, f"{i+1}/{len(images)} frames")
             if not cont:
                 break
             wx.GetApp().Yield(True)
 
-            # Read the frame JSON first so we can skip frames that already have focus + light.
             jp = resolve_annotation_json_path(img, prefer_existing=True)
             if not jp or not checkIfFileExists(jp):
                 jp = os.path.splitext(img)[0] + ".json"
@@ -3330,28 +3356,56 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                         data = json.load(f)
                 except Exception:
                     data = {}
-            if data.get("tenengradFocusMeasure") and \
-               data.get("lightDirection", "Unknown") not in ("", "Unknown"):
-                skipped += 1
-                continue  # already calculated — don't decode/recompute
 
             raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
             if raw is None:
+                jps.append(jp); datas.append(data); focus_list.append(None)
+                sigs.append(None); dark.append(True); csvl.append(-1)
+                dirs.append(lightDecoder.UNKNOWN)
                 continue
             if raw.ndim == 3 and raw.shape[2] == 4:
                 mosaic = repackPolarToMosaic(raw[:, :, 0], raw[:, :, 1], raw[:, :, 2], raw[:, :, 3])
                 imgCV  = cv2.merge([mosaic, mosaic, mosaic])
             else:
                 imgCV  = raw if (raw.ndim == 3 and raw.shape[2] == 3) else cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
-            focus = float(tenengrad_focus_measure(imgCV))
-            light = determine_intensity_region(imgCV, threshold=0.1)
 
+            dk = lightDecoder.is_dark(raw)
+            fn = _frameno(img)
+            jps.append(jp); datas.append(data)
+            focus_list.append(float(tenengrad_focus_measure(imgCV)))
+            dark.append(dk)
+            sigs.append(None if dk else lightDecoder.signature(raw))
+            dirs.append(lightDecoder.NO_LIGHT if dk else lightDecoder.brightest_direction(raw))
+            csvl.append(lightDecoder._csv_light(csv_rows[fn])
+                        if (csv_rows and fn is not None and fn < len(csv_rows)) else -1)
+
+        # Decode the whole sequence (CSV cycle + signatures); else brightest-region.
+        use_decoder = bool(csv_rows) and any(c > 0 for c in csvl) and any(s is not None for s in sigs)
+        if use_decoder:
+            light_nums = lightDecoder.decode_light_ids(sigs, csvl, dark)
+            conf       = lightDecoder.light_confidence(sigs, dark)
+            light_dirs, _ = lightDecoder.canonical_directions(
+                light_nums, dark, site=lightDecoder.site_of(img_dir), directions=dirs)
+        else:
+            light_nums = [-1] * len(sigs)
+            conf       = [1.0] * len(sigs)
+            light_dirs = dirs                      # legacy brightest-region behaviour
+
+        # Pass 2: write focus + decoded light back into each frame JSON.
+        updated = 0
+        for k, jp in enumerate(jps):
+            if focus_list[k] is None:
+                continue                            # unreadable frame
+            data = datas[k]
             if not data:
                 data = {"width": self.width, "height": self.height, "md5hash": "",
                         "regionClicks": [], "pointClicks": [], "pointClasses": [],
                         "pointSeverities": [], "pointSources": []}
-            data["tenengradFocusMeasure"] = focus
-            data["lightDirection"]        = light
+            data["tenengradFocusMeasure"] = focus_list[k]
+            data["lightDirection"]        = light_dirs[k]
+            if light_nums[k] > 0:
+                data["lightNumber"]     = light_nums[k]
+                data["lightConfidence"] = round(conf[k], 3)
             try:
                 with open(jp, "w") as f:
                     json.dump(data, f, sort_keys=False)
@@ -3359,7 +3413,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             except Exception as e:
                 print("Finalize: focus/light write failed", jp, e)
         prog.Destroy()
-        print(f"Finalize focus/light: {updated} computed, {skipped} already had values")
+        print(f"Finalize focus/light: {updated} frames written"
+              + ("" if use_decoder else " (no controller.csv — brightest-region fallback)"))
         return updated
 
    def _detectLeadingDarkFrames(self, local_dir):
