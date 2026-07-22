@@ -314,7 +314,7 @@ def tileImages(image,
 
         return tile_text, tileAnnotatedByAI, nearDefect
 
-    def register(tile, tile_text, tileAnnotatedByAI, start_x):
+    def register(tile, tile_text, tileAnnotatedByAI, start_x, start_y):
         nonlocal tiles_annotated_by_ai
         tiles.append(tile)
         tile_classes.append(tile_text)
@@ -322,7 +322,9 @@ def tileImages(image,
             #If debuging mode is on also produce tile_info data to identify where the tile came from
             if (tileAnnotatedByAI):
                 tiles_annotated_by_ai += 1
-            tile_info.append("%s(%u,%u)"%(json_file,start_x,start_x+tile_size))
+            # top-left corner (start_x, start_y) of the tile in the DEMOSAICED (half-res)
+            # image the classifier operates on -- multiply by 2 for mosaic/click coords.
+            tile_info.append("%s(%u,%u)"%(json_file,start_x,start_y))
 
     # --- PHASE 1: CLEAN grid — whole frame WITHOUT overlap in either axis ------------
     # (defect-containing tiles are skipped here; phase 2 samples those densely)
@@ -348,7 +350,7 @@ def tileImages(image,
                 elif ignoreBackground and tile_text == "":
                     pass # Skip background if requested
                 else:
-                    register(tile, tile_text, tileAnnotatedByAI, x)
+                    register(tile, tile_text, tileAnnotatedByAI, x, y)
             x += clean_step
         y += clean_step
 
@@ -382,7 +384,7 @@ def tileImages(image,
             if (tileAnnotatedByAI and not includeTilesAnnotatedByAI):
                 continue                  #Ignore this tile that has been annotated by AI
             seen.add((x0, y0))
-            register(tile, tile_text, tileAnnotatedByAI, x0)
+            register(tile, tile_text, tileAnnotatedByAI, x0, y0)
 
     return tiles, tile_classes, tile_info, tiles_annotated_by_ai
 
