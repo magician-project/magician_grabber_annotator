@@ -2800,7 +2800,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         self.onSave(None)
 
 
-    self.filepath = self.folderStreamer.getImage()
+    newFilepath = self.folderStreamer.getImage()
+    if not newFilepath:
+        # Network stall/failure: the streamer could not provide the frame.
+        # Stay on the current frame rather than crashing on a None path.
+        print(f"gotoFrameUI: could not fetch image for frame {stream_idx}; staying put")
+        return
+
+    self.filepath = newFilepath
     self._rememberLastFrame(self.filepath)
     self.onProcessNewImageSample(self.filepath)
     self.updateMinMaxSlider()

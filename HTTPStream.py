@@ -54,6 +54,31 @@ def auth_url(provider, dataset, username, password):
     return url
 
 
+# (connect timeout, read timeout) in seconds. Without this a stalled server
+# blocks requests.get() forever, which freezes the whole (single threaded)
+# wx UI -- this is what made wxAnnotator appear "stuck".
+HTTP_TIMEOUT = (5, 30)
+
+
+def http_get(url, timeout=HTTP_TIMEOUT, retries=2):
+    """requests.get with a mandatory timeout and a few retries on transient
+    network stalls (Timeout / ConnectionError).
+
+    Returns the Response on success, or None if every attempt failed. It never
+    raises for network problems, so callers keep running (skip the frame /
+    fall back) instead of hanging or crashing the UI.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return requests.get(url, timeout=timeout)
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.RequestException) as exc:
+            eprint(f"http_get: transient error on attempt {attempt + 1}/"
+                   f"{retries + 1} for {url}: {exc}")
+    return None
+
+
 
 # ------------------ ZIP Retrieval ------------------
 def retrieve_annotation_zips(base_url, datasetnameFull, local_dir="downloads"):
@@ -67,7 +92,9 @@ def retrieve_annotation_zips(base_url, datasetnameFull, local_dir="downloads"):
     print(f"Trying to retrieve extra annotation zips from {base_url}")
 
     # 🔓 PUBLIC access (no authentication)
-    resp = requests.get(base_url)
+    resp = http_get(base_url)
+    if resp is None:
+        raise RuntimeError(f"Cannot access {base_url}: network error")
     if resp.status_code != 200:
         raise RuntimeError(f"Cannot access {base_url}: {resp.status_code}")
 
@@ -99,8 +126,8 @@ def retrieve_annotation_zips(base_url, datasetnameFull, local_dir="downloads"):
         zip_url = base_url.rstrip("/") + "/" + fname
         print(f"Downloading annotation ZIP: {zip_url}")
 
-        zresp = requests.get(zip_url)
-        if zresp.status_code != 200:
+        zresp = http_get(zip_url)
+        if zresp is None or zresp.status_code != 200:
             print(f"Failed to download {zip_url}")
             continue
 
@@ -146,6 +173,9 @@ class HTTPFolderStreamer:
         self.file_list = []
         self.index = 0
         self._prefetch_thread = None
+        # Remote names the server reported as absent (HTTP != 200); avoids
+        # re-requesting missing sidecars on every frame navigation.
+        self._known_missing = set()
 
         os.makedirs(self.local_dir, exist_ok=True)
 
@@ -167,9 +197,14 @@ class HTTPFolderStreamer:
 
     def loadNewDataset(self, dataset):
 
+        # A different dataset invalidates the "known missing" set.
+        self._known_missing = set()
+
         url = auth_url(self.provider, dataset, self.username, self.password)
         print(f"Loading file list from: {url}")
-        resp = requests.get(url)
+        resp = http_get(url)
+        if resp is None:
+            raise RuntimeError(f"Cannot access {url}: network error")
         if resp.status_code != 200:
             raise RuntimeError(f"Cannot access {url}: {resp.status_code}")
 
@@ -251,7 +286,7 @@ class HTTPFolderStreamer:
     def _download_file(self, remote_name, overwrite=False):
         print(f"Ask for: {remote_name}")
         # If this is an image, accept any already-present local variant
-        # (.png/.pnm/.jpg/.jpeg) and skip download to avoid duplicates/traffic.
+        # (.png/.pnm/.jpeg/.jpg) and skip download to avoid duplicates/traffic.
         if (not overwrite) and self._is_image_name(remote_name):
             existing = self._find_existing_local_image_variant(remote_name)
             if existing is not None:
@@ -264,15 +299,28 @@ class HTTPFolderStreamer:
             print(f"Local Path: {local_path}")
             return local_path
 
+        # Negative cache: the server returns 403 for files that do not exist
+        # (e.g. legacy .pnm.json / .png.json sidecars). Remember those so we
+        # don't re-request them on every single frame navigation.
+        if (not overwrite) and remote_name in self._known_missing:
+            return None
+
         # Ensure subdirectories exist (in case remote_name contains paths)
         os.makedirs(os.path.dirname(local_path) or self.local_dir, exist_ok=True)
 
         url = auth_url(self.provider, self.dataset + remote_name, self.username, self.password)
         print(f"Downloading: {url}")
 
-        resp = requests.get(url)
+        resp = http_get(url)
+        if resp is None:
+            # Network stall/failure -- transient, so do NOT negative-cache it.
+            print(f"Failed to download {url} (network error); will retry later")
+            return None
         if resp.status_code != 200:
-            raise RuntimeError(f"Failed to download {url}")
+            # Missing/forbidden on the server -- safe to remember as absent.
+            print(f"Failed to download {url} (HTTP {resp.status_code})")
+            self._known_missing.add(remote_name)
+            return None
 
         with open(local_path, "wb") as f:
             f.write(resp.content)
@@ -286,11 +334,8 @@ class HTTPFolderStreamer:
 
         stem = os.path.splitext(next_img)[0]
         for json_name in (stem + ".json", stem + ".pnm.json", stem + ".png.json"):
-            try:
-                self._download_file(json_name)
+            if self._download_file(json_name) is not None:
                 break
-            except RuntimeError:
-                pass
 
     # ---------- Metadata ----------
     def getJSON(self):
@@ -301,34 +346,30 @@ class HTTPFolderStreamer:
         candidates = [ stem + ".json", stem + ".pnm.json", stem + ".png.json", ]
 
         for json_name in candidates:
-            try:
-                return self._download_file(json_name)
-            except RuntimeError:
-                continue
+            result = self._download_file(json_name)
+            if result is not None:
+                return result
 
         print(f"HTTPStream: There is no JSON file for item {self.index} ({img_name})")
         return None
 
     def getInfo(self):
-        try:
-            return self._download_file("info.json")
-        except RuntimeError:
+        result = self._download_file("info.json")
+        if result is None:
             print("There is no Info file for dataset")
-            return None
+        return result
 
     def getControllerInfo(self):
-        try:
-            return self._download_file("controller.csv")
-        except RuntimeError:
+        result = self._download_file("controller.csv")
+        if result is None:
             print("There is no Controller file for dataset")
-            return None
+        return result
 
     def getCameraInfo(self):
-        try:
-            return self._download_file("camera.csv")
-        except RuntimeError:
+        result = self._download_file("camera.csv")
+        if result is None:
             print("There is no Camera file for dataset")
-            return None
+        return result
 
     def getTactileData(self):
         tactile_files = [
@@ -355,7 +396,10 @@ class HTTPFolderStreamer:
 
             url = tactile_base_url + fname
             print(f"Downloading tactile file: {url}")
-            resp = requests.get(url)
+            resp = http_get(url)
+            if resp is None:
+                print(f"Warning: network error downloading {url}")
+                continue
 
             if resp.status_code == 200:
                 with open(local_path, "wb") as f:
