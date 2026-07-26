@@ -421,7 +421,9 @@ class ProcessorThread(threading.Thread):
                  use_clean_class=True,
                  write_h5=False,
                  quarantine_px=32,
-                 defect_tiles_per_point=32):
+                 defect_tiles_per_point=32,
+                 min_exposure=450,
+                 max_exposure=750):
         super().__init__()
         self.directories = directories
         self.target_dir = target_dir
@@ -443,6 +445,12 @@ class ProcessorThread(threading.Thread):
         self.h5_writer = None
         self.quarantine_px = quarantine_px  # drop unlabeled tiles this close to a defect
         self.defect_tiles_per_point = defect_tiles_per_point  # cap of dense defect tiles
+        # Accepted capture-exposure window (microseconds, from each dataset's
+        # info.json). Datasets outside this are skipped whole (e.g. the 50us
+        # miscalibrated-light dumps). A dataset with no 'exposure' field is
+        # processed anyway (only an explicit out-of-range value is rejected).
+        self.min_exposure = min_exposure
+        self.max_exposure = max_exposure
 
     def readControllerCSV(self,pathToCSV):
         self.controlsData = []
@@ -622,6 +630,7 @@ class ProcessorThread(threading.Thread):
                 start_frame = 0
                 end_frame = len(file_list) - 1
                 info_path = os.path.join(dataset_dir, "info.json")
+                dataset_exposure = None
                 if os.path.isfile(info_path):
                     try:
                         with open(info_path, "r") as f:
@@ -630,8 +639,21 @@ class ProcessorThread(threading.Thread):
                             start_frame = int(info.get("startFrame", start_frame))
                         if "endFrame" in info:
                             end_frame = int(info.get("endFrame", end_frame))
+                        if "exposure" in info:
+                            dataset_exposure = float(info.get("exposure"))
                     except Exception as e:
                         print("Warning: could not parse frame limits from", info_path, "->", e)
+
+                # Reject datasets whose capture exposure falls outside the accepted
+                # window (e.g. the 50us miscalibrated-light dumps). Datasets without
+                # an 'exposure' field are processed (warned) rather than dropped.
+                if dataset_exposure is not None and (
+                        dataset_exposure < self.min_exposure or dataset_exposure > self.max_exposure):
+                    print(f"Skipping {dataset_dir}: exposure {dataset_exposure}us outside accepted "
+                          f"[{self.min_exposure}, {self.max_exposure}]us window")
+                    continue
+                elif dataset_exposure is None and os.path.isfile(info_path):
+                    print(f"Warning: {info_path} has no 'exposure' field; processing without exposure check")
 
                 # Clamp + slice list (indices correspond to sorted file order)
                 if len(file_list) > 0:
