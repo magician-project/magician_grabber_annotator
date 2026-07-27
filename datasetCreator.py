@@ -838,6 +838,23 @@ class MainFrame(wx.Frame):
         )
         grid.Add(self.quarantine_ctrl, 1, wx.EXPAND)
 
+        # Accepted exposure window (microseconds) — datasets whose info.json
+        # exposure is outside [min, max] are skipped whole (e.g. miscalibrated
+        # 50us dumps). Bounds are inclusive.
+        grid.Add(wx.StaticText(panel, label="Min exposure (us):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.min_exposure_ctrl = wx.SpinCtrl(panel, min=0, max=100000, initial=450)
+        self.min_exposure_ctrl.SetToolTip(
+            "Datasets with info.json exposure BELOW this (us) are skipped.\n"
+            "Datasets without an 'exposure' field are processed anyway.")
+        grid.Add(self.min_exposure_ctrl, 1, wx.EXPAND)
+
+        grid.Add(wx.StaticText(panel, label="Max exposure (us):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.max_exposure_ctrl = wx.SpinCtrl(panel, min=0, max=100000, initial=750)
+        self.max_exposure_ctrl.SetToolTip(
+            "Datasets with info.json exposure ABOVE this (us) are skipped.\n"
+            "Bounds are inclusive; datasets without an 'exposure' field are processed anyway.")
+        grid.Add(self.max_exposure_ctrl, 1, wx.EXPAND)
+
         # Filtering checkbox
         grid.Add(wx.StaticText(panel, label="Options:"), 0, wx.ALIGN_CENTER_VERTICAL)
 
@@ -1147,7 +1164,9 @@ class MainFrame(wx.Frame):
                                          includeTilesAnnotatedByAI = self.aiannotated_checkbox.GetValue(),
                                          write_h5        = self.direct_h5_checkbox.GetValue(),
                                          quarantine_px   = self.quarantine_ctrl.GetValue(),
-                                         defect_tiles_per_point = self.defect_tiles_ctrl.GetValue()
+                                         defect_tiles_per_point = self.defect_tiles_ctrl.GetValue(),
+                                         min_exposure    = self.min_exposure_ctrl.GetValue(),
+                                         max_exposure    = self.max_exposure_ctrl.GetValue()
                                          )
         self.processor.start()
         self.log(f"Started processing {len(selected_dirs)} datasets -> {target_dir}")
