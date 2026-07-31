@@ -171,6 +171,16 @@ if useClassifier:
   try:
     from liveClassifierTorch import ClassifierPnm, GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF
     from EnsembleClassifier  import EnsembleClassifierPnm
+    # Deployment presets shared with the ROS node (recommended_configuration.json in
+    # the classifier repo). Optional: older classifier checkouts will not have it.
+    try:
+        from classifierPnm import (load_recommended_configuration,
+                                   recommended_configuration_available)
+    except Exception:
+        load_recommended_configuration = None
+        def recommended_configuration_available(*args, **kwargs):
+            """No presets file support in this classifier checkout."""
+            return False
   except Exception as e:
     print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in wxAnnotator.py")
     print("Classifier Path : ",parent_path)
@@ -182,6 +192,10 @@ else:
   GATE_DEFECT_MASS = "defect_mass"
   GATE_MAX_PROB    = "max_prob"
   GATE_OFF         = "off"
+  load_recommended_configuration = None
+  def recommended_configuration_available(*args, **kwargs):
+      """Presets are a classifier feature; the classifier is disabled here."""
+      return False
   class ClassifierPnm:
     def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
         print("Classifier PNM is disabled, please start with --classifier or change the useClassifier variable in wxAnnotator to use it!")
@@ -927,9 +941,43 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        tile size (4..128), and two-stage classification toggle."""
     s = wx.BoxSizer(wx.VERTICAL)
 
+    # --- 0. Deployment preset (optional) ---
+    # If the classifier repo ships recommended_configuration.json, follow its FIRST
+    # entry for the startup model and gate, so the annotator and the ROS node agree on
+    # what "the recommended setup" is and both pick up changes from a git pull.
+    # Everything below stays editable in the GUI -- this only sets the defaults, and
+    # falls back to the previous behaviour (alphabetically-first local model, gate
+    # defect_mass @ 0.85) when the file or the preset's model is unavailable.
+    self._preset = None
+    if load_recommended_configuration is not None and recommended_configuration_available():
+        try:
+            self._preset = load_recommended_configuration()
+        except Exception as e:
+            print("[preset] recommended_configuration.json unusable:", repr(e))
+
     # --- 1. Get available models from directory ---
     model_dir = classifier_relative_directory
     available_models = ClassifierPnm.model_scan(model_dir)
+
+    # Put the preset's model first so it becomes the startup selection, but only if it
+    # is already present locally -- the annotator must not block on a download here.
+    preset_model = None
+    if self._preset is not None:
+        preset_model = self._preset.get("model")
+    if preset_model is not None and preset_model in available_models:
+        reordered = [preset_model]
+        for m in available_models:
+            if m != preset_model:
+                reordered.append(m)
+        available_models = reordered
+        print("[preset] '%s' -> startup model %s" % (self._preset.get("name"), preset_model))
+    elif preset_model is not None:
+        fallback_name = available_models[0] if available_models else "none"
+        print("[preset] '%s' recommends %s, which is not in %s. Using %s instead — fetch "
+              "it from the Online list, or with `python3 ModelDownload.py %s`."
+              % (self._preset.get("name"), preset_model, model_dir, fallback_name, preset_model))
+        self._preset = None      # its gate belongs to a model we are not loading
+
     if available_models:
         global classifier_model_path
         classifier_model_path = "%s/%s.pth"  % (classifier_relative_directory, available_models[0])
@@ -1126,6 +1174,34 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     thrLbl = wx.StaticText(parent, label="Threshold")
     self.classifierThreshold = wx.Slider(parent, value=85, minValue=0, maxValue=100, style=wx.SL_HORIZONTAL)
     self.classifierThresholdValue = wx.StaticText(parent, label="0.85")
+
+    # Adopt the preset's gate as the starting position of the three gate widgets. The
+    # slider is integer percent, so a preset threshold is rounded to the nearest 0.01 --
+    # 0.885 becomes 0.89, which is within the sweep's own 0.005 step. The user can still
+    # move any of these; this only decides where they start.
+    if self._preset is not None:
+        preset_gate = self._preset.get("gate") or {}
+        preset_mode = preset_gate.get("mode")
+        if preset_mode in (GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF):
+            self.classifierGateMode.SetValue(preset_mode)
+        preset_thr = preset_gate.get("threshold")
+        if preset_thr is not None:
+            slider_pct = int(round(float(preset_thr) * 100.0))
+            if slider_pct < 0:
+                slider_pct = 0
+            elif slider_pct > 100:
+                slider_pct = 100
+            self.classifierThreshold.SetValue(slider_pct)
+            self.classifierThresholdValue.SetLabel("%.2f" % (slider_pct / 100.0))
+        if "assign_best_defect_class" in preset_gate:
+            self.classifierBestDefectClass.SetValue(bool(preset_gate["assign_best_defect_class"]))
+        measured = self._preset.get("measured") or {}
+        if "detected" in measured and "false_alarm" in measured:
+            print("[preset] gate %s @ %.3f -> detects %.1f%% of defect tiles, "
+                  "false-alarms on %.2f%% of clean tiles (%s)"
+                  % (preset_gate.get("mode"), float(preset_thr),
+                     100.0 * measured["detected"], 100.0 * measured["false_alarm"],
+                     measured.get("source", "measured")))
 
     def _gate_hint():
         """Spell out what the slider currently thresholds — it changes per mode."""
