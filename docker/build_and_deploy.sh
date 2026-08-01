@@ -10,6 +10,13 @@ export DOCKER_BUILDKIT=1
 
 docker pull tensorflow/tensorflow:latest-gpu
 
+
+# Build context is the project root so the Dockerfile can COPY requirements.txt
+# BuildKit's --ssh forwarding needs a live agent socket; start one if the shell
+# has none (e.g. a plain SSH login where SSH_AUTH_SOCK isn't exported).
+[ -n "$SSH_AUTH_SOCK" ] || eval "$(ssh-agent -s)"
+
+
 # Build context is the project root so the Dockerfile can COPY requirements.txt
 docker build \
     --ssh default \
