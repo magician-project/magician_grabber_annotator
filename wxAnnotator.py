@@ -3769,6 +3769,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     expectedTileSize = 40
     r = expectedTileSize // 2
 
+    selected_index = self.pointList.GetSelection()
+
     for pointID in range(len(self.points_of_interest)):
         x = self.points_of_interest[pointID][0]
         y = self.points_of_interest[pointID][1]
@@ -3811,6 +3813,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             dc.SetPen(wx.Pen(wx.RED, 2))
             dc.DrawCircle(cx, cy, r)
             dc.DrawCircle(cx, cy, r + 4)
+
+        # Highlight the point selected in the list with a larger dotted green circle.
+        if pointID == selected_index:
+            dc.SetPen(wx.Pen(wx.GREEN, 3, wx.PENSTYLE_DOT))
+            dc.DrawCircle(cx, cy, r + 10)
 
         # Badge machine-generated points with a small cyan "A" so reviewers can spot them.
         src = self.points_sources[pointID] if pointID < len(self.points_sources) else "manual"
@@ -3892,9 +3899,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
    def onSelectPoint(self, event):
-        selected_index = self.pointList.GetSelection()
-        #if selected_index != -1:
-        #    wx.MessageBox(f"Selected Point: {self.points_of_interest[selected_index]}")
+        # Redraw so the selected point gets its dotted green highlight circle.
+        self.onView()
  
    def updateMinMaxSlider(self):
     stream_cur = self.folderStreamer.current()
