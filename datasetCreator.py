@@ -528,6 +528,12 @@ class ProcessorThread(threading.Thread):
             if _fj.get("lightDirection") == "No Light":
                 print(" -> lightDirection 'No Light', skipping frame")
                 return occurances
+            # A single DontUseThisFrame point condemns the whole frame: the annotator
+            # uses it to mark frames that must never reach a dataset (blurred, occluded,
+            # mis-triggered), so no tile of it is harvested — not even the clean ones.
+            if "DontUseThisFrame" in (_fj.get("pointClasses") or []):
+                print(" -> DontUseThisFrame annotation, skipping frame")
+                return occurances
             for _k in ("lightDirection", "lightNumber", "lightConfidence"):
                 if _fj.get(_k) is not None:
                     frame_light[_k] = _fj[_k]
