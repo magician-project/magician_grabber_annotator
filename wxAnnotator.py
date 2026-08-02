@@ -46,7 +46,7 @@ version         = "0.72"
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
 combineChannels = True
-options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Suspicious", "Clean", "RLClean"]
+options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Clean", "Suspicious", "Dust", "RLClean"]
 severities      = ["Class A","Class B","Class C"]
 directions      = ["Unknown","No Light","Bottom Left","Top Left","Top","Top Right", "Bottom Right", "Bottom"]
 processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Polarization_0_degree","Polarization_45_degree","Polarization_90_degree", "Polarization_135_degree", "AoLP", "DoLP", "Normals", "Intensity", "s0", "s1", "s2", "s3", "AoLP (light)", "AoLP (dark)", "DoP", "DoCP", "ToP", "CoP", "RetardationMag", "MaxMinAvgRGB", "Sobel","Visible"]
@@ -151,7 +151,7 @@ except Exception as _autoErr:
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-from readData import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive
+from readData import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive,readPolarPNMToRGBA
 
 """
 def debayerPolarImage(image): 
@@ -236,13 +236,13 @@ def lightingFingerprint(path, grid=4):
     intensities, mean-subtracted and L2-normalized. Cosine similarity between two
     fingerprints separates the scene-light cycle far better than the coarse 6-region
     lightDirection label, which cannot when the part occupies one image corner.
-    Returns None when the image cannot be read."""
-    raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    Read through readPolarPNMToRGBA so raw .pnm mosaics and already packed .png
+    frames — which a dataset can mix — yield the same channel count and therefore
+    comparable fingerprints. Returns None when the image cannot be read."""
+    raw = readPolarPNMToRGBA(path)
     if raw is None:
         return None
     raw = raw.astype(np.float32)
-    if raw.ndim == 2:
-        raw = raw[:, :, None]
     H, W, C = raw.shape
     cells = []
     for c in range(C):
@@ -266,18 +266,17 @@ def estimateFrameAffine(prev_path, next_path, block=256, step=128, min_block_res
     inlier blocks survive, falls back to the global translation.
     Returns (M, (cdx, cdy), response, inliers) with the 2x3 matrix M and the
     displacement (cdx, cdy) of the image centre both in full-mosaic coordinates,
-    response the global phase-correlation confidence."""
-    shift_scale = 1.0
+    response the global phase-correlation confidence.
+    Both frames are read through readPolarPNMToRGBA, so a raw .pnm mosaic and an
+    already packed .png — which a dataset can mix — are correlated at the same
+    half-mosaic resolution instead of failing to broadcast."""
+    shift_scale = 2.0   # correlation runs on the half-res demosaic
     imgs = []
     for path in (prev_path, next_path):
-        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        img = readPolarPNMToRGBA(path)
         if img is None:
             raise IOError("Could not load %s" % path)
-        if img.ndim == 3:
-            if img.shape[2] == 4:
-                shift_scale = 2.0
-            img = img.mean(axis=2)
-        imgs.append(img.astype(np.float32))
+        imgs.append(img.astype(np.float32).mean(axis=2))
     ia, ib = imgs
     H, W = ia.shape
     win = cv2.createHanningWindow((W, H), cv2.CV_32F)
