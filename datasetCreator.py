@@ -14,12 +14,12 @@ Features:
  - Shows whether the directory contains any .json files (marked in the list)
  - Allows the user to check any combination of datasets to process
  - Lets the user pick a target output directory
- - Runs the dump procedure (uses readData.loadMoreImages and helper checks) in a worker thread
+ - Runs the dump procedure (uses readDataAnnotator.loadMoreImages and helper checks) in a worker thread
  - Shows overall progress, live cleanThreshold, and per-class occurrence updates
  - At finish offers to zip the created output directory
 
 Notes:
- - This script assumes the `readData.py` module (with functions loadMoreImages, checkIfFileExists,
+ - This script assumes the `readDataAnnotator.py` module (with functions loadMoreImages, checkIfFileExists,
    checkIfPathExists, check_threshold, check_variation) is available on PYTHONPATH.
  - It also re-implements `dump_dataset_to_keras_data_loader` from your template (slightly adapted)
 
@@ -45,7 +45,7 @@ import json
 
 #from memory_profiler import profile
 def find_annotation_for_image(image_path: str) -> str | None:
-    """Find an existing annotation file for an image, using readData.resolve_annotation_json_path."""
+    """Find an existing annotation file for an image, using readDataAnnotator.resolve_annotation_json_path."""
     if resolve_annotation_json_path is None:
         return None
 
@@ -86,11 +86,11 @@ def ensure_annotation_sidecar(image_path: str) -> str | None:
         return existing
 
 
-# --- Import external utilities assumed to exist in readData.py ---
+# --- Import external utilities assumed to exist in readDataAnnotator.py ---
 try:
-    from readData import loadImageAndJSON, checkIfFileExists, checkIfPathExists, check_threshold, check_variation, resolve_annotation_json_path
+    from readDataAnnotator import loadImageAndJSON, checkIfFileExists, checkIfPathExists, check_threshold, check_variation, resolve_annotation_json_path
 except Exception as e:
-    print("Could not import readData utilities. Make sure readData.py exists and is importable.\n", e)
+    print("Could not import readDataAnnotator utilities. Make sure readDataAnnotator.py exists and is importable.\n", e)
     # We'll still continue; the UI will warn the user if the import failed.
     loadImageAndJSON = None
     checkIfFileExists = lambda p: os.path.isfile(p)
@@ -198,6 +198,10 @@ class H5DatasetWriter:
       metadata : (N,) UTF-8 JSON strings
       attrs    : class_names (JSON list, "class_<Name>" style), has_metadata,
                  metadata_format
+
+    This layout is the ONLY tie between this file and magician_vision_classifier —
+    nothing here imports from that repo — so a refactor over there breaks us only if
+    HDF5Dataset stops reading these four names (round-trip verified 2026-08-02).
     """
     def __init__(self, h5_path):
         import h5py                      # optional dep; only needed for direct H5 dumps

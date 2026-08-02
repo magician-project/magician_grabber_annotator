@@ -3,7 +3,7 @@ import glob
 import argparse
 import numpy as np
 import cv2
-from readData import readPolarPNMToRGBA, averagePolarRGBAtoGray
+from readDataAnnotator import readPolarPNMToRGBA, averagePolarRGBAtoGray
 # ---------------------- Feature utils ---------------------- #
 def make_feature_extractor():
     if hasattr(cv2, "SIFT_create"):

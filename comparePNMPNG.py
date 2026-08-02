@@ -4,8 +4,8 @@ import sys
 import cv2
 import numpy as np
 
-# Import function from readData.py
-from readData import readPolarPNMToRGBALive
+# Import function from readDataAnnotator.py
+from readDataAnnotator import readPolarPNMToRGBALive
 
 
 def load_and_convert(path):

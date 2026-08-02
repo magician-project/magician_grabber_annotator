@@ -1,9 +1,41 @@
 #!/usr/bin/python3
 
-""" 
+"""
 Author : "Ammar Qammaz"
 Copyright : "2025 Foundation of Research and Technology, Computer Science Department Greece, See license.txt"
-License : "FORTH" 
+License : "FORTH"
+
+THIS FILE WAS CALLED readData.py UNTIL 2026-08-03. It was renamed because
+magician_vision_classifier has a readData.py of its own, and the old name silently
+shadowed it: wxAnnotator.py *appends* the classifier directory to sys.path while the
+annotator's own directory is sys.path[0] (and, with the site's PYTHONPATH starting in
+an empty entry, the cwd too), so the classifier's `from readData import
+readPolarPNMToRGBALive` in classifierPnm.py picked up OUR file instead of its own.
+Editing a function here could therefore change live classification while the
+classifier repo looked untouched. After the rename each repo loads its own copy —
+verified byte-identical classifier output either way (same heatmap md5, same 112
+activations on FORTH_MIX_650 frame 0 with mix_convnext_tiny).
+
+DO NOT rename this back, and do not add a readData.py to this directory.
+
+The two files are NOT copies of each other and must not be resynced. This one is the
+newer: it carries 9 functions the classifier's has never had
+(resolve_annotation_json_path, list_image_files, loadImageAndJSON, loadImage,
+repackPolarToMosaic, averagePolarRGBAtoGray, get_md5, check_threshold_count,
+select_most_different_tiles) and its tileImages() takes the severity / clean-class /
+quarantine_px / defect_tiles_per_point arguments datasetCreator.py passes. The
+classifier's still has the old 9-argument tileImages plus two functions we do not use
+(highlightImage, loadMoreImages). Overwriting this file with that one would break the
+annotator outright.
+
+Nothing here is shared code any more, so everything is free to diverge — with one
+caveat worth knowing when debugging a disagreement between the annotator's own
+rendering and what the classifier sees: debayerPolarImage() and
+readPolarPNMToRGBALive() still exist on both sides and are expected to agree (same
+2x2 mosaic order, same [0,45,90,135] channel assignment). They were verified
+identical on real mosaic and packed frames on 2026-08-02; the only difference is that
+ours preserves the input dtype where the classifier's forces uint8, which is moot for
+the 8-bit frames in use.
 """
 
 import sys

@@ -42,7 +42,7 @@ from datetime import datetime
 Configurations in one central place
 """
 
-version         = "0.72"
+version         = "0.74"
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
 combineChannels = True
@@ -151,7 +151,7 @@ except Exception as _autoErr:
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-from readData import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive,readPolarPNMToRGBA
+from readDataAnnotator import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive,readPolarPNMToRGBA
 
 """
 def debayerPolarImage(image): 
@@ -165,6 +165,31 @@ def debayerPolarImage(image):
 #-------------------------------------------------------------------------------
 # Make Classifier completely seperatable from the rest of the codebase
 #-------------------------------------------------------------------------------
+# EVERY reference this repository makes into magician_vision_classifier — the whole
+# cross-repo surface is these six imports, so this is the list to re-check after a
+# refactor over there (verified against the 2026-08-02 refactor):
+#
+#   wxAnnotator.py   liveClassifierTorch  ClassifierPnm, GATE_DEFECT_MASS,
+#                                         GATE_MAX_PROB, GATE_OFF      (below)
+#                    EnsembleClassifier   EnsembleClassifierPnm        (below)
+#                    classifierPnm        load_recommended_configuration,
+#                                         recommended_configuration_available (below)
+#                    ModelDownload        remote_model_names           (~line 1000)
+#                    ModelDownload        download_model               (~line 1080)
+#   streamDataset.py SharedMemoryManager  SharedMemoryManager
+#
+# liveClassifierTorch is only a shim re-exporting classifierPnm (`import *`), so the
+# classifier core really lives in classifierPnm.py. The ClassifierPnm/
+# EnsembleClassifierPnm members used here are forward(), reload_model(), model_scan(),
+# apply_min_hz(), .step/.tile_size/.hz/.classifiers/._all_classifiers/.model_perf and
+# the three gate knobs set by _applyGateSettings().
+#
+# Not an import, but a third tie: datasetCreator.py writes dataset.h5 in the layout
+# the classifier's DatasetConverter.HDF5Dataset reads.
+#
+# Our readData.py was renamed to readDataAnnotator.py on 2026-08-03 because it shadowed
+# the classifier's same-named module for the classifier itself — do not reintroduce a
+# readData.py here; see the header of readDataAnnotator.py.
 if useClassifier:
   parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
@@ -212,7 +237,7 @@ else:
 
 
 
-from readData import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
+from readDataAnnotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
 from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
 import re
 import lightDecoder
@@ -989,6 +1014,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # are listed too — downloading them fetches the server's newest archive.
     def _list_remote(local_models):
         try:
+            # cross-repo: magician_vision_classifier/ModelDownload.py
             from ModelDownload import remote_model_names
             local = set(local_models)
             return [n + (" [have local copy]" if n in local else "")
@@ -1068,6 +1094,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         busy = wx.BusyCursor()
         wx.Yield()
         try:
+            # cross-repo: magician_vision_classifier/ModelDownload.py
             from ModelDownload import download_model
             download_model(name, model_dir)
         except Exception as e:
@@ -1475,7 +1502,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if answer != wx.YES:
             return
 
-        from readData import list_image_files
+        from readDataAnnotator import list_image_files
         from rlAnnotator import _resolve_json
         images   = list_image_files(local_dir)
         purged   = 0

@@ -35,7 +35,7 @@ import tempfile
 import cv2
 import numpy as np
 
-from readData import readPolarPNMToRGBALive
+from readDataAnnotator import readPolarPNMToRGBALive
 
 
 # Route ALL gradio_client temp files into a PRIVATE per-process dir instead of the shared

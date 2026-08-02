@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from readData import debayerPolarImage,repackPolarToMosaic
+from readDataAnnotator import debayerPolarImage,repackPolarToMosaic
 
 def detect_sobel_edges(image):
     """
@@ -198,7 +198,7 @@ def convertPolarCVMATToRGB(image,way=0,brightness=0,contrast=0):
     image = image[:,:,0]
 
     # Split into polarization images
-    #from readData import debayerPolarImage
+    #from readDataAnnotator import debayerPolarImage
     polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg = debayerPolarImage(image)
 
     # Create an RGB image

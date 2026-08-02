@@ -64,7 +64,7 @@ https://en.wikipedia.org/wiki/Netpbm
 Raw `.pnm` frames are:
 - Read/Dumped directly from the SONY XCG-CP510 Polarsense camera
 - De-bayered
-- Converted to **RGBA OpenCV images** using the [readPolarPNMToRGBALive](https://github.com/magician-project/magician_grabber_annotator/blob/main/readData.py#L292) function from [readData.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/readData.py#L292)
+- Converted to **RGBA OpenCV images** using the [readPolarPNMToRGBALive](https://github.com/magician-project/magician_grabber_annotator/blob/main/readDataAnnotator.py#L292) function from [readDataAnnotator.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/readDataAnnotator.py#L292)
 
 Each channel represents a polarization angle:
 
@@ -82,7 +82,7 @@ Relevant code to use as template to unpack polarized data:
 readPolarPNMToRGBA
 ```
 
-https://github.com/magician-project/magician_grabber_annotator/blob/main/readData.py#L292
+https://github.com/magician-project/magician_grabber_annotator/blob/main/readDataAnnotator.py#L292
 
 
 The same files can also be encoded as RGBA .png files that can be decoded using exactly the same readPolarPNMToRGBALive function

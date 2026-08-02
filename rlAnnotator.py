@@ -90,7 +90,7 @@ def _load_image_for_classifier(image_path):
     if img is None:
         return None
     if img.ndim == 3 and img.shape[2] == 4:
-        from readData import repackPolarToMosaic
+        from readDataAnnotator import repackPolarToMosaic
         p0, p45, p90, p135 = img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3]
         img = repackPolarToMosaic(p0, p45, p90, p135)
     return img
@@ -216,7 +216,7 @@ class RLAnnotatorDialog(wx.Dialog):
                 pass
 
     def _run(self):
-        from readData import list_image_files
+        from readDataAnnotator import list_image_files
         images = list_image_files(self.local_dir)
         total  = len(images)
         if total == 0:
