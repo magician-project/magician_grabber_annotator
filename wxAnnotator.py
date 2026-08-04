@@ -4507,12 +4507,16 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
     base_dir = self.local_base_path                 # e.g. /media/ammar/games2/Datasets/Magician
-    zip_path = os.path.join(base_dir, "upload.zip")
+    # The zip lands in the datasets ROOT, which is shared by every dataset, so the
+    # name carries our PID: two annotator instances uploading different datasets at
+    # the same time would otherwise build and rm -f the same upload.zip.
+    zip_path = os.path.join(base_dir, "upload_%d.zip" % os.getpid())
     rel_dir  = os.path.basename(self.folderStreamer.local_dir.rstrip("/"))
     # rel_dir should be "AltinayKapoDefect"
 
     # zip APPENDS to an existing archive — start fresh, otherwise previously-uploaded
-    # datasets accumulate in the same upload.zip.
+    # datasets accumulate in the same upload_<pid>.zip (the name is stable for the
+    # lifetime of this instance, so a second upload from it would pile up).
     try:
         if os.path.isfile(zip_path):
             os.remove(zip_path)
