@@ -2481,10 +2481,45 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           self.updatePointList()
           self.onView()
 
+      def rotate(deg):
+          idx = [i for i, s in enumerate(self.points_sources)
+                 if s == "auto" and i < len(self.points_of_interest)]
+          if not idx:
+              return
+          # Rotate the auto block about its own centroid, so it turns in place.
+          cx = sum(self.points_of_interest[i][0] for i in idx) / len(idx)
+          cy = sum(self.points_of_interest[i][1] for i in idx) / len(idx)
+          a  = np.radians(deg)          # +deg turns clockwise on screen (y points down)
+          ca, sa = np.cos(a), np.sin(a)
+          for i in idx:
+              x, y = self.points_of_interest[i]
+              dx, dy = x - cx, y - cy
+              self.points_of_interest[i] = (cx + ca * dx - sa * dy,
+                                            cy + sa * dx + ca * dy)
+          if self.tracking:
+              rec = self.tracking[0]
+              aff = rec.get("affine")
+              if aff:
+                  # Fold the same rotation into the stored transform: p' = R(Mp - c) + c.
+                  # 'shift' is untouched — a turn about the centroid moves nothing.
+                  a00, a01, a02 = aff[0]
+                  a10, a11, a12 = aff[1]
+                  aff[0][0] = ca * a00 - sa * a10
+                  aff[0][1] = ca * a01 - sa * a11
+                  aff[0][2] = ca * (a02 - cx) - sa * (a12 - cy) + cx
+                  aff[1][0] = sa * a00 + ca * a10
+                  aff[1][1] = sa * a01 + ca * a11
+                  aff[1][2] = sa * (a02 - cx) + ca * (a12 - cy) + cy
+              rec["method"] = "manual"
+          self.updatePointList()
+          self.onView()
+
       up    = wx.Button(panel, label="▲");  up.Bind(wx.EVT_BUTTON,    lambda e: nudge(0, -step.GetValue()))
       down  = wx.Button(panel, label="▼");  down.Bind(wx.EVT_BUTTON,  lambda e: nudge(0,  step.GetValue()))
       left  = wx.Button(panel, label="◀");  left.Bind(wx.EVT_BUTTON,  lambda e: nudge(-step.GetValue(), 0))
       right = wx.Button(panel, label="▶");  right.Bind(wx.EVT_BUTTON, lambda e: nudge( step.GetValue(), 0))
+      rotL  = wx.Button(panel, label="↺ Left 3°");  rotL.Bind(wx.EVT_BUTTON,  lambda e: rotate(-3))
+      rotR  = wx.Button(panel, label="↻ Right 3°"); rotR.Bind(wx.EVT_BUTTON,  lambda e: rotate( 3))
       done  = wx.Button(panel, label="Done"); done.Bind(wx.EVT_BUTTON, lambda e: dlg.EndModal(wx.ID_OK))
 
       grid = wx.GridSizer(3, 3, 2, 2)
@@ -2493,11 +2528,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                    wx.StaticText(panel), down, wx.StaticText(panel)):
           grid.Add(item, 0, wx.EXPAND)
       col = wx.BoxSizer(wx.VERTICAL)
+      rotRow = wx.BoxSizer(wx.HORIZONTAL)
+      rotRow.Add(rotL, 0, wx.RIGHT, 4)
+      rotRow.Add(rotR, 0)
       row = wx.BoxSizer(wx.HORIZONTAL)
       row.Add(wx.StaticText(panel, label="Step (mosaic px):"), 0,
               wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 4)
       row.Add(step, 0)
       col.Add(grid, 0, wx.ALL | wx.ALIGN_CENTER, 8)
+      col.Add(rotRow, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.ALIGN_CENTER, 8)
       col.Add(row, 0, wx.ALL | wx.ALIGN_CENTER, 8)
       panel.SetSizerAndFit(col)
       dlg.Fit()
