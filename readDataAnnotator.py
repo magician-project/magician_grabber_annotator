@@ -398,11 +398,20 @@ def tileImages(image,
         x_hi = int(min(xAct, width - tile_size - border))
         y_lo = int(max(border, yAct - tile_size + 1))
         y_hi = int(min(yAct, height - tile_size - border))
-        offsets = [(x0, y0)
-                   for y0 in range(y_lo, y_hi + 1, defect_step)
-                   for x0 in range(x_lo, x_hi + 1, defect_step)]
-        if defect_tiles_per_point and len(offsets) > defect_tiles_per_point:
-            offsets = _random.sample(offsets, defect_tiles_per_point)
+        if globals().get('CENTER_DEFECT', False):
+            # Tile-size experiment: emit ONE tile per point with the defect at the
+            # tile centre, so smaller tiles can be recovered by an offline centre-crop
+            # (a centred N-tile is a valid centred (N-k)-tile). Trades positional
+            # jitter for a clean field-of-view-only comparison. Clamp to keep in-bounds.
+            cx = min(max(xAct - tile_size // 2, x_lo), x_hi)
+            cy = min(max(yAct - tile_size // 2, y_lo), y_hi)
+            offsets = [(cx, cy)]
+        else:
+            offsets = [(x0, y0)
+                       for y0 in range(y_lo, y_hi + 1, defect_step)
+                       for x0 in range(x_lo, x_hi + 1, defect_step)]
+            if defect_tiles_per_point and len(offsets) > defect_tiles_per_point:
+                offsets = _random.sample(offsets, defect_tiles_per_point)
         for (x0, y0) in offsets:
             if (x0, y0) in seen:
                 continue                  # already produced for a nearby point
