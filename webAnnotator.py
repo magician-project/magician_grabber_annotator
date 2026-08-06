@@ -181,6 +181,64 @@ def scan_models():
     return out
 
 
+# Report artifacts the classifier's training run drops next to <model>.pth/.json.
+# 91 of the 104 loadable models carry confusion matrices, 73 also a threshold sweep.
+MODEL_ASSETS = [
+    ("conf_row",    "_confusion_row_normalized.png",        "Confusion &mdash; row normalized (per-class recall)"),
+    ("conf_hybrid", "_confusion_hybrid_row_normalized.png", "Confusion &mdash; hybrid row normalized"),
+    ("conf_total",  "_confusion_total_normalized.png",      "Confusion &mdash; total normalized"),
+    ("conf_raw",    "_confusion_raw.png",                   "Confusion &mdash; raw counts"),
+    ("thr_curve",   "_threshold_curve_curve.png",           "Threshold sweep &mdash; detection vs false alarm"),
+]
+ASSET_SUFFIX = {k: s for k, s, _ in MODEL_ASSETS}
+
+
+_NA_CACHE = {}
+
+
+def na_jpeg(label, w=640, h=480):
+    """Placeholder served in place of a report PNG the training run never produced."""
+    if label in _NA_CACHE:
+        return _NA_CACHE[label]
+    img = np.full((h, w, 3), 34, np.uint8)
+    cv2.rectangle(img, (8, 8), (w - 9, h - 9), (60, 60, 60), 1)
+    cv2.putText(img, "N/A", (w // 2 - 62, h // 2 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (90, 90, 90), 3, cv2.LINE_AA)
+    cv2.putText(img, label[:46], (w // 2 - min(len(label), 46) * 5, h // 2 + 32),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (120, 120, 120), 1, cv2.LINE_AA)
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+    _NA_CACHE[label] = buf.tobytes() if ok else b""
+    return _NA_CACHE[label]
+
+
+def asset_path(name, kind):
+    """Path of one report PNG, or None if it does not exist. `name` must be a known
+    model, so the caller cannot walk out of the model directory."""
+    suffix = ASSET_SUFFIX.get(kind)
+    if suffix is None or name not in WA.ClassifierPnm.model_scan(STATE.model_dir):
+        return None
+    p = os.path.join(STATE.model_dir, name + suffix)
+    return p if os.path.isfile(p) else None
+
+
+def model_detail(name):
+    """Config + threshold-sweep operating points for this model."""
+    cfg = {}
+    try:
+        with open(os.path.join(STATE.model_dir, "%s.json" % name)) as fh:
+            cfg = json.load(fh)
+    except Exception:
+        pass
+
+    thr = {}
+    try:
+        with open(os.path.join(STATE.model_dir, "%s_threshold_curve.json" % name)) as fh:
+            thr = json.load(fh)
+    except Exception:
+        pass
+    return cfg, thr
+
+
 def cooldown_left():
     return max(0.0, STATE.cooldown - (time.monotonic() - STATE.last_switch))
 
@@ -215,6 +273,37 @@ def change_model(name):
 # ---------------------------------------------------------------------------
 # Frame rendering -- the wxAnnotator code path, verbatim
 # ---------------------------------------------------------------------------
+def get_settings():
+    """Current inference knobs, read straight off the annotator's own widgets."""
+    def work():
+        return {
+            "step":      WA.app.classifierTileSize.GetValue(),
+            "threshold": WA.app.classifierThreshold.GetValue(),
+            "gate":      WA.app.classifierGateMode.GetValue(),
+            "best":      WA.app.classifierBestDefectClass.GetValue(),
+        }
+    return wx_call(work)
+
+
+def apply_settings(step=None, threshold=None, gate=None, best=None):
+    """Set those same widgets; wxAnnotator reads them on the next forward()
+    (classifier.step and _applyGateSettings), so nothing else has to change."""
+    with STATE.lock:
+        def work():
+            if step is not None:
+                WA.app.classifierTileSize.SetValue(max(4, min(128, int(step))))
+                WA.app.classifierTileSizeValue.SetLabel(str(WA.app.classifierTileSize.GetValue()))
+            if threshold is not None:
+                WA.app.classifierThreshold.SetValue(max(0, min(100, int(threshold))))
+                WA.app.classifierThresholdValue.SetLabel(
+                    "%.2f" % (WA.app.classifierThreshold.GetValue() / 100.0))
+            if gate:
+                WA.app.classifierGateMode.SetValue(gate)
+            WA.app.classifierBestDefectClass.SetValue(bool(best))
+        wx_call(work)
+        STATE.frame_key = None          # cached JPEGs used the old settings
+
+
 def render_frame(dataset, idx):
     """Return (left_jpeg, right_jpeg, meta) for dataset frame idx (UI index).
 
@@ -319,9 +408,82 @@ def model_bar(msg=None, err=False):
     out += ("<div class='bar'><form method='post' action='/model' style='display:flex;gap:8px'>"
             "<b>Model</b> <select name='model'%s>%s</select>"
             "<button type='submit'%s>Load</button></form>%s"
-            "<span class='dim'>active: %s</span></div>"
-            % (dis, opts, dis, note, esc(cur)))
+            "<span class='dim'>active: %s</span>"
+            "<a href='/model?m=%s'>reports</a> <a href='/models'>all models</a></div>"
+            % (dis, opts, dis, note, esc(cur), quote(cur)))
     return out
+
+
+def op_row(tag, pt):
+    """One operating point from the threshold sweep (detected / false alarm)."""
+    if not isinstance(pt, dict):
+        return ""
+    return ("<tr><td>%s</td><td class='num'>%.3f</td><td class='num'>%.1f%%</td>"
+            "<td class='num'>%.1f%%</td></tr>"
+            % (tag, pt.get("threshold", 0.0),
+               100.0 * pt.get("detected", 0.0), 100.0 * pt.get("false_alarm", 0.0)))
+
+
+def page_models(msg=None, err=False):
+    rows = []
+    for m in scan_models():
+        n = m["name"]
+        rows.append("<tr><td><a href='/model?m=%s'>%s</a></td><td>%s</td>"
+                    "<td class='num'>%s</td><td class='num'>%s</td><td>%s</td><td>%s</td></tr>"
+                    % (quote(n), esc(n), esc(m["backbone"]), esc(m["tile_size"]),
+                       esc(m["classes"]), esc(m["loss"]), esc(m["pfc"])))
+    return page("Models",
+        "<h1><a href='/'>&larr;</a> Models <span class='dim'>%s</span></h1>%s"
+        "<table><tr><th>Model</th><th>Backbone</th><th class='num'>Tile</th>"
+        "<th class='num'>Classes</th><th>Loss</th><th>pfc</th></tr>%s</table>"
+        % (esc(STATE.model_dir), model_bar(msg, err), "".join(rows)))
+
+
+def page_model(name, msg=None, err=False):
+    cfg, thr = model_detail(name)
+    hp = cfg.get("hparams", {})
+
+    facts = [("Backbone", cfg.get("model", "?")), ("Tile size", hp.get("tile_size", "?")),
+             ("Classes", len(cfg.get("classes", []) or [])), ("Loss", cfg.get("loss", "")),
+             ("Penalize false clean", cfg.get("penalize_false_clean", "")),
+             ("Epochs", hp.get("training_epochs", "")),
+             ("Training set", cfg.get("training_dataset", "")),
+             ("Validation set", cfg.get("validation_dataset", "")),
+             ("MD5", cfg.get("model_md5", ""))]
+    facts_html = "".join("<tr><th>%s</th><td>%s</td></tr>" % (esc(k), esc(v)) for k, v in facts)
+
+    if thr:
+        ops = op_row("best balanced", thr.get("best_balanced")) + \
+              op_row("best KPI",      thr.get("best_kpi"))
+        sweeps = thr.get("sweeps") or {}
+        gates = ("<p class='dim'>Per-gate sweeps in the report: %s</p>"
+                 % esc(", ".join(sorted(sweeps)))) if sweeps else ""
+        ops_html = ("<h2>Operating points <span class='dim'>%s</span></h2>"
+                    "<table><tr><th>Point</th><th class='num'>Threshold</th>"
+                    "<th class='num'>Detected</th><th class='num'>False alarm</th></tr>"
+                    "%s</table>%s" % (esc(thr.get("title", "")), ops, gates))
+    else:
+        ops_html = "<h2>Operating points</h2><p class='dim'>No threshold sweep for this model.</p>"
+
+    tiles = "".join(
+        "<figure><a href='/asset?m=%s&k=%s'><img src='/asset?m=%s&k=%s'></a>"
+        "<figcaption>%s</figcaption></figure>"
+        % (quote(name), k, quote(name), k, cap) for k, _, cap in MODEL_ASSETS)
+
+    load = ("<form method='post' action='/model'>"
+            "<input type='hidden' name='model' value='%s'>"
+            "<input type='hidden' name='back' value='%s'>"
+            "<button type='submit'%s>Load this model</button></form>"
+            % (esc(name), esc(name), " disabled" if cooldown_left() > 0 else ""))
+
+    return page(name,
+        "<h1><a href='/models'>&larr;</a> %s%s</h1>%s"
+        "<div class='bar'>%s</div>"
+        "<table style='max-width:900px'>%s</table>%s"
+        "<h2>Reports</h2><div class='views'>%s</div>"
+        % (esc(name),
+           " <span class='dim'>(active)</span>" if name == STATE.model else "",
+           model_bar(msg, err), load, facts_html, ops_html, tiles))
 
 
 def page_index(msg=None, err=False):
@@ -354,6 +516,25 @@ def page_dataset(name):
         % (esc(name), model_bar(), len(names), " ".join(cells)))
 
 
+def settings_bar(name, idx):
+    """Step / threshold / gate, applied to the annotator's widgets and re-rendered."""
+    s = get_settings()
+    gates = "".join("<option%s>%s</option>"
+                    % (" selected" if g == s["gate"] else "", esc(g))
+                    for g in (WA.GATE_DEFECT_MASS, WA.GATE_MAX_PROB, WA.GATE_OFF))
+    return ("<div class='bar'><form method='post' action='/settings' "
+            "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap'>"
+            "<input type='hidden' name='d' value='%s'><input type='hidden' name='f' value='%d'>"
+            "<b>Step</b> <input type='number' name='step' min='4' max='128' value='%d' style='width:70px'>"
+            "<b>Threshold</b> <input type='number' name='threshold' min='0' max='100' value='%d' "
+            "style='width:70px'> <span class='dim'>= %.2f</span>"
+            "<b>Gate</b> <select name='gate'>%s</select>"
+            "<label><input type='checkbox' name='best'%s> best defect class</label>"
+            "<button type='submit'>Apply &amp; re-render</button></form></div>"
+            % (esc(name), idx, s["step"], s["threshold"], s["threshold"] / 100.0,
+               gates, " checked" if s["best"] else ""))
+
+
 def page_view(name, idx):
     left, right, meta = render_frame(name, idx)
     nav = []
@@ -366,6 +547,7 @@ def page_view(name, idx):
         "<h1><a href='/'>&larr;</a> <a href='/dataset?d=%s'>%s</a> "
         "<span class='dim'>frame %d/%d &mdash; %s</span></h1>%s"
         "<div class='bar'>%s<span class='dim'>%d ground-truth points &mdash; view: %s</span></div>"
+        "%s"
         "<div class='bar dim'>%s</div>"
         "<div class='views'>"
         "<figure><img src='/img?d=%s&f=%d&side=left&t=%d'>"
@@ -373,7 +555,8 @@ def page_view(name, idx):
         "<figure><img src='/img?d=%s&f=%d&side=right&t=%d'>"
         "<figcaption>RIGHT &mdash; %s + ground-truth circles</figcaption></figure></div>"
         % (quote(name), esc(name), idx, meta["ui_max"], esc(meta["file"]), model_bar(),
-           " &nbsp; ".join(nav), meta["points"], esc(meta["view"]), esc(meta["info"]),
+           " &nbsp; ".join(nav), meta["points"], esc(meta["view"]),
+           settings_bar(name, idx), esc(meta["info"]),
            quote(name), idx, stamp, quote(name), idx, stamp, esc(meta["view"])))
 
 
@@ -406,6 +589,20 @@ class Handler(BaseHTTPRequestHandler):
                 if "rescan" in q:
                     get_datasets(rescan=True)
                 self._send(page_index())
+            elif u.path == "/models":
+                self._send(page_models())
+            elif u.path == "/model":
+                self._send(page_model(unquote(q["m"][0])))
+            elif u.path == "/asset":
+                name, kind = unquote(q["m"][0]), q.get("k", [""])[0]
+                p = asset_path(name, kind)
+                if p is None:
+                    # no such report for this model -> N/A placeholder (still an image,
+                    # so the reports grid keeps its shape)
+                    self._send(na_jpeg(kind), "image/jpeg")
+                else:
+                    with open(p, "rb") as fh:
+                        self._send(fh.read(), "image/png")
             elif u.path == "/dataset":
                 self._send(page_dataset(unquote(q["d"][0])))
             elif u.path == "/view":
@@ -425,15 +622,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path != "/model":
+        if u.path not in ("/model", "/settings"):
             self._send(b"", code=404)
             return
         try:
             n = int(self.headers.get("Content-Length", 0))
             form = parse_qs(self.rfile.read(n).decode("utf-8"))
+
+            if u.path == "/settings":
+                apply_settings(step=form.get("step", [None])[0],
+                               threshold=form.get("threshold", [None])[0],
+                               gate=form.get("gate", [""])[0],
+                               best="best" in form)
+                self._send(page_view(unquote(form["d"][0]), int(form.get("f", ["0"])[0])))
+                return
+
             name = form.get("model", [""])[0]
+            back = form.get("back", [""])[0]
             ok, msg = change_model(name) if name else (False, "No model given.")
-            self._send(page_index(msg, err=not ok))
+            # "Load this model" on a report page stays on that page
+            self._send(page_model(back, msg, err=not ok) if back
+                       else page_index(msg, err=not ok))
         except Exception as e:
             import traceback; traceback.print_exc()
             self._fail(e)

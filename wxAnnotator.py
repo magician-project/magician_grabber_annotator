@@ -3817,6 +3817,41 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         return cv2.resize(img, dsize=(int(NewW),int(NewH)), interpolation=cv2.INTER_CUBIC)
  
 
+   def _annotate_bitmap_with_hz(self, base_bmp: wx.Bitmap) -> wx.Bitmap:
+    """Return a NEW bitmap with the classifier's rate drawn top-right (does not
+    modify base_bmp -- it is the cached base from _baseBitmapsForView()).
+
+    The left panel IS the classifier visualization, so its refresh rate belongs
+    on it. Returns base_bmp untouched when the classifier is off or has not
+    timed a forward() yet."""
+    if not (useClassifier and not self.classifierDisabledCheckbox.GetValue()):
+        return base_bmp
+    twoStage   = getattr(self, "classifierTwoStage", None)
+    classifier = (getattr(self, "EnsembleClassifierPnm", None)
+                  if (twoStage is not None and twoStage.GetValue())
+                  else getattr(self, "ClassifierPnm", None))
+    hz = getattr(classifier, "hz", 0.0) or 0.0
+    if hz <= 0.0:
+        return base_bmp
+
+    temp_bmp = wx.Bitmap(wx.Image(base_bmp.ConvertToImage()))
+    dc = wx.MemoryDC()
+    dc.SelectObject(temp_bmp)
+    dc.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+
+    text   = "%0.2f Hz" % hz
+    tw, th = dc.GetTextExtent(text)
+    x      = temp_bmp.GetWidth() - tw - 10
+    # dark plate first: the visualization underneath can be any colour
+    dc.SetPen(wx.Pen(wx.Colour(0, 0, 0)))
+    dc.SetBrush(wx.Brush(wx.Colour(0, 0, 0)))
+    dc.DrawRectangle(x - 5, 3, tw + 10, th + 4)
+    dc.SetTextForeground(wx.Colour(0, 255, 255))
+    dc.DrawText(text, x, 5)
+
+    dc.SelectObject(wx.NullBitmap)
+    return temp_bmp
+
    def _annotate_bitmap_with_points(self, base_bmp: wx.Bitmap, ratioX: float, ratioY: float,
                                      checkmarks: bool = False) -> wx.Bitmap:
     """Return a NEW bitmap with annotations drawn on it (does not modify base_bmp).
@@ -3931,7 +3966,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # If no points, refresh both panels with their clean base images
     if len(self.points_of_interest) == 0:
         if self.DRAW_TARGET & self.DRAW_TARGET_LEFT and left_ok:
-            self.imageCtrl.SetBitmap(left_bmp)
+            self.imageCtrl.SetBitmap(self._annotate_bitmap_with_hz(left_bmp))
         if self.DRAW_TARGET & self.DRAW_TARGET_RIGHT:
             self.secondaryImageCtrl.SetBitmap(right_bmp)
         else:
@@ -3948,7 +3983,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         left_ratioX = self.viewedImageFullWidth / lw
         left_ratioY = self.viewedImageFullHeight / lh
         left_overlay = self._annotate_bitmap_with_points(left_bmp, left_ratioX, left_ratioY, checkmarks=True)
-        self.imageCtrl.SetBitmap(left_overlay)
+        self.imageCtrl.SetBitmap(self._annotate_bitmap_with_hz(left_overlay))
 
     if self.DRAW_TARGET & self.DRAW_TARGET_RIGHT:
         right_ratioX = self.viewedImageFullWidth / rw
