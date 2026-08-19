@@ -235,6 +235,21 @@ else:
         return None
 #-------------------------------------------------------------------------------
 
+# The classifier repo keeps models in two layouts and we have to read both: a DEPLOYED
+# box gets them unpacked flat into magician_vision_classifier/ by ModelDownload, while a
+# TRAINING box files each finished run under experiments/<campaign>/<run>/ next to its
+# config and report artifacts. ClassifierPnm.model_scan()/model_locate() already cover
+# both; everything here that builds "<dir>/<name>.pth" by hand must go through this so
+# the two stay in step. Flat wins on a tie, same as model_scan.
+def locate_model(model_dir, name):
+    """(pth_path, cfg_path) for model `name`, or None if either file is missing."""
+    locate = getattr(ClassifierPnm, "model_locate", None)
+    if locate is not None:            # older classifier checkouts are flat-only
+        return locate(model_dir, name)
+    pth = os.path.join(model_dir, "%s.pth"  % name)
+    cfg = os.path.join(model_dir, "%s.json" % name)
+    return (pth, cfg) if (os.path.isfile(pth) and os.path.isfile(cfg)) else None
+
 
 
 from readDataAnnotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
@@ -542,23 +557,29 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
    def _scan_allclass_models(self, directory):
-        """Return a list of (pth, json) pairs for all valid allclass_* models in directory."""
-        import zipfile
+        """Return a list of (pth, json) pairs for all valid allclass_* models — the flat
+           deployment directory first, then runs filed under experiments/<campaign>/<run>/
+           (see locate_model)."""
+        import zipfile, glob
         result = []
         if not os.path.isdir(directory):
             return result
-        for name in sorted(os.listdir(directory)):
-            if not name.startswith("allclass_") or not name.endswith(".pth"):
+        candidates = sorted(glob.glob(os.path.join(directory, "allclass_*.pth")))
+        candidates += sorted(glob.glob(os.path.join(directory, "experiments", "*", "*",
+                                                   "allclass_*.pth")))
+        seen = set()
+        for pth_path in candidates:
+            base = os.path.splitext(os.path.basename(pth_path))[0]
+            if base in seen:
                 continue
-            base     = name[:-4]
-            pth_path = os.path.join(directory, f"{base}.pth")
-            cfg_path = os.path.join(directory, f"{base}.json")
+            cfg_path = os.path.join(os.path.dirname(pth_path), f"{base}.json")
             if not os.path.isfile(cfg_path):
                 continue
             if not zipfile.is_zipfile(pth_path):
                 print(f"[Ensemble] Skipping corrupted/incomplete: {pth_path}")
                 continue
             print(f"[Ensemble] Adding model: {base}")
+            seen.add(base)
             result.append((pth_path, cfg_path))
         if not result:
             print("[Ensemble] Warning: no valid allclass_* models found in", directory)
@@ -582,12 +603,13 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               _min_hz = float(self.ensembleMinHz.GetValue())
            except Exception:
               _min_hz = 0.0
-           _ensemble_initial = ("../magician_vision_classifier/allclass_verysmall_cnn.pth","../magician_vision_classifier/allclass_verysmall_cnn.json")
+           _ensemble_initial = locate_model(classifier_relative_directory, "allclass_verysmall_cnn")
            _ensemble_models  = self._scan_allclass_models(classifier_relative_directory)
-           if (not _ensemble_models) or (not os.path.isfile(_ensemble_initial[0])) or (not os.path.isfile(_ensemble_initial[1])):
+           if (not _ensemble_models) or (_ensemble_initial is None):
               wx.MessageBox(
                   "Ensemble classifier disabled: no usable models found.\n\n"
-                  f"The ensemble scans {classifier_relative_directory} for pairs named\n"
+                  f"The ensemble scans {classifier_relative_directory} (and its\n"
+                  "experiments/<campaign>/<run>/ subdirectories) for pairs named\n"
                   "allclass_<name>.pth + allclass_<name>.json, and additionally needs\n"
                   "allclass_verysmall_cnn.pth/.json as the fast pre-filter model.\n\n"
                   "Train models (or symlink existing .pth/.json pairs to allclass_* names)\n"
@@ -1002,12 +1024,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               % (self._preset.get("name"), preset_model, model_dir, fallback_name, preset_model))
         self._preset = None      # its gate belongs to a model we are not loading
 
-    if available_models:
-        global classifier_model_path
-        classifier_model_path = "%s/%s.pth"  % (classifier_relative_directory, available_models[0])
-        global classifier_cfg_path
-        classifier_cfg_path   = "%s/%s.json" % (classifier_relative_directory, available_models[0])
+    global classifier_model_path
+    global classifier_cfg_path
+    startup = locate_model(model_dir, available_models[0]) if available_models else None
+    if startup is not None:
+        classifier_model_path, classifier_cfg_path = startup
     else:
+        if available_models:
+            print("[models] '%s' disappeared between scan and load" % available_models[0])
         available_models = ["(none)"]
 
     # Models on the online zip repository (CameraV2Models). Already-local names
@@ -1127,7 +1151,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 self.stats.reset()
                 self.classifierInfo.SetLabel(f"Model changed to '{model_name}' — statistics reset.")
             else:
-                pth = os.path.join(model_dir, f"{model_name}.pth")
+                found = locate_model(model_dir, model_name)
+                pth = found[0] if found else os.path.join(model_dir, f"{model_name}.pth")
                 answer = wx.MessageBox(
                     f"Failed to load '{model_name}'.\n\n"
                     f"The file may be corrupted or incomplete:\n{pth}\n\n"

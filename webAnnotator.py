@@ -160,13 +160,21 @@ def get_datasets(rescan=False):
 # ---------------------------------------------------------------------------
 # Model index (same source as wxAnnotator: ClassifierPnm.model_scan)
 # ---------------------------------------------------------------------------
+def model_files_dir(name):
+    """Directory that actually holds this model's .pth/.json and the report artifacts the
+    training run dropped beside them: the flat models directory on a deployed box, or
+    experiments/<campaign>/<run>/ on a training box (see WA.locate_model)."""
+    found = WA.locate_model(STATE.model_dir, name)
+    return os.path.dirname(found[0]) if found else STATE.model_dir
+
+
 def scan_models():
     names = WA.ClassifierPnm.model_scan(STATE.model_dir)
     out = []
     for n in names:
         cfg = {}
         try:
-            with open(os.path.join(STATE.model_dir, "%s.json" % n)) as fh:
+            with open(os.path.join(model_files_dir(n), "%s.json" % n)) as fh:
                 cfg = json.load(fh)
         except Exception:
             pass
@@ -181,8 +189,9 @@ def scan_models():
     return out
 
 
-# Report artifacts the classifier's training run drops next to <model>.pth/.json.
-# 91 of the 104 loadable models carry confusion matrices, 73 also a threshold sweep.
+# Report artifacts the classifier's training run drops next to <model>.pth/.json --
+# wherever that is, see model_files_dir(). 159 of the 172 loadable models carry
+# confusion matrices, 141 also a threshold sweep.
 MODEL_ASSETS = [
     ("conf_row",    "_confusion_row_normalized.png",        "Confusion &mdash; row normalized (per-class recall)"),
     ("conf_hybrid", "_confusion_hybrid_row_normalized.png", "Confusion &mdash; hybrid row normalized"),
@@ -217,22 +226,23 @@ def asset_path(name, kind):
     suffix = ASSET_SUFFIX.get(kind)
     if suffix is None or name not in WA.ClassifierPnm.model_scan(STATE.model_dir):
         return None
-    p = os.path.join(STATE.model_dir, name + suffix)
+    p = os.path.join(model_files_dir(name), name + suffix)
     return p if os.path.isfile(p) else None
 
 
 def model_detail(name):
     """Config + threshold-sweep operating points for this model."""
+    d   = model_files_dir(name)
     cfg = {}
     try:
-        with open(os.path.join(STATE.model_dir, "%s.json" % name)) as fh:
+        with open(os.path.join(d, "%s.json" % name)) as fh:
             cfg = json.load(fh)
     except Exception:
         pass
 
     thr = {}
     try:
-        with open(os.path.join(STATE.model_dir, "%s_threshold_curve.json" % name)) as fh:
+        with open(os.path.join(d, "%s_threshold_curve.json" % name)) as fh:
             thr = json.load(fh)
     except Exception:
         pass
@@ -664,7 +674,8 @@ def main():
     ap.add_argument("--db", default="/media/ammar/games2/Datasets/Magician",
                     help="dataset base directory")
     ap.add_argument("--models", default=WA.classifier_relative_directory,
-                    help="directory holding <model>.pth/<model>.json pairs")
+                    help="directory holding <model>.pth/<model>.json pairs, "
+                         "flat and/or under experiments/<campaign>/<run>/")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--cooldown", type=float, default=60.0,
                     help="seconds between model changes (global, process-wide)")

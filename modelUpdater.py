@@ -3,6 +3,7 @@
 modelUpdater.py - Check and download classifier models from the online repository.
 """
 
+import glob
 import os
 import re
 import threading
@@ -85,6 +86,33 @@ def fetch_repository_index(base_url):
     return files, None
 
 
+def find_local_model(local_dir, name):
+    """Where `name`'s .pth/.json actually live locally: ``(pth, json)`` or None.
+
+    The classifier repo has two layouts. A DEPLOYED box keeps models flat in
+    local_dir; a TRAINING box files each finished run under
+    experiments/<campaign>/<run>/ beside its config and plots. Flat wins on a tie,
+    matching ClassifierPnm.model_scan()/model_locate() -- which is the canonical
+    implementation, deliberately not imported here so this module stays usable
+    without torch and without wxAnnotator (which imports it).
+    """
+    flat = (os.path.join(local_dir, f"{name}.pth"),
+            os.path.join(local_dir, f"{name}.json"))
+    if os.path.isfile(flat[0]) and os.path.isfile(flat[1]):
+        return flat
+    for pth in sorted(glob.glob(os.path.join(local_dir, 'experiments',
+                                             '*', '*', f'{name}.pth'))):
+        cfg = os.path.join(os.path.dirname(pth), f"{name}.json")
+        if os.path.isfile(cfg):
+            return (pth, cfg)
+    return None
+
+
+def _is_flat(local_dir, path):
+    """True if `path` sits directly in the deployment directory, not in a run dir."""
+    return os.path.dirname(os.path.abspath(path)) == os.path.abspath(local_dir)
+
+
 def _is_valid_pth(path):
     """Quick structural check: is the file a readable zip or legacy pickle?"""
     try:
@@ -100,7 +128,8 @@ def _is_valid_pth(path):
 
 def check_for_updates(base_url, local_dir):
     """
-    Compare the remote repository with the local classifier directory.
+    Compare the remote repository with the local classifier directory, including
+    runs filed under experiments/<campaign>/<run>/ (see find_local_model).
 
     Returns ``(list[model_info_dict], error_str_or_None)``.
 
@@ -110,8 +139,15 @@ def check_for_updates(base_url, local_dir):
         json_remote_size  – remote .json size in bytes or None
         has_pth_local     – bool
         has_json_local    – bool
+        local_pth         – path of the local .pth, or None
         local_pth_size    – int or None
-        status            – 'new' | 'updated' | 'corrupted' | 'current'
+        status            – 'new' | 'updated' | 'corrupted' | 'filed' | 'current'
+
+    'filed' means the only local copy was trained here and sits in a run directory
+    rather than in the deployment directory. It is present, so it is NOT 'new', and
+    its size is not a staleness signal (it never came from the repository), so it is
+    never 'updated' either -- downloading it would only add a flat copy that shadows
+    the local run.
     """
     remote_files, err = fetch_repository_index(base_url)
     if remote_files is None:
@@ -125,16 +161,16 @@ def check_for_updates(base_url, local_dir):
     for name in model_names:
         pth_remote  = remote_files.get(f"{name}.pth")
         json_remote = remote_files.get(f"{name}.json")
-        local_pth   = os.path.join(local_dir, f"{name}.pth")
-        local_json  = os.path.join(local_dir, f"{name}.json")
-        has_pth     = os.path.isfile(local_pth)
-        has_json    = os.path.isfile(local_json)
-        local_size  = os.path.getsize(local_pth) if has_pth else None
+        found       = find_local_model(local_dir, name)
+        local_pth   = found[0] if found else None
+        local_size  = os.path.getsize(local_pth) if found else None
 
-        if not has_pth or not has_json:
+        if found is None:
             status = 'new'
         elif not _is_valid_pth(local_pth):
             status = 'corrupted'
+        elif not _is_flat(local_dir, local_pth):
+            status = 'filed'
         elif pth_remote is not None and local_size is not None and pth_remote != local_size:
             status = 'updated'
         else:
@@ -144,8 +180,9 @@ def check_for_updates(base_url, local_dir):
             'name':            name,
             'pth_remote_size': pth_remote,
             'json_remote_size': json_remote,
-            'has_pth_local':   has_pth,
-            'has_json_local':  has_json,
+            'has_pth_local':   found is not None,
+            'has_json_local':  found is not None,
+            'local_pth':       local_pth,
             'local_pth_size':  local_size,
             'status':          status,
         })
@@ -162,7 +199,15 @@ class ModelUpdaterDialog(wx.Dialog):
     Checks the online repository for new or updated classifier models and
     lets the user selectively download them (with .json configs) to the
     local classifier directory.
+
+    Downloads always land FLAT in local_dir: that is the deployment layout, and it is
+    the copy ClassifierPnm.model_locate() prefers. A model that only exists in a
+    run directory is reported as 'filed' and left unchecked -- it is already usable,
+    and fetching it would just shadow the local run with the server's copy.
     """
+
+    # Statuses "Select New / Updated" ticks, i.e. the ones a download actually fixes.
+    FETCH_STATUSES = ('new', 'updated', 'corrupted')
 
     def __init__(self, parent, base_url, local_dir):
         super().__init__(parent, title="Check for Model Updates", size=(660, 500))
@@ -233,6 +278,7 @@ class ModelUpdaterDialog(wx.Dialog):
 
         new_count     = sum(1 for r in results if r['status'] == 'new')
         updated_count = sum(1 for r in results if r['status'] == 'updated')
+        filed_count   = sum(1 for r in results if r['status'] == 'filed')
 
         for i, r in enumerate(results):
             remote_sz = _format_size(r['pth_remote_size'])
@@ -242,16 +288,21 @@ class ModelUpdaterDialog(wx.Dialog):
                 tag = f"[CORRUPTED  local={_format_size(r['local_pth_size'])}]"
             elif r['status'] == 'updated':
                 tag = f"[UPDATE  local={_format_size(r['local_pth_size'])}]"
+            elif r['status'] == 'filed':
+                where = os.path.relpath(os.path.dirname(r['local_pth']), self.local_dir)
+                tag = f"[trained here: {where}]"
             else:
                 tag = '[current]'
             label = f"{r['name']}   remote: {remote_sz}   {tag}"
             self.list_ctrl.Append(label)
-            if r['status'] in ('new', 'updated', 'corrupted'):
+            if r['status'] in self.FETCH_STATUSES:
                 self.list_ctrl.Check(i, True)
 
+        summary = f"{new_count} new, {updated_count} updated"
+        if filed_count:
+            summary += f", {filed_count} trained here"
         self.status_lbl.SetLabel(
-            f"Repository: {len(results)} models found — "
-            f"{new_count} new, {updated_count} updated."
+            f"Repository: {len(results)} models found — {summary}."
         )
         self.select_btn.Enable()
         self.download_btn.Enable()
@@ -297,7 +348,7 @@ class ModelUpdaterDialog(wx.Dialog):
 
     def _on_select_new_updated(self, evt):
         for i, r in enumerate(self._model_data):
-            self.list_ctrl.Check(i, r['status'] in ('new', 'updated', 'corrupted'))
+            self.list_ctrl.Check(i, r['status'] in self.FETCH_STATUSES)
 
     def _on_download(self, evt):
         to_download = [
