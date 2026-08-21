@@ -24,7 +24,7 @@ changes that break naive optical flow. We segment the mark on both frames, match
 blob, and carry the annotated point (keeping its offset inside the mark) to N+1.
 
 Standalone test:
-    python3 AutoAnnotator.py prevFrame.png nextFrame.png --x 612 --y 512 \
+    python3 -m mga.core.auto_annotator prevFrame.png nextFrame.png --x 612 --y 512 \
             --ip 139.91.185.16 --port 7860 --prompt "pen mark" --debug ./dbg
 """
 
@@ -35,7 +35,7 @@ import tempfile
 import cv2
 import numpy as np
 
-from readDataAnnotator import readPolarPNMToRGBALive
+from mga.core.read_data_annotator import readPolarPNMToRGBALive
 
 
 # Route ALL gradio_client temp files into a PRIVATE per-process dir instead of the shared

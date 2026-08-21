@@ -51,7 +51,7 @@ class CameraSettingsDialog(wx.Dialog):
 
 
         os.system("/home/ammar/Documents/3dParty/aravis-c-examples/build/06-grabber -o tmp --exposure %u --fps %0.2f --gain %0.2f --maxFrames %u" % (exposure,framerate,gain,num_frames))
-        os.system("python3 averageimages.py tmp/ pnm" )
+        os.system("python3 -m analysis.average_images tmp/ pnm" )
         
         # Get the current date and time
         current_datetime = datetime.datetime.now()

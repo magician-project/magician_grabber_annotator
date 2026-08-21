@@ -2,7 +2,7 @@
 # Usage: ./compressAllDatasets.sh /media/ammar/FastDatasets/Magician/CameraV2Datasets/
 #
 # Finds every directory under the given path that still contains raw *.pnm files
-# and runs compressDataset.py on each (in-place). compressDataset.py skips any
+# and runs mga.core.compress_dataset on each (in-place). compress_dataset skips any
 # directory that is already compressed, so re-running is safe.
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -23,5 +23,5 @@ fi
 cd "$REPO_ROOT"
 
 find "$ROOT" -name '*.pnm' -printf '%h\n' | sort -u | while read -r d; do
-  python3 compressDataset.py "$d"
+  python3 -m mga.core.compress_dataset "$d"
 done

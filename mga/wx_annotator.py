@@ -20,7 +20,7 @@ python3 -m pip install wxPython opencv-python numpy
 Should prepare a venv with the needed dependencies
 
 You can then run:
-python3 wxAnnotator.py --from /path/to/dataset/here/
+python3 -m mga.wx_annotator --from /path/to/dataset/here/
 
 """
 
@@ -53,14 +53,15 @@ processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Po
 
 
 #classifier_relative_directory = "../classifier" #Old Name
+from mga.paths import classifier_root
 classifier_online_repository         = "http://ammar.gr/magician/ckpts2/"
-classifier_relative_directory = "../magician_vision_classifier"
+classifier_relative_directory = classifier_root()
 classifier_model_path         = None
 classifier_cfg_path           = None
 
 
 """
-from wxAcquisition import CameraSettingsDialog
+from mga.wx_acquisition import CameraSettingsDialog
 """
 
 # Import the wxScrollBar module
@@ -132,17 +133,17 @@ def detect_screen_resolution():
           f"{FALLBACK_SCREEN_RES[0]}x{FALLBACK_SCREEN_RES[1]}")
     return FALLBACK_SCREEN_RES
 
-from folderStream import FolderStreamer
-from classifierGrading import AnnotationCorrelationStats
-from downloadAllFrames import BatchProcessDialog
-from magnifier import MagnifierFrame
-from modelUpdater import ModelUpdaterDialog
-from rlAnnotator import RLAnnotatorDialog
+from mga.core.folder_stream import FolderStreamer
+from mga.core.classifier_grading import AnnotationCorrelationStats
+from mga.core.download_all_frames import BatchProcessDialog
+from mga.core.magnifier import MagnifierFrame
+from mga.core.model_updater import ModelUpdaterDialog
+from mga.core.rl_annotator import RLAnnotatorDialog
 
 # AutoAnnotator needs gradio_client (optional). Import lazily-safe so the GUI still
 # launches if the dependency / servers are unavailable; onAuto reports the error.
 try:
-    from AutoAnnotator import AutoAnnotator, temporal_consensus
+    from mga.core.auto_annotator import AutoAnnotator, temporal_consensus
 except Exception as _autoErr:
     AutoAnnotator = None
     _autoImportError = _autoErr
@@ -151,7 +152,7 @@ except Exception as _autoErr:
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-from readDataAnnotator import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive,readPolarPNMToRGBA
+from mga.core.read_data_annotator import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive,readPolarPNMToRGBA
 
 """
 def debayerPolarImage(image): 
@@ -169,7 +170,7 @@ def debayerPolarImage(image):
 # cross-repo surface is these six imports, so this is the list to re-check after a
 # refactor over there (verified against the 2026-08-20 mvc/ package refactor):
 #
-#   wxAnnotator.py   mvc.inference.classifier_pnm   ClassifierPnm, GATE_DEFECT_MASS,
+#   mga/wx_annotator.py   mvc.inference.classifier_pnm   ClassifierPnm, GATE_DEFECT_MASS,
 #                                            GATE_MAX_PROB, GATE_OFF      (below)
 #                                            load_recommended_configuration,
 #                                            recommended_configuration_available (below)
@@ -177,7 +178,7 @@ def debayerPolarImage(image):
 #                                            EnsembleClassifierPnm        (below)
 #                    mvc.inference.model_download   remote_model_names     (~line 1040)
 #                                            download_model               (~line 1120)
-#   streamDataset.py mvc.core.shared_memory         SharedMemoryManager
+#   mga/stream_dataset.py mvc.core.shared_memory         SharedMemoryManager
 #
 # The classifier core lives in mvc/inference/classifier_pnm.py (ensemble in
 # mvc/inference/ensemble_classifier.py). The ClassifierPnm/EnsembleClassifierPnm
@@ -185,14 +186,14 @@ def debayerPolarImage(image):
 # .step/.tile_size/.hz/.classifiers/._all_classifiers/.model_perf and the three
 # gate knobs set by _applyGateSettings().
 #
-# Not an import, but a third tie: datasetCreator.py writes dataset.h5 in the layout
+# Not an import, but a third tie: mga/dataset_creator.py writes dataset.h5 in the layout
 # mvc.core.dataset_converter.HDF5Dataset reads.
 #
 # Our readData.py was renamed to readDataAnnotator.py on 2026-08-03 because it shadowed
-# the classifier's same-named module for the classifier itself — do not reintroduce a
-# readData.py here; see the header of readDataAnnotator.py.
+# the classifier's same-named module for the classifier itself — it now lives at
+# mga/core/read_data_annotator.py and must keep this distinct name; see its header.
 if useClassifier:
-  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
+  parent_path = classifier_relative_directory
   sys.path.append(parent_path)
   try:
     from mvc.inference.classifier_pnm import ClassifierPnm, GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF
@@ -208,7 +209,7 @@ if useClassifier:
             """No presets file support in this classifier checkout."""
             return False
   except Exception as e:
-    print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in wxAnnotator.py")
+    print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in mga/wx_annotator.py")
     print("Classifier Path : ",parent_path)
     print("If you want the classifier but don't have it get it @ https://github.com/magician-project/magician_vision_classifier")
     print(f"Exact error was : {e}")
@@ -224,7 +225,7 @@ else:
       return False
   class ClassifierPnm:
     def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
-        print("Classifier PNM is disabled, please start with --classifier or change the useClassifier variable in wxAnnotator to use it!")
+        print("Classifier PNM is disabled, please start with --classifier or change the useClassifier variable in mga/wx_annotator.py to use it!")
         pass
     def load_model(self):
         return None
@@ -253,11 +254,11 @@ def locate_model(model_dir, name):
 
 
 
-from readDataAnnotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
-from visualizeData import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
+from mga.core.read_data_annotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
+from mga.core.visualize_data import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
 import re
-import lightDecoder
-from uploadAnnotations import UploadDialog
+import mga.core.light_decoder as lightDecoder
+from mga.core.upload_annotations import UploadDialog
 
 
 # The illumination cycles through the scene lights during acquisition, so nearby
@@ -1162,7 +1163,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                     "Model Load Error", wx.YES_NO | wx.ICON_ERROR
                 )
                 if answer == wx.YES:
-                    from modelUpdater import ModelUpdaterDialog
+                    from mga.core.model_updater import ModelUpdaterDialog
                     dlg = ModelUpdaterDialog(self.frame, classifier_online_repository, model_dir)
                     # Pre-select only the failed model
                     def _preselect(results, err, _dlg=dlg, _name=model_name):
@@ -1529,8 +1530,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         if answer != wx.YES:
             return
 
-        from readDataAnnotator import list_image_files
-        from rlAnnotator import _resolve_json
+        from mga.core.read_data_annotator import list_image_files
+        from mga.core.rl_annotator import _resolve_json
         images   = list_image_files(local_dir)
         purged   = 0
         modified = 0
@@ -1718,7 +1719,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def _loadSensorPlotsNewDataset(self, directory = "./"):
     """Load CSVs, render small plots, and update existing wx.StaticBitmap controls."""
-    from tactilePlotter import SensorVisualizer, load_csv_with_headers, load_csv_without_headers
+    from mga.core.tactile_plotter import SensorVisualizer, load_csv_with_headers, load_csv_without_headers
 
     
     self.vis = SensorVisualizer()
@@ -3778,7 +3779,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         dialog.Destroy()
 
    def onOpenNetwork(self, event):
-        from datasetSelector import DatasetSelector
+        from mga.core.dataset_selector import DatasetSelector
         dlg = DatasetSelector(local_base_path=self.local_base_path)
         if dlg.ShowModal() == wx.ID_OK:
             selectedDirectory = self.local_base_path + "/" + dlg.selectedDirectory 
@@ -3786,7 +3787,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             print("Caching Directory:", dlg.selectedDirectory)
             # You can pass this to your HTTPFolderStreamer
             #self.onNewInputPath(dlg.selectedDataset)
-            from HTTPStream import HTTPFolderStreamer 
+            from mga.core.http_stream import HTTPFolderStreamer
             self.folderStreamer = HTTPFolderStreamer(provider=dlg.selectedProvider, dataset=dlg.selectedDataset, local_dir=selectedDirectory, retrieve_zip=dlg.replaceAnnotations)
 
             # Must be set BEFORE openDataset: the classifier trigger checks
@@ -4697,19 +4698,19 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
    def onRecordDataset(self,event):
-       os.system("python3 magician_grabber_frontend.py %s" % self.local_base_path) #<- Lazy
+       os.system("python3 -m mga.grabber_frontend %s" % self.local_base_path) #<- Lazy
 
    def onCreateDataset(self,event):
-       os.system("python3 datasetCreator.py %s" % self.local_base_path) #<- Lazy
+       os.system("python3 -m mga.dataset_creator %s" % self.local_base_path) #<- Lazy
 
    def onTileExplorer(self,event):
-       os.system("python3 tileExplorer.py %s" % self.local_base_path) #<- Lazy
+       os.system("python3 -m analysis.tile_explorer %s" % self.local_base_path) #<- Lazy
 
    def onStreamer(self,event):
        try:
           selectedDirectory = self.folderStreamer.local_dir
           print("Streamer set directory : ",selectedDirectory)
-          os.system("python3 streamDataset.py %s" % selectedDirectory) #<- Lazy
+          os.system("python3 -m mga.stream_dataset %s" % selectedDirectory) #<- Lazy
        except AttributeError:
           wx.MessageBox("Please open a network database before attempting to stream something", "Error", wx.OK | wx.ICON_ERROR)
 

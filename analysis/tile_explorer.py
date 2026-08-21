@@ -42,7 +42,7 @@ import traceback
 import json
 
 try:
-    import principleComponentAnalysis as pca_module
+    from analysis import pca as pca_module
 except Exception:
     pca_module = None
 
@@ -259,7 +259,7 @@ class MainFrame(wx.Frame):
 
     def on_load_pca(self, evt):
         if pca_module is None:
-            wx.MessageBox("principleComponentAnalysis.py not found")
+            wx.MessageBox("analysis/pca.py not found")
             return
 
         self.pca=pca_module.PCA(savedFile=self.getPathToPCAFile()) 

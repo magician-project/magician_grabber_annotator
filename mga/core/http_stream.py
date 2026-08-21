@@ -16,6 +16,8 @@ import requests
 import threading
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
+from mga.paths import repo_root
+
 
 # ------------------ Utilities ------------------
 
@@ -23,7 +25,7 @@ def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
-def load_credentials(credentials="server.json"):
+def load_credentials(credentials=os.path.join(repo_root(), "server.json")):
     if os.path.exists(credentials):
         try:
             with open(credentials, "r") as f:
@@ -158,7 +160,7 @@ def retrieve_annotation_zips(base_url, datasetnameFull, local_dir="downloads"):
 class HTTPFolderStreamer:
     def __init__(self, provider=None, dataset=None, local_dir="http_cache",
                  label="colorFrame_0_", retrieve_zip=False,
-                 credentials="server.json"):
+                 credentials=os.path.join(repo_root(), "server.json")):
 
         self.username, self.password = load_credentials(credentials)
 

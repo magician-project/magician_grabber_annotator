@@ -3,7 +3,7 @@ import threading
 import time
 import wx
 
-from compressDataset import write_polar_png_from_pnm  # if you use the compression checkbox
+from mga.core.compress_dataset import write_polar_png_from_pnm  # if you use the compression checkbox
 
 
 class BatchProcessDialog(wx.Dialog):

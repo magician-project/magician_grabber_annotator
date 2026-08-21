@@ -8,4 +8,4 @@ RUN pip install opencv-python numpy
 
 WORKDIR /app
 
-CMD [ "python3", "wxAnnotator.py" ]
+CMD [ "python3", "-m", "mga.wx_annotator" ]

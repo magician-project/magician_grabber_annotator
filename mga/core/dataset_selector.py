@@ -13,14 +13,16 @@ import json
 import time
 from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
 
+from mga.paths import repo_root
+
 # Cached "Check Annotations" report (the scan costs 2+ HTTP requests per dataset).
 # Shown immediately when the dialog opens; pressing "Check Annotations" rescans
 # the server and replaces it.
-ANNOTATION_STATUS_CACHE = "annotationStatusCache.json"
+ANNOTATION_STATUS_CACHE = os.path.join(repo_root(), "annotationStatusCache.json")
 
 
 class DatasetSelector(wx.Dialog):
-    def __init__(self, local_base_path="./", parent=None, credentials="server.json"):
+    def __init__(self, local_base_path="./", parent=None, credentials=os.path.join(repo_root(), "server.json")):
         super().__init__(parent, title="Dataset Selector", size=(560, 420))
 
         self.selectedDataset  = None

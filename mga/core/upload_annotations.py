@@ -4,6 +4,8 @@ import time
 import json
 import wx
 
+from mga.paths import repo_root
+
 
 """
 Check if a file exists
@@ -14,7 +16,7 @@ def checkIfFileExists(filename):
     return os.path.isfile(filename) 
 
 class UploadDialog(wx.Dialog):
-    def __init__(self, parent, zip_path, dataset, credentials="server.json"):
+    def __init__(self, parent, zip_path, dataset, credentials=os.path.join(repo_root(), "server.json")):
         super().__init__(parent, title="Upload Annotations", size=(350, 200))
         self.zip_path = zip_path  # path to the zip file
         self.dataset  = dataset
