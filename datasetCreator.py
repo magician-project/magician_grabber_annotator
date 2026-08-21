@@ -189,10 +189,10 @@ CLEAN_STREAM_OVERSAMPLE = 2.0
 class H5DatasetWriter:
     """
     Stream tiles straight into a training-ready dataset.h5 (same layout as
-    magician_vision_classifier/DatasetConverter.py) WITHOUT writing the intermediate
+    magician_vision_classifier/mvc/core/dataset_converter.py) WITHOUT writing the intermediate
     per-tile PNG files.
 
-    Layout consumed by DatasetConverter.HDF5Dataset / trainMagicianVisionClassifierTorch.py:
+    Layout consumed by mvc.core.dataset_converter.HDF5Dataset / mvc.train:
       images   : (N, C, H, W) uint8, gzip, chunks=(1,C,H,W)
       labels   : (N,) int64  (indices into the SORTED class-name list)
       metadata : (N,) UTF-8 JSON strings
@@ -246,7 +246,7 @@ class H5DatasetWriter:
 
     def close(self, ratio_clean=None, tiles_annotated_by_ai=0):
         """Finalize labels/attrs (class ids follow the SORTED class-name order, exactly
-        like torchvision DatasetFolder / DatasetConverter). Returns sample count.
+        like torchvision DatasetFolder / mvc.core.dataset_converter). Returns sample count.
 
         ratio_clean: if given, the clean class is EXACTLY subsampled (uniformly over the
         whole run) down to ratio_clean * non_clean + tiles_annotated_by_ai samples. The
@@ -878,7 +878,7 @@ class MainFrame(wx.Frame):
         self.direct_h5_checkbox.SetValue(True)
         self.direct_h5_checkbox.SetToolTip(
             "Stream tiles straight into dataset.h5 (training-ready, same format as\n"
-            "DatasetConverter.py) instead of writing one PNG file per tile.\n"
+            "mvc.core.dataset_converter) instead of writing one PNG file per tile.\n"
             "Uncheck to get the legacy class_*/  PNG folder layout."
         )
         comboButtons      = wx.BoxSizer(wx.HORIZONTAL)
@@ -1231,9 +1231,9 @@ class MainFrame(wx.Frame):
         if self.direct_h5_checkbox.GetValue():
             lines.append(f'# dataset.h5 is written DIRECTLY by the dump (Direct H5 checked) — no conversion step needed')
         else:
-            lines.append(f'python3 ../magician_vision_classifier/DatasetConverter.py "{target_dir}"  # same as "H5 Package"')
+            lines.append(f'PYTHONPATH=../magician_vision_classifier python3 -m mvc.core.dataset_converter "{target_dir}"  # same as "H5 Package"')
         lines.append('# Training step (set "training_dataset" in the config to the output folder):')
-        lines.append(f'# python3 ../magician_vision_classifier/trainMagicianVisionClassifierTorch.py <config.json>')
+        lines.append(f'# PYTHONPATH=../magician_vision_classifier python3 -m mvc.train <config.json>')
 
         cmd_text = "\n".join(lines)
 
@@ -1328,7 +1328,7 @@ class MainFrame(wx.Frame):
                           wx.OK | wx.ICON_WARNING)
             return
     
-        cmd = f"python3 ../magician_vision_classifier/DatasetConverter.py {output_path}"
+        cmd = f"PYTHONPATH=../magician_vision_classifier python3 -m mvc.core.dataset_converter {output_path}"
         self.log(f"Executing H5 packaging:\n{cmd}")
     
         ret = os.system(cmd)
@@ -1378,13 +1378,13 @@ class MainFrame(wx.Frame):
         # ---------------------------------------------------
         if self.processor is not None and getattr(self.processor, "write_h5", False):
             self.log(f"dataset.h5 was written directly to {target_dir} — ready for "
-                     f"trainMagicianVisionClassifierTorch.py (set training_dataset to this folder).")
+                     f"mvc.train (set training_dataset to this folder).")
             return
 
         dlg = wx.MessageDialog(
             self,
             f"Do you want to package the dataset into HDF5 format (dataset.h5)?\n\n"
-            f"Now is the time to remove classes you dont want from the directory.\nThis will run DatasetConverter.py on:\n{target_dir}",
+            f"Now is the time to remove classes you dont want from the directory.\nThis will run mvc.core.dataset_converter on:\n{target_dir}",
             "Create HDF5 dataset?",
             wx.YES_NO | wx.ICON_QUESTION
         )
@@ -1394,7 +1394,7 @@ class MainFrame(wx.Frame):
 
         if res == wx.ID_YES:
             try:
-                cmd = f"python3 ../magician_vision_classifier/DatasetConverter.py {target_dir}"
+                cmd = f"PYTHONPATH=../magician_vision_classifier python3 -m mvc.core.dataset_converter {target_dir}"
                 self.log(f"Executing H5 packaging:\n{cmd}")
                 ret = os.system(cmd)
 
@@ -1415,7 +1415,7 @@ class MainFrame(wx.Frame):
 
             except Exception as e:
                 wx.MessageBox(
-                    f"Failed to run DatasetConverter.py:\n{e}",
+                    f"Failed to run mvc.core.dataset_converter:\n{e}",
                     "Error",
                     wx.OK | wx.ICON_ERROR
                 )
