@@ -167,25 +167,26 @@ def debayerPolarImage(image):
 #-------------------------------------------------------------------------------
 # EVERY reference this repository makes into magician_vision_classifier — the whole
 # cross-repo surface is these six imports, so this is the list to re-check after a
-# refactor over there (verified against the 2026-08-02 refactor):
+# refactor over there (verified against the 2026-08-20 mvc/ package refactor):
 #
-#   wxAnnotator.py   liveClassifierTorch  ClassifierPnm, GATE_DEFECT_MASS,
-#                                         GATE_MAX_PROB, GATE_OFF      (below)
-#                    EnsembleClassifier   EnsembleClassifierPnm        (below)
-#                    classifierPnm        load_recommended_configuration,
-#                                         recommended_configuration_available (below)
-#                    ModelDownload        remote_model_names           (~line 1000)
-#                    ModelDownload        download_model               (~line 1080)
-#   streamDataset.py SharedMemoryManager  SharedMemoryManager
+#   wxAnnotator.py   mvc.inference.classifier_pnm   ClassifierPnm, GATE_DEFECT_MASS,
+#                                            GATE_MAX_PROB, GATE_OFF      (below)
+#                                            load_recommended_configuration,
+#                                            recommended_configuration_available (below)
+#                    mvc.inference.ensemble_classifier
+#                                            EnsembleClassifierPnm        (below)
+#                    mvc.inference.model_download   remote_model_names     (~line 1040)
+#                                            download_model               (~line 1120)
+#   streamDataset.py mvc.core.shared_memory         SharedMemoryManager
 #
-# liveClassifierTorch is only a shim re-exporting classifierPnm (`import *`), so the
-# classifier core really lives in classifierPnm.py. The ClassifierPnm/
-# EnsembleClassifierPnm members used here are forward(), reload_model(), model_scan(),
-# apply_min_hz(), .step/.tile_size/.hz/.classifiers/._all_classifiers/.model_perf and
-# the three gate knobs set by _applyGateSettings().
+# The classifier core lives in mvc/inference/classifier_pnm.py (ensemble in
+# mvc/inference/ensemble_classifier.py). The ClassifierPnm/EnsembleClassifierPnm
+# members used here are forward(), reload_model(), model_scan(), apply_min_hz(),
+# .step/.tile_size/.hz/.classifiers/._all_classifiers/.model_perf and the three
+# gate knobs set by _applyGateSettings().
 #
 # Not an import, but a third tie: datasetCreator.py writes dataset.h5 in the layout
-# the classifier's DatasetConverter.HDF5Dataset reads.
+# mvc.core.dataset_converter.HDF5Dataset reads.
 #
 # Our readData.py was renamed to readDataAnnotator.py on 2026-08-03 because it shadowed
 # the classifier's same-named module for the classifier itself — do not reintroduce a
@@ -194,13 +195,13 @@ if useClassifier:
   parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
   sys.path.append(parent_path)
   try:
-    from liveClassifierTorch import ClassifierPnm, GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF
-    from EnsembleClassifier  import EnsembleClassifierPnm
+    from mvc.inference.classifier_pnm import ClassifierPnm, GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF
+    from mvc.inference.ensemble_classifier import EnsembleClassifierPnm
     # Deployment presets shared with the ROS node (recommended_configuration.json in
     # the classifier repo). Optional: older classifier checkouts will not have it.
     try:
-        from classifierPnm import (load_recommended_configuration,
-                                   recommended_configuration_available)
+        from mvc.inference.classifier_pnm import (load_recommended_configuration,
+                                                  recommended_configuration_available)
     except Exception:
         load_recommended_configuration = None
         def recommended_configuration_available(*args, **kwargs):
@@ -213,7 +214,7 @@ if useClassifier:
     print(f"Exact error was : {e}")
     sys.exit(1)
 else:
-  # Mirror liveClassifierTorch's gate names so the GUI builds without the classifier.
+  # Mirror the classifier's gate names so the GUI builds without the classifier.
   GATE_DEFECT_MASS = "defect_mass"
   GATE_MAX_PROB    = "max_prob"
   GATE_OFF         = "off"
@@ -236,7 +237,7 @@ else:
 #-------------------------------------------------------------------------------
 
 # The classifier repo keeps models in two layouts and we have to read both: a DEPLOYED
-# box gets them unpacked flat into magician_vision_classifier/ by ModelDownload, while a
+# box gets them unpacked flat into magician_vision_classifier/ by mvc.inference.model_download, while a
 # TRAINING box files each finished run under experiments/<campaign>/<run>/ next to its
 # config and report artifacts. ClassifierPnm.model_scan()/model_locate() already cover
 # both; everything here that builds "<dir>/<name>.pth" by hand must go through this so
@@ -1020,7 +1021,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     elif preset_model is not None:
         fallback_name = available_models[0] if available_models else "none"
         print("[preset] '%s' recommends %s, which is not in %s. Using %s instead — fetch "
-              "it from the Online list, or with `python3 ModelDownload.py %s`."
+              "it from the Online list, or with `python3 -m mvc.inference.model_download %s` "
+              "from the classifier repo root."
               % (self._preset.get("name"), preset_model, model_dir, fallback_name, preset_model))
         self._preset = None      # its gate belongs to a model we are not loading
 
@@ -1038,8 +1040,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     # are listed too — downloading them fetches the server's newest archive.
     def _list_remote(local_models):
         try:
-            # cross-repo: magician_vision_classifier/ModelDownload.py
-            from ModelDownload import remote_model_names
+            # cross-repo: magician_vision_classifier/mvc/inference/model_download.py
+            from mvc.inference.model_download import remote_model_names
             local = set(local_models)
             return [n + (" [have local copy]" if n in local else "")
                     for n in remote_model_names(timeout=5)]
@@ -1118,8 +1120,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         busy = wx.BusyCursor()
         wx.Yield()
         try:
-            # cross-repo: magician_vision_classifier/ModelDownload.py
-            from ModelDownload import download_model
+            # cross-repo: magician_vision_classifier/mvc/inference/model_download.py
+            from mvc.inference.model_download import download_model
             download_model(name, model_dir)
         except Exception as e:
             wx.MessageBox(f"Failed to download '{name}':\n{e}",
@@ -1196,7 +1198,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
     )
     self.classifierGateMode.SetValue(GATE_DEFECT_MASS)
     self.classifierGateMode.SetToolTip(
-        "How a tile is judged clean vs defect (liveClassifierTorch.gate_tiles):\n"
+        "How a tile is judged clean vs defect (mvc.inference.classifier_pnm.gate_tiles):\n"
         "  defect_mass : score = 1 - P(clean), the total probability on ANY defect\n"
         "                class. Flags tiles the model is sure are defective even\n"
         "                when it cannot say which defect. Recommended.\n"
@@ -1860,7 +1862,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       """Push the GUI's decision-gate settings onto a classifier before a forward().
 
       Keeps the single- and two-stage paths on one definition. See
-      liveClassifierTorch.gate_tiles() for what the knobs do; note the threshold
+      mvc.inference.classifier_pnm.gate_tiles() for what the knobs do; note the threshold
       cuts on the selected mode's score, so it is not portable between modes."""
       if classifier is None:
           return

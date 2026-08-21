@@ -17,9 +17,9 @@ try:
   sys.path.append(parent_path)
 except:
   print("Could not find classifier ..")
-# cross-repo: magician_vision_classifier/SharedMemoryManager.py — the only reference
+# cross-repo: magician_vision_classifier/mvc/core/shared_memory.py — the only reference
 # this file makes into the classifier repo (see wxAnnotator.py for the full list).
-from SharedMemoryManager import SharedMemoryManager
+from mvc.core.shared_memory import SharedMemoryManager
 
 # ----------------- Helper functions -----------------
 def eprint(*args, **kwargs):
