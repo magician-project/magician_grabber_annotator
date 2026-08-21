@@ -231,7 +231,7 @@ def _atomic_replace_dir(src_new: str, dst_final: str):
 def main():
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python compressDataset.py <input_directory> [output_directory]")
+        print("  python3 -m mga.core.compress_dataset <input_directory> [output_directory]")
         print("")
         print("Behavior:")
         print("  - If output_directory is given: copy+convert into output_directory")

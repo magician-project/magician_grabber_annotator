@@ -1,7 +1,8 @@
 #!/bin/bash
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$DIR"
+REPO_ROOT="$( cd "$DIR/.." && pwd )"
+cd "$REPO_ROOT"
 
 
 
@@ -44,6 +45,6 @@ fi
 
 
 
-python3 wxAnnotator.py $@
+python3 -m mga.wx_annotator $@
 
 exit 0

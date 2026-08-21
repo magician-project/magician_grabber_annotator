@@ -1,3 +1,7 @@
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+REPO_ROOT="$( cd "$DIR/.." && pwd )"
+cd "$REPO_ROOT"
+
 export DISPLAY=$(echo $DISPLAY)
 xhost +
 

@@ -11,7 +11,7 @@ Usage
     python3 listDefectSeverities.py <dataset_dir> [<dataset_dir> ...]
     python3 listDefectSeverities.py --csv <dataset_dir> > defects.csv
 
-Reads the colorFrame*.json files written by wxAnnotator.py; nothing is modified.
+Reads the colorFrame*.json files written by mga/wx_annotator.py; nothing is modified.
 """
 
 import csv

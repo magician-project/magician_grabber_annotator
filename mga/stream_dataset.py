@@ -9,16 +9,14 @@ import sys
 import time
 
 
-#classifier_relative_directory = "../classifier" #Old Name
-classifier_relative_directory = "../magician_vision_classifier"
+from mga.paths import classifier_root
 
 try:
-  parent_path = os.path.abspath(os.path.join(os.path.dirname(__file__), classifier_relative_directory))
-  sys.path.append(parent_path)
+  sys.path.append(classifier_root())
 except:
   print("Could not find classifier ..")
 # cross-repo: magician_vision_classifier/mvc/core/shared_memory.py — the only reference
-# this file makes into the classifier repo (see wxAnnotator.py for the full list).
+# this file makes into the classifier repo (see mga/wx_annotator.py for the full list).
 from mvc.core.shared_memory import SharedMemoryManager
 
 # ----------------- Helper functions -----------------

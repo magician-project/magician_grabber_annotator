@@ -42,7 +42,7 @@ import cv2
 import numpy as np
 import wx
 
-import wxAnnotator as WA
+from mga import wx_annotator as WA
 
 
 # ---------------------------------------------------------------------------

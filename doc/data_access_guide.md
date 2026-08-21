@@ -54,7 +54,7 @@ This installs all required Python dependencies.
 
 Launch the tool using:
 ```bash
-python3 wxAnnotator.py
+python3 -m mga.wx_annotator
 ```
 
 At this stage, the user has full access to the **annotation tool itself**, but **no access to MAGICIAN consortium datasets**.

@@ -86,11 +86,11 @@ def ensure_annotation_sidecar(image_path: str) -> str | None:
         return existing
 
 
-# --- Import external utilities assumed to exist in readDataAnnotator.py ---
+# --- Import external utilities assumed to exist in mga/core/read_data_annotator.py ---
 try:
-    from readDataAnnotator import loadImageAndJSON, checkIfFileExists, checkIfPathExists, check_threshold, check_variation, resolve_annotation_json_path
+    from mga.core.read_data_annotator import loadImageAndJSON, checkIfFileExists, checkIfPathExists, check_threshold, check_variation, resolve_annotation_json_path
 except Exception as e:
-    print("Could not import readDataAnnotator utilities. Make sure readDataAnnotator.py exists and is importable.\n", e)
+    print("Could not import read_data_annotator utilities. Make sure mga/core/read_data_annotator.py exists and is importable.\n", e)
     # We'll still continue; the UI will warn the user if the import failed.
     loadImageAndJSON = None
     checkIfFileExists = lambda p: os.path.isfile(p)
@@ -1040,7 +1040,7 @@ class MainFrame(wx.Frame):
 
     def on_merge(self, event):
         self.log("Executing merging application")
-        os.system("python3 mergeDatasets.py %s" % self.dirpicker.GetPath())
+        os.system("python3 -m analysis.merge_datasets %s" % self.dirpicker.GetPath())
 
     def on_refresh(self, event):
         self.populate_dataset_list()

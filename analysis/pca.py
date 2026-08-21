@@ -617,7 +617,7 @@ class PCA():
 
 
 if __name__ == '__main__':
-  print("principleComponentAnalysis.py is a library")
+  print("analysis/pca.py is a library")
 
   print("Test StD implementation against numpy : ")
   print(test_calculate_standard_deviation(1000))

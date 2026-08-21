@@ -64,7 +64,7 @@ https://en.wikipedia.org/wiki/Netpbm
 Raw `.pnm` frames are:
 - Read/Dumped directly from the SONY XCG-CP510 Polarsense camera
 - De-bayered
-- Converted to **RGBA OpenCV images** using the [readPolarPNMToRGBALive](https://github.com/magician-project/magician_grabber_annotator/blob/main/readDataAnnotator.py#L292) function from [readDataAnnotator.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/readDataAnnotator.py#L292)
+- Converted to **RGBA OpenCV images** using the [readPolarPNMToRGBALive](https://github.com/magician-project/magician_grabber_annotator/blob/main/mga/core/read_data_annotator.py#L292) function from [mga/core/read_data_annotator.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/mga/core/read_data_annotator.py#L292)
 
 Each channel represents a polarization angle:
 
@@ -82,17 +82,17 @@ Relevant code to use as template to unpack polarized data:
 readPolarPNMToRGBA
 ```
 
-https://github.com/magician-project/magician_grabber_annotator/blob/main/readDataAnnotator.py#L292
+https://github.com/magician-project/magician_grabber_annotator/blob/main/mga/core/read_data_annotator.py#L292
 
 
 The same files can also be encoded as RGBA .png files that can be decoded using exactly the same readPolarPNMToRGBALive function
 
 A PNG encoded example can be found in this [example.png](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.png?raw=true) file
 
-There is also a [comparePNMPNG.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/comparePNMPNG.py) comparison utility that can be used to show the parity between the two encodings 
+There is also a [analysis/compare_pnp_png.py](https://github.com/magician-project/magician_grabber_annotator/blob/main/analysis/compare_pnp_png.py) comparison utility that can be used to show the parity between the two encodings 
 
 ```
-python3 comparePNMPNG.py doc/example.pnm doc/example.png 
+python3 -m analysis.compare_pnp_png doc/example.pnm doc/example.png 
 ```
 should yield 
 OK
@@ -105,7 +105,7 @@ signaling that the two files result to identical polarizations when decoded by r
 After activating the classifier virtual environment:
 
 ```bash
-python3 wxAnnotator.py --db /path/to/dataset/storage
+python3 -m mga.wx_annotator --db /path/to/dataset/storage
 ```
 
 <img src="https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/binary_verysmall_cnn.jpg?raw=true" height=400/> 
@@ -279,7 +279,7 @@ Parsed via:
 restoreFromJSON
 ```
 
-https://github.com/magician-project/magician_grabber_annotator/blob/main/wxAnnotator.py#L1415
+https://github.com/magician-project/magician_grabber_annotator/blob/main/mga/wx_annotator.py#L1415
 
 ---
 

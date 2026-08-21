@@ -25,7 +25,8 @@ Datasets are captured by the [Magician Grabber](https://github.com/magician-proj
 8. [Neural Network Classifier](#neural-network-classifier)
 9. [Dataset Creation](#dataset-creation)
 10. [Uploading Annotations](#uploading-annotations)
-11. [License](#license)
+11. [Project Structure](#project-structure)
+12. [License](#license)
 
 ---
 
@@ -112,14 +113,14 @@ pip install wxPython opencv-python numpy
 **Quick start with the provided shell script** (creates the virtual environment if it does not exist):
 
 ```bash
-./runAnnotator.sh --from /path/to/dataset/
+./scripts/runAnnotator.sh --from /path/to/dataset/
 ```
 
-**Direct invocation:**
+**Direct invocation** (from the repo root):
 
 ```bash
 source venv/bin/activate
-python3 wxAnnotator.py --from /path/to/dataset/
+python3 -m mga.wx_annotator --from /path/to/dataset/
 ```
 
 **Command-line options:**
@@ -185,10 +186,10 @@ This RGBA representation is the direct input to the tile classifier.
 
 Example files: [`doc/example.pnm`](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.pnm?raw=true) · [`doc/example.png`](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/example.png?raw=true)
 
-The [`comparePNMPNG.py`](comparePNMPNG.py) utility verifies that both encodings decode to identical polarization data:
+The [`analysis/compare_pnp_png.py`](analysis/compare_pnp_png.py) utility verifies that both encodings decode to identical polarization data:
 
 ```bash
-python3 comparePNMPNG.py doc/example.pnm doc/example.png
+python3 -m analysis.compare_pnp_png doc/example.pnm doc/example.png
 # Expected output: OK
 ```
 
@@ -278,6 +279,77 @@ Annotations can be uploaded to the project server directly from the GUI via `Fil
 For data access requests, please consult the [data access guide](https://github.com/magician-project/magician_grabber_annotator/blob/main/doc/data_access_guide.md).
 
 ---
+
+## Project Structure
+
+```
+magician_grabber_annotator/
+  │
+  │   mga/ — the Python package (all imports are mga.*)
+  ├── mga/wx_annotator.py                       Main annotator GUI (python -m mga.wx_annotator)
+  ├── mga/web_annotator.py                      Minimal HTTP front-end for the wx annotator
+  ├── mga/dataset_creator.py                    Tile-dump dataset-creation GUI
+  ├── mga/grabber_frontend.py                   Standalone grabber hardware GUI
+  ├── mga/stream_dataset.py                     Stream a dataset over the classifier's shared memory
+  ├── mga/wx_acquisition.py                     Camera settings dialog for the aravis grabber
+  ├── mga/paths.py                              repo_root() / classifier_root() — the one place that knows the layout
+  ├── mga/core/                                 Shared library code
+  |   ├── read_data_annotator.py                Polarization PNM/PNG loading, debayering, tiling, annotation JSON IO
+  |   ├── auto_annotator.py                     Semi-automatic defect detection + Sam3Client
+  |   ├── light_decoder.py                      Commanded-light CSV fused with the observed light
+  |   ├── folder_stream.py                      Frame streaming from a local dataset folder
+  |   ├── http_stream.py                        Frame streaming from the project annotation server
+  |   ├── classifier_grading.py                 Classifier output vs. ground-truth correlation
+  |   ├── dataset_selector.py                   Network dataset picker dialog
+  |   ├── download_all_frames.py                Batch frame download dialog
+  |   ├── compress_dataset.py                   In-place lossless PNG compression of a dataset
+  |   ├── model_updater.py                      Checkpoint download/verification from the project repository
+  |   ├── upload_annotations.py                 Annotation zip upload to the project server
+  |   ├── rl_annotator.py                       Reinforcement-learning-assisted annotation
+  |   ├── magnifier.py                          Zoom/inspect frame widget
+  |   ├── visualize_data.py                     Polarization rendering and feature helpers
+  |   └── tactile_plotter.py                    Tactile sensor CSV plots
+  │
+  │   analysis/ — one-shot tools, run as python -m analysis.<name>
+  ├── analysis/tile_explorer.py                 Interactive tile browser (with PCA embeddings)
+  ├── analysis/examine_tiles.py                 Tile inspection
+  ├── analysis/plot_perf.py                     Plot perf.csv
+  ├── analysis/dataset_statistics.py            Defect counts per class × severity
+  ├── analysis/find_dataset_samples_without_severities.py
+  ├── analysis/compare_pnp_png.py               Verify PNM and PNG decodings match (self-test)
+  ├── analysis/merge_datasets.py                Merge two datasets
+  ├── analysis/average_images.py                Average a folder of frames
+  ├── analysis/stitcher.py                      Stitch mosaic frames
+  ├── analysis/active_lighting.py               Identify which cycling scene light illuminates a frame
+  └── analysis/pca.py                           PCA class for tile embeddings (used by tile_explorer)
+  │
+  │   ROS2 package + infrastructure
+  ├── CMakeLists.txt                            ROS2 package build configuration
+  ├── package.xml                               ROS2 package manifest
+  ├── requirements.txt                          Python dependencies
+  ├── .gitignore                                What counts as regenerable output vs. a result
+  ├── scripts/                                  Shell scripts for launching and dataset batch processing
+  ├── server/                                   PHP endpoints for annotation upload
+  ├── default/                                  Small built-in sample dataset (boot logo)
+  ├── doc/                                      Guides and screenshots
+  ├── docker/                                   Container build files
+  └── legacy/                                   Retired code, kept for reference only (see legacy/README.md)
+```
+
+### If you move files again
+
+Two places hold file paths that no tool can infer, and both fail quietly when they go stale:
+
+* **`mga/paths.py`** is the only module that knows where the repo root — and the sibling
+  `magician_vision_classifier` repo — live. Everything root-anchored (`server.json`,
+  `annotationStatusCache.json`, `default/`, `doc/`) resolves through `repo_root()`, so a
+  layout change is one edit rather than a dozen.
+* **The cross-repo surface** into `magician_vision_classifier` is a documented list in the
+  comment block at the top of `mga/wx_annotator.py` (six `mvc.*` imports plus the shared
+  `dataset.h5` layout). Re-check it after a refactor over there.
+
+Grep for old module names in `scripts/*.sh` after any move: the shell scripts invoke
+modules by path (`python -m mga.wx_annotator`) and are not covered by Python's import checking.
 
 ## License
 

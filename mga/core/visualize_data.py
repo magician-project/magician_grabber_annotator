@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from readDataAnnotator import debayerPolarImage,repackPolarToMosaic
+from mga.core.read_data_annotator import debayerPolarImage,repackPolarToMosaic
 
 def detect_sobel_edges(image):
     """
