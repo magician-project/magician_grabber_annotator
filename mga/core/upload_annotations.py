@@ -5,15 +5,9 @@ import json
 import wx
 
 from mga.paths import repo_root
-
-
-"""
-Check if a file exists
-"""
-def checkIfFileExists(filename):
-    if (filename is None):  
-       return False
-    return os.path.isfile(filename) 
+from mga.core.read_data_annotator import checkIfFileExists
+from mga.core.http_stream import (load_credentials as _load_credentials,
+                                  save_credentials as _save_credentials)
 
 class UploadDialog(wx.Dialog):
     def __init__(self, parent, zip_path, dataset, credentials=os.path.join(repo_root(), "server.json")):
@@ -58,22 +52,14 @@ class UploadDialog(wx.Dialog):
 
     def load_credentials(self):
         """Load username and password from config file if it exists."""
-        if os.path.exists(self.credentials):
-            try:
-                with open(self.credentials, "r") as f:
-                    data = json.load(f)
-                    return data.get("username", ""), data.get("password", "")
-            except Exception:
-                pass
-        return "", ""  # defaults
+        return _load_credentials(self.credentials)
 
     def save_credentials(self, username, password):
         """Save username and password to config file."""
-        try:
-            with open(self.credentials, "w") as f:
-                json.dump({"username": username, "password": password}, f)
-        except Exception as e:
-            wx.MessageBox(f"Failed to save credentials: {e}", "Warning", wx.OK | wx.ICON_WARNING)
+        # Stage 3e of the wx_annotator refactor: the file write is single-sourced
+        # in mga.core.http_stream.save_credentials (silent on failure — the
+        # MessageBox this dialog used to show is gone).
+        _save_credentials(username, password, credentials=self.credentials)
 
     def onUpload(self, event):
         user     = self.username.GetValue().strip()

@@ -33,9 +33,7 @@ import sys
 import numpy as np
 import time
 import threading
-import getpass
 import glob
-from datetime import datetime
 
 
 """
@@ -43,8 +41,6 @@ Configurations in one central place
 """
 
 version         = "0.74"
-useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
-benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
 combineChannels = True
 options         = ["Unknown", "Material Defect", "Positive Dent", "Negative Dent", "Deformation", "Seal", "Welding", "Clean", "Suspicious", "Dust", "DontUseThisFrame", "RLClean"]
 severities      = ["Class A","Class B","Class C"]
@@ -53,21 +49,24 @@ processors      = ["PolarizationRGB1","PolarizationRGB2","PolarizationRGB3", "Po
 
 
 #classifier_relative_directory = "../classifier" #Old Name
-from mga.paths import classifier_root
-classifier_online_repository         = "http://ammar.gr/magician/ckpts2/"
-classifier_relative_directory = classifier_root()
+# The entire cross-repo surface into magician_vision_classifier (guarded mvc
+# imports, gate names, model helpers) moved to mga/core/classifier_hub.py
+# (Stage 3b of this file's refactor) and is re-exported here so
+# ClassifierTabMixin (which resolves these names through sys.modules) and
+# web_annotator keep working unchanged.
+from mga.core.classifier_hub import (useClassifier, benchmark, GATE_DEFECT_MASS,
+                                     GATE_MAX_PROB, GATE_OFF,
+                                     load_recommended_configuration,
+                                     recommended_configuration_available,
+                                     ClassifierPnm, EnsembleClassifierPnm,
+                                     classifier_online_repository,
+                                     classifier_relative_directory,
+                                     locate_model, web_model_scan,
+                                     ensure_model_downloaded)
+# Mutable module state stays here: classifier_tab writes these through WA.
 classifier_model_path         = None
 classifier_cfg_path           = None
 
-
-"""
-from mga.wx_acquisition import CameraSettingsDialog
-"""
-
-# Import the wxScrollBar module
-import wx.lib.newevent
-import sys
-import os
 
 FALLBACK_SCREEN_RES = (1920, 1080)
 
@@ -148,145 +147,48 @@ except Exception as _autoErr:
     _autoImportError = _autoErr
 
 
-# Add this line at the beginning of the file to define a new event
-ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
-
 from mga.core.read_data_annotator import repackPolarToMosaic,readPolarPNMToRGBALive
 
 #-------------------------------------------------------------------------------
-# Make Classifier completely seperatable from the rest of the codebase
-#-------------------------------------------------------------------------------
-# EVERY reference this repository makes into magician_vision_classifier — the whole
-# cross-repo surface is these six imports, so this is the list to re-check after a
-# refactor over there (verified against the 2026-08-20 mvc/ package refactor):
-#
-#   mga/wx_annotator.py   mvc.inference.classifier_pnm   ClassifierPnm, GATE_DEFECT_MASS,
-#                                            GATE_MAX_PROB, GATE_OFF      (below)
-#                                            load_recommended_configuration,
-#                                            recommended_configuration_available (below)
-#                    mvc.inference.ensemble_classifier
-#                                            EnsembleClassifierPnm        (below)
-#                    mvc.inference.model_download   remote_model_names     (~line 1040,
-#                                                                             web_model_scan below)
-#                                            download_model               (~line 1120)
-#                                            ensure_model                 (ensure_model_downloaded below)
-#   mga/stream_dataset.py mvc.core.shared_memory         SharedMemoryManager
-#
-# The classifier core lives in mvc/inference/classifier_pnm.py (ensemble in
-# mvc/inference/ensemble_classifier.py). The ClassifierPnm/EnsembleClassifierPnm
-# members used here are forward(), reload_model(), model_scan(), apply_min_hz(),
-# .step/.tile_size/.hz/.classifiers/._all_classifiers/.model_perf and the three
-# gate knobs set by _applyGateSettings().
-#
-# Not an import, but a third tie: mga/dataset_creator.py writes dataset.h5 in the layout
-# mvc.core.dataset_converter.HDF5Dataset reads.
-#
-# Our readData.py was renamed to readDataAnnotator.py on 2026-08-03 because it shadowed
-# the classifier's same-named module for the classifier itself — it now lives at
-# mga/core/read_data_annotator.py and must keep this distinct name; see its header.
-if useClassifier:
-  parent_path = classifier_relative_directory
-  sys.path.append(parent_path)
-  try:
-    from mvc.inference.classifier_pnm import ClassifierPnm, GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF
-    from mvc.inference.ensemble_classifier import EnsembleClassifierPnm
-    # Deployment presets shared with the ROS node (recommended_configuration.json in
-    # the classifier repo). Optional: older classifier checkouts will not have it.
-    try:
-        from mvc.inference.classifier_pnm import (load_recommended_configuration,
-                                                  recommended_configuration_available)
-    except Exception:
-        load_recommended_configuration = None
-        def recommended_configuration_available(*args, **kwargs):
-            """No presets file support in this classifier checkout."""
-            return False
-  except Exception as e:
-    print("Can't seem to be able to access the magician_vision_classifier, consider setting useClassifier=False in mga/wx_annotator.py")
-    print("Classifier Path : ",parent_path)
-    print("If you want the classifier but don't have it get it @ https://github.com/magician-project/magician_vision_classifier")
-    print(f"Exact error was : {e}")
-    sys.exit(1)
-else:
-  # Mirror the classifier's gate names so the GUI builds without the classifier.
-  GATE_DEFECT_MASS = "defect_mass"
-  GATE_MAX_PROB    = "max_prob"
-  GATE_OFF         = "off"
-  load_recommended_configuration = None
-  def recommended_configuration_available(*args, **kwargs):
-      """Presets are a classifier feature; the classifier is disabled here."""
-      return False
-  class ClassifierPnm:
-    def __init__(self, model_path='foo', cfg_path='foo', tile_classes=['foo'],tile_size=64, step=16):
-        print("Classifier PNM is disabled, please start with --classifier or change the useClassifier variable in mga/wx_annotator.py to use it!")
-        pass
-    def load_model(self):
-        return None
-    def model_scan(directoryPath):
-        return ['Disabled']
-    def reload_model(self, directoryPath, name):
-        return False
-    def forward(self, image, majorityVote=True):
-        return None
+# Make Classifier completely seperatable from the rest of the codebase: the
+# mvc import gate, the gate-name mirrors and the model helpers (locate_model,
+# web_model_scan, ensure_model_downloaded) moved to mga/core/classifier_hub.py
+# (Stage 3b of this file's refactor) and are re-exported at the top of this
+# file. The cross-repo import checklist lives in the hub's docstring. Two
+# further cross-repo ties that are NOT imports: mga/dataset_creator.py writes
+# dataset.h5 in the layout mvc.core.dataset_converter.HDF5Dataset reads, and
+# mga/stream_dataset.py uses mvc.core.shared_memory.SharedMemoryManager.
+# (readData.py was renamed to readDataAnnotator.py on 2026-08-03 because it
+# shadowed the classifier's same-named module — it must keep this name.)
 #-------------------------------------------------------------------------------
 
-# The classifier repo keeps models in two layouts and we have to read both: a DEPLOYED
-# box gets them unpacked flat into magician_vision_classifier/ by mvc.inference.model_download, while a
-# TRAINING box files each finished run under experiments/<campaign>/<run>/ next to its
-# config and report artifacts. ClassifierPnm.model_scan()/model_locate() already cover
-# both; everything here that builds "<dir>/<name>.pth" by hand must go through this so
-# the two stay in step. Flat wins on a tie, same as model_scan.
-def locate_model(model_dir, name):
-    """(pth_path, cfg_path) for model `name`, or None if either file is missing."""
-    locate = getattr(ClassifierPnm, "model_locate", None)
-    if locate is not None:            # older classifier checkouts are flat-only
-        return locate(model_dir, name)
-    pth = os.path.join(model_dir, "%s.pth"  % name)
-    cfg = os.path.join(model_dir, "%s.json" % name)
-    return (pth, cfg) if (os.path.isfile(pth) and os.path.isfile(cfg)) else None
-
-
-def web_model_scan(model_dir):
-    """All models available to the web annotator: model_scan()'s local pairs plus
-    whatever the online repository (mvc.inference.model_download) advertises, so a
-    model that only lives on the server still shows up in the list (see
-    web_annotator.change_model, which downloads it on demand when selected)."""
-    local = ClassifierPnm.model_scan(model_dir)
-    try:
-        from mvc.inference.model_download import remote_model_names
-        remote = remote_model_names(timeout=5)
-    except Exception as e:
-        print(f"[Models] Online repository unavailable: {e}")
-        remote = []
-    return sorted(set(local) | set(remote))
-
-
-def ensure_model_downloaded(model_dir, name):
-    """Fetch `name` from the online repository if model_scan() doesn't see it in
-    `model_dir` yet. Returns True once the model is available locally (already
-    there, or freshly downloaded), False if it's on neither disk nor the server."""
-    try:
-        from mvc.inference.model_download import ensure_model
-        return ensure_model(name, model_dir)
-    except Exception as e:
-        print(f"[Models] Download of '{name}' failed: {e}")
-        return False
-
-
-from mga.core.read_data_annotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathIsDirectory
+from mga.core.read_data_annotator import resolve_annotation_json_path, checkIfFileExists, checkIfPathIsDirectory
 from mga.core.read_data_annotator import annotation_json_path, read_annotation_json, dataset_images
-from mga.core.frame_processing import loadFrameMosaic, mosaicToBGR, canonicalize_lighting, PROCESSOR_WAYS
-from mga.core.tracking import (lightingFingerprint, estimateFrameAffine,
+from mga.core.frame_processing import loadFrameMosaic, PROCESSOR_WAYS, pixels_to_mm
+from mga.core.tracking import (estimateFrameAffine,
                                SAME_LIGHT_SEARCH_MAX, SAME_LIGHT_MIN_SIMILARITY,
-                               lighting_fingerprint_cached, best_same_light_index,
-                               tracking_record, solve_tracking_positions)
+                               lighting_fingerprint_cached, tracking_record,
+                               prior_shift_from_record, propagate_points,
+                               nudge_auto_points, rotate_auto_points,
+                               nudge_tracking_record, rotate_tracking_record)
 from mga.core.visualize_data import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
 import re
-import mga.core.light_decoder as lightDecoder
+from mga.core.annotation_state import (empty_annotation, align_sources,
+                                       normalize_parallel, annotation_to_dict,
+                                       annotation_from_dict, normalize_tracking,
+                                       write_annotation_json, add_point,
+                                       remove_point, nearest_point_sq,
+                                       is_near_any)
+from mga.core.dataset_finalize import (leading_dark_frames, defect_totals,
+                                       fill_tracking, compute_focus_light,
+                                       update_info_json)
 
 
 # Lighting fingerprints, affine estimation, tracking records and the pose-graph
 # solve moved to mga/core/tracking.py (Stage 1 of this file's refactor); the
-# names are re-imported above so the rest of this file is unchanged.
+# names are re-imported above so the rest of this file is unchanged. The frame
+# annotation schema + parallel-list bookkeeping moved to
+# mga/core/annotation_state.py (Stage 3a).
 
 
 
@@ -679,8 +581,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
     self.playBtn.Bind(wx.EVT_BUTTON, self.onTogglePlay)
     self.nextBtn = wx.Button(self.panel, label='>')
     self.nextBtn.Bind(wx.EVT_BUTTON, self.onNext)
-    self.cameraSettingsBtn = wx.Button(self.panel, label='Camera')
-    self.cameraSettingsBtn.Bind(wx.EVT_BUTTON, self.onCameraSettings)
 
 
     self.isPlaying = False
@@ -751,7 +651,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
     self.underImage.Add(browseBtn, 0, wx.ALL, 5)
     self.underImage.Add(self.rescanBtn, 0, wx.ALL, 5)
     self.underImage.Add(self.scrollBar, 1, wx.ALL | wx.EXPAND, 5)
-    self.underImage.Add(self.cameraSettingsBtn, 0, wx.ALL, 5)
     self.underImage.Add(self.ProcessorComboBox, 0, wx.ALL, 5)
     self.underImage.Add(self.canonicalLightCheckbox, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 5)
 
@@ -1114,9 +1013,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       if checkIfFileExists(filepath):
         with open(filepath, 'r') as json_file:
             data = json.load(json_file)
-            
-            if 'md5hash' in data:
-                self.filehash = data['md5hash']
+
             if 'md5hash' in data:
                 self.filehash = data['md5hash']
 
@@ -1133,14 +1030,10 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                 self.points_severities = data['pointSeverities']
             # Origin of each point. Legacy JSONs have no 'pointSources' field -> assume manual.
             if 'pointSources' in data:
-                self.points_sources = list(data['pointSources'])
+                self.points_sources = align_sources(self.points_of_interest,
+                                                    data['pointSources'])
             else:
-                self.points_sources = ["manual"] * len(self.points_of_interest)
-            # Keep parallel array aligned with the points in case of malformed input.
-            if len(self.points_sources) < len(self.points_of_interest):
-                self.points_sources += ["manual"] * (len(self.points_of_interest) - len(self.points_sources))
-            else:
-                self.points_sources = self.points_sources[:len(self.points_of_interest)]
+                self.points_sources = align_sources(self.points_of_interest, [])
             if 'regionClicks' in data:
                 self.regions_of_interest = data['regionClicks']
 
@@ -1151,8 +1044,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
 
             # Inter-frame transform records from the Track button (see onTrack).
             # A list of records; a bare dict (early format) is wrapped for compatibility.
-            tr = data.get('tracking', None)
-            self.tracking = [tr] if isinstance(tr, dict) else tr
+            self.tracking = normalize_tracking(data)
 
             self.updatePointList()
             self.updateRegionList()
@@ -1245,7 +1137,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
           if name is None:
               continue
           fx, fy = 2 * x, 2 * y
-          if any((fx - px) ** 2 + (fy - py) ** 2 < min_dist ** 2 for px, py in pts):
+          if is_near_any(fx, fy, pts, min_dist):
               continue  # thin dense activation clusters to one point per min_dist
           pts.append((fx, fy)); cls.append(name)
       return pts, cls
@@ -1258,13 +1150,11 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       added = 0
       tileFull = 96  # classifier tile is 48 at half-res
       for (x, y), name in zip(pts, cls):
-          if any((x - px) ** 2 + (y - py) ** 2 < tileFull ** 2
-                 for px, py in self.points_of_interest):
+          if is_near_any(x, y, self.points_of_interest, tileFull):
               continue
-          self.points_of_interest.append((x, y))
-          self.points_classes.append(name)
-          self.points_severities.append("AI")
-          self.points_sources.append("classifier")
+          add_point(self.points_of_interest, self.points_classes,
+                    self.points_severities, self.points_sources,
+                    x, y, name, "AI", "classifier")
           added += 1
       if added:
           self._stat_points_added += added
@@ -1313,10 +1203,12 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
               self.instructLbl.SetLabel("Auto: no pen mark detected on this frame.")
               return
           for x, y, _area in dets:
-              self.points_of_interest.append((x, y))
-              self.points_classes.append(self.defectComboBox.GetValue() or options[0])
-              self.points_severities.append(self.severityComboBox.GetValue() or severities[0])
-              self.points_sources.append("auto")
+              add_point(self.points_of_interest, self.points_classes,
+                        self.points_severities, self.points_sources,
+                        x, y,
+                        self.defectComboBox.GetValue() or options[0],
+                        self.severityComboBox.GetValue() or severities[0],
+                        "auto")
           self._stat_points_added += len(dets)
           self.updatePointList()
           self.onView()
@@ -1365,10 +1257,12 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       for i, pred in enumerate(preds):
           if pred is None:
               continue
-          self.points_of_interest.append((pred[0], pred[1]))
-          self.points_classes.append(prev_classes[i] if i < len(prev_classes) else options[0])
-          self.points_severities.append(prev_severities[i] if i < len(prev_severities) else severities[0])
-          self.points_sources.append("auto")
+          add_point(self.points_of_interest, self.points_classes,
+                    self.points_severities, self.points_sources,
+                    pred[0], pred[1],
+                    prev_classes[i] if i < len(prev_classes) else options[0],
+                    prev_severities[i] if i < len(prev_severities) else severities[0],
+                    "auto")
           matched += 1
 
       self._stat_points_added += matched
@@ -1402,11 +1296,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       light = determine_intensity_region(raw, threshold=0.1)
       if data:
           data["lightDirection"] = light
-          try:
-              with open(jp, "w") as f:
-                  json.dump(data, f, sort_keys=False)
-          except Exception as e:
-              print("Track: light direction write failed", jp, e)
+          write_annotation_json(jp, data, tag="Track: light direction")
       return light
 
    def _streamIndexOfFrame(self, name):
@@ -1498,14 +1388,9 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       # sign-corrected for our direction of travel.
       prior_shift = None
       if self.tracking:
-          rec = self.tracking[0]
-          s = rec.get("shift")
-          a = self._streamIndexOfFrame(rec.get("fromFrame", ""))
-          if s and a is not None:
-              if a == cur - direction:
-                  prior_shift = (s[0], s[1])
-              elif a == cur + direction:
-                  prior_shift = (-s[0], -s[1])
+          prior_shift = prior_shift_from_record(
+              self.tracking[0], cur, direction,
+              self._streamIndexOfFrame(self.tracking[0].get("fromFrame", "")))
 
       wx.BeginBusyCursor()
       try:
@@ -1547,22 +1432,14 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
           self.lightComboBox.SetValue(target_light)
 
       W, H = self.viewedImageFullWidth, self.viewedImageFullHeight
-      carried = 0
-      for i, (x, y) in enumerate(prev_points):
-          tx = M[0, 0] * x + M[0, 1] * y + M[0, 2]
-          ty = M[1, 0] * x + M[1, 1] * y + M[1, 2]
-          if not (0 <= tx < W and 0 <= ty < H):
-              continue
-          # Skip predictions landing on a point the frame already has (re-pressing
-          # Track or tracking onto a partially annotated frame must not double up).
-          if any((tx - ex) ** 2 + (ty - ey) ** 2 < 30.0 ** 2
-                 for ex, ey in self.points_of_interest):
-              continue
-          self.points_of_interest.append((tx, ty))
-          self.points_classes.append(prev_classes[i] if i < len(prev_classes) else options[0])
-          self.points_severities.append(prev_severities[i] if i < len(prev_severities) else severities[0])
-          self.points_sources.append("auto")
-          carried += 1
+      carried_pts, carried_cls, carried_sev = propagate_points(
+          prev_points, prev_classes, prev_severities, M, W, H, 30.0,
+          options[0], severities[0], self.points_of_interest)
+      for (x, y), cls, sev in zip(carried_pts, carried_cls, carried_sev):
+          add_point(self.points_of_interest, self.points_classes,
+                    self.points_severities, self.points_sources,
+                    x, y, cls, sev, "auto")
+      carried = len(carried_pts)
 
       self.tracking = [tracking_record(prev_path, M, dx, dy, response, inliers,
                                        fallback=fallback)] + records
@@ -1617,6 +1494,9 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                  position (relative to the first frame) is stored as an extra
                  'leastSquaresGlobal' record.
       Annotation JSONs are read-modified-written, so points/classes are untouched.
+      The pass itself lives in mga.core.dataset_finalize.fill_tracking (Stage 3c of
+      this file's refactor); this wrapper owns the streamer, the progress dialog
+      and the reload.
       Returns (filled, skipped, failed, solved, aborted), or None with <2 frames."""
       images = dataset_images(self.folderStreamer, self.filepath)
       if len(images) < 2:
@@ -1625,102 +1505,25 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       # Flush the currently-open frame so its JSON is up to date before the pass.
       self.onSave(None)
 
-      def tracking_list(data):
-          tr = data.get("tracking", None)
-          return [tr] if isinstance(tr, dict) else (tr or [])
-
       prog = wx.ProgressDialog(
           "Fill Tracking", "Measuring inter-frame shifts…", maximum=len(images),
           parent=self.frame,
           style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
                 | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
 
-      # PASS 1 — measure missing records.
-      filled = skipped = failed = 0
-      aborted = False
-      for i in range(1, len(images)):
-          cont, _ = prog.Update(
-              i, f"{i+1}/{len(images)} — {filled} filled, {skipped} had tracking")
-          if not cont:
-              aborted = True
-              break
+      def progress(i, msg):
+          cont, _ = prog.Update(i, msg)
           wx.GetApp().Yield(True)
+          return bool(cont)
 
-          jp = annotation_json_path(images[i])
-          data = read_annotation_json(jp)
-          if tracking_list(data):
-              skipped += 1
-              continue
-
-          try:
-              M, (dx, dy), response, inliers = estimateFrameAffine(images[i - 1], images[i])
-          except Exception as e:
-              print("Fill Tracking: shift failed for", images[i], ":", e)
-              failed += 1
-              continue
-          records = [tracking_record(images[i - 1], M, dx, dy, response, inliers)]
-
-          # Best same-lighting link among the preceding frames (i-1 excluded).
-          best_j, best_sim = best_same_light_index(images, i, self._light_fp_cache)
-          if best_j is not None:
-              try:
-                  sM, (sdx, sdy), sresp, sinl = estimateFrameAffine(images[best_j], images[i])
-                  records.append(tracking_record(images[best_j], sM, sdx, sdy, sresp, sinl,
-                                                 light_similarity=best_sim))
-              except Exception as e:
-                  print("Fill Tracking: same-light shift failed for", images[i], ":", e)
-
-          if not data:
-              data = {"width": self.width, "height": self.height, "md5hash": "",
-                      "regionClicks": [], "pointClicks": [], "pointClasses": [],
-                      "pointSeverities": [], "pointSources": []}
-          data["tracking"] = records
-          try:
-              with open(jp, "w") as f:
-                  json.dump(data, f, sort_keys=False)
-              filled += 1
-          except Exception as e:
-              print("Fill Tracking: write failed", jp, e)
-              failed += 1
-
+      res = fill_tracking(images, self._light_fp_cache, progress=progress,
+                          frame_size=(self.width, self.height))
       prog.Destroy()
-
-      # PASS 2 — weighted least squares over the pose graph: solve for per-frame
-      # global positions p_i (p_0 = 0) from all pairwise measurements p_b - p_a = s
-      # (the solve itself lives in mga.core.tracking.solve_tracking_positions).
-      solved = 0
-      if not aborted:
-          frame_json = []   # (json_path, data) per frame, aligned with images
-          for i, img in enumerate(images):
-              jp = annotation_json_path(img)
-              data = read_annotation_json(jp)
-              frame_json.append((jp, data))
-
-          positions = solve_tracking_positions(
-              images, [tracking_list(data) for _jp, data in frame_json])
-
-          first = os.path.basename(images[0])
-          for i, (gx, gy) in positions.items():
-              jp, data = frame_json[i]
-              if not data:
-                  continue
-              recs = [r for r in tracking_list(data)
-                      if r.get("method") != "leastSquaresGlobal"]
-              recs.append({"fromFrame": first,
-                           "shift": [gx, gy],
-                           "method": "leastSquaresGlobal"})
-              data["tracking"] = recs
-              try:
-                  with open(jp, "w") as f:
-                      json.dump(data, f, sort_keys=False)
-                  solved += 1
-              except Exception as e:
-                  print("Fill Tracking: write failed", jp, e)
 
       # The pass may have rewritten the open frame's JSON — reload it.
       self.onProcessNewImageSample(self.filepath)
       self.onView()
-      return filled, skipped, failed, solved, aborted
+      return res
 
    def onNudgeTracking(self, event):
       """Manual tracking fix-up: shift every auto-sourced point on the current frame
@@ -1736,52 +1539,19 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       step = wx.SpinCtrl(panel, min=1, max=200, initial=10)
 
       def nudge(ddx, ddy):
-          for i, src in enumerate(self.points_sources):
-              if src == "auto" and i < len(self.points_of_interest):
-                  x, y = self.points_of_interest[i]
-                  self.points_of_interest[i] = (x + ddx, y + ddy)
+          nudge_auto_points(self.points_of_interest, self.points_sources, ddx, ddy)
           if self.tracking:
-              rec = self.tracking[0]
-              sx, sy = rec.get("shift", [0, 0])
-              rec["shift"]  = [sx + ddx, sy + ddy]
-              aff = rec.get("affine")
-              if aff:
-                  aff[0][2] += ddx
-                  aff[1][2] += ddy
-              rec["method"] = "manual"
+              nudge_tracking_record(self.tracking[0], ddx, ddy)
           self.updatePointList()
           self.onView()
 
       def rotate(deg):
-          idx = [i for i, s in enumerate(self.points_sources)
-                 if s == "auto" and i < len(self.points_of_interest)]
-          if not idx:
+          # +deg turns clockwise on screen (y points down)
+          c = rotate_auto_points(self.points_of_interest, self.points_sources, deg)
+          if c is None:
               return
-          # Rotate the auto block about its own centroid, so it turns in place.
-          cx = sum(self.points_of_interest[i][0] for i in idx) / len(idx)
-          cy = sum(self.points_of_interest[i][1] for i in idx) / len(idx)
-          a  = np.radians(deg)          # +deg turns clockwise on screen (y points down)
-          ca, sa = np.cos(a), np.sin(a)
-          for i in idx:
-              x, y = self.points_of_interest[i]
-              dx, dy = x - cx, y - cy
-              self.points_of_interest[i] = (cx + ca * dx - sa * dy,
-                                            cy + sa * dx + ca * dy)
           if self.tracking:
-              rec = self.tracking[0]
-              aff = rec.get("affine")
-              if aff:
-                  # Fold the same rotation into the stored transform: p' = R(Mp - c) + c.
-                  # 'shift' is untouched — a turn about the centroid moves nothing.
-                  a00, a01, a02 = aff[0]
-                  a10, a11, a12 = aff[1]
-                  aff[0][0] = ca * a00 - sa * a10
-                  aff[0][1] = ca * a01 - sa * a11
-                  aff[0][2] = ca * (a02 - cx) - sa * (a12 - cy) + cx
-                  aff[1][0] = sa * a00 + ca * a10
-                  aff[1][1] = sa * a01 + ca * a11
-                  aff[1][2] = sa * (a02 - cx) + ca * (a12 - cy) + cy
-              rec["method"] = "manual"
+              rotate_tracking_record(self.tracking[0], deg, c[0], c[1])
           self.updatePointList()
           self.onView()
 
@@ -1904,49 +1674,31 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
           # merge classifier detections that don't overlap a SAM point
           c_pts, c_cls = classifier_dets.pop(json_path, ([], []))
           for (cx, cy), cname in zip(c_pts, c_cls):
-              if any((cx - px) ** 2 + (cy - py) ** 2 < 96 ** 2 for px, py in points):
+              if is_near_any(cx, cy, points, 96):
                   continue
               points.append([cx, cy]); classes.append(cname)
               sevs.append("AI"); sources.append("classifier")
               classifier_marks += 1
-          data = {
-              "width":  self.width,
-              "height": self.height,
-              "md5hash": "",
-              "regionClicks": [],
-              "pointClicks":     points,
-              "pointClasses":    classes,
-              "pointSeverities": sevs,
-              "pointSources":    sources,
-          }
-          try:
-              with open(json_path, "w") as f:
-                  json.dump(data, f, sort_keys=False)
+          data = empty_annotation(self.width, self.height,
+                                  points=points, classes=classes,
+                                  severities=sevs, sources=sources)
+          if write_annotation_json(json_path, data, tag="[Full Auto]"):
               annotated += 1
               marks     += len(dets)
-          except Exception as e:
-              print(f"[Full Auto] Failed writing {json_path}: {e}")
+          else:
               failed += 1
 
       # Frames where ONLY the classifier found something (no pen mark)
       for json_path, (c_pts, c_cls) in classifier_dets.items():
-          data = {
-              "width":  self.width,
-              "height": self.height,
-              "md5hash": "",
-              "regionClicks": [],
-              "pointClicks":     [[x, y] for x, y in c_pts],
-              "pointClasses":    list(c_cls),
-              "pointSeverities": ["AI"] * len(c_pts),
-              "pointSources":    ["classifier"] * len(c_pts),
-          }
-          try:
-              with open(json_path, "w") as f:
-                  json.dump(data, f, sort_keys=False)
+          data = empty_annotation(self.width, self.height,
+                                  points=[[x, y] for x, y in c_pts],
+                                  classes=list(c_cls),
+                                  severities=["AI"] * len(c_pts),
+                                  sources=["classifier"] * len(c_pts))
+          if write_annotation_json(json_path, data, tag="[Full Auto]"):
               annotated += 1
               classifier_marks += len(c_pts)
-          except Exception as e:
-              print(f"[Full Auto] Failed writing {json_path}: {e}")
+          else:
               failed += 1
 
       prog.Destroy()
@@ -1968,57 +1720,19 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
             print("onSave: skipping — filepath is not a valid file:", self.filepath)
             return
 
-        allData = dict()
-        allData["width"]   = self.width #self.leftViewImage.shape[1]
-        allData["height"]  = self.height #self.leftViewImage.shape[0] 
-        allData["md5hash"] = self.filehash
-
-        if self.tenengrad_focus_measure != 0.0:
-            allData["tenengradFocusMeasure"] = self.tenengrad_focus_measure
-
-
-        allData["regionClicks"] = list()
-        for x, y in self.regions_of_interest:
-              allData["regionClicks"].append((x,y))
-
-        allData["pointClicks"] = list()
-        for x, y in self.points_of_interest:
-              allData["pointClicks"].append((x,y))
-
-        allData["pointClasses"] = list()
-        for aClass in self.points_classes:
-              allData["pointClasses"].append(aClass)
-
-        allData["pointSeverities"] = list()
-        for aSeverity in self.points_severities:
-              allData["pointSeverities"].append(aSeverity)
-
-        # Per-point origin ("auto" | "manual"), aligned to pointClicks. Any point lacking
-        # a recorded source (e.g. carried over from older code paths) is treated as manual.
-        allData["pointSources"] = list()
-        for i in range(len(self.points_of_interest)):
-              src = self.points_sources[i] if i < len(self.points_sources) else "manual"
-              allData["pointSources"].append(src)
-
-        if (self.lightComboBox.GetValue()!="Unknown"):
-              allData["lightDirection"] = self.lightComboBox.GetValue()
-
-        if self.tracking:
-              allData["tracking"] = self.tracking
-
-        #primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
-        #fallback_json = f"{self.filepath}.json"
+        allData = annotation_to_dict(
+            self.points_of_interest, self.points_classes, self.points_severities,
+            self.points_sources, self.regions_of_interest,
+            self.width, self.height, self.filehash,
+            tenengrad=self.tenengrad_focus_measure,
+            light_direction=self.lightComboBox.GetValue(),
+            tracking=self.tracking)
 
         # <-- colorFrame_0_00047.json when no historical scheme exists yet
         primary_json = annotation_json_path(self.filepath)
 
-        try:
-          with open(primary_json, "w") as outfile:
-            json.dump(allData, outfile, sort_keys=False)
-   
-          self.folderStreamer.saveJSON()
-        except Exception as e:
-          print("Warning: Could not write annotations to disk", primary_json, ":", e)
+        if write_annotation_json(primary_json, allData):
+            self.folderStreamer.saveJSON()
 
 
 
@@ -2392,18 +2106,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                self._schedulePrefetch(*self._pf_next)
 
 
-   def onCameraSettings(self, event):
-        #Deactivated
-        """
-        dlg = CameraSettingsDialog(self.frame, title='Camera Settings')
-        dlg.ShowModal()
-        if (self.filepath!=""):
-           self.onSave(event) #Save current pre-existing image..
-        self.filepath = dlg.filename
-        dlg.Destroy()
-        self.onProcessNewImageSample(self.filepath)
-        """
-        
    def onAbout(self, event):
         wx.MessageBox("Written by Ammar Qammaz a.k.a. AmmarkoV\nhttp://ammar.gr/\nVersion %s\nhttps://github.com/magician-project/magician_grabber_annotator\nPsalm 32:8"%version, "About", wx.OK | wx.ICON_INFORMATION)
 
@@ -2432,48 +2134,19 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         self._stat_last_interaction = None
 
    def _datasetDefectTotals(self, local_dir):
-        """Scan every frame JSON in the dataset and tally defect classes and severities."""
-        defect_counts, severity_counts, total = {}, {}, 0
-        for jp in glob.glob(os.path.join(local_dir, "colorFrame_0_*.json")):
-            try:
-                with open(jp) as f:
-                    d = json.load(f)
-            except Exception:
-                continue
-            for c in d.get("pointClasses", []):
-                defect_counts[c] = defect_counts.get(c, 0) + 1
-            for s in d.get("pointSeverities", []):
-                severity_counts[s] = severity_counts.get(s, 0) + 1
-            total += len(d.get("pointClicks", []))
-        return defect_counts, severity_counts, total
+        """Scan every frame JSON in the dataset and tally defect classes and
+        severities — see mga.core.dataset_finalize.defect_totals (Stage 3c)."""
+        return defect_totals(local_dir)
 
    def _batchComputeFocusLight(self, local_dir):
         """Compute Tenengrad focus + a latency-corrected light direction for every
-        frame and store them in each frame's JSON. Light is decoded SEQUENTIALLY by
-        lightDecoder (drift-free CSV cycle corrected by the observed signature — see
-        lightDecoder.py): it fixes the controller's per-frame latency stalls, tags a
-        wiring-invariant canonical direction, and preserves the 'No Light' malfunction
-        flag (same mean<18 test). Falls back to per-frame brightest-region when there
-        is no controller.csv."""
+        frame and store them in each frame's JSON (light decoded sequentially by
+        lightDecoder, 'No Light' flag preserved). The pass itself lives in
+        mga.core.dataset_finalize.compute_focus_light (Stage 3c of this file's
+        refactor); this wrapper owns the streamer and the progress dialog."""
         images = dataset_images(self.folderStreamer, self.filepath)
         if not images:
             return 0
-
-        def _frameno(p):
-            m = re.search(r"colorFrame_\d+_(\d+)", os.path.basename(p))
-            return int(m.group(1)) if m else None
-
-        # Decode order = capture order (frame number); frames without one sort last.
-        images = sorted(images, key=lambda p: (_frameno(p) is None, _frameno(p) or 0))
-        img_dir = os.path.dirname(images[0])
-        csv_rows = None
-        csv_path = os.path.join(img_dir, "controller.csv")
-        if os.path.isfile(csv_path):
-            try:
-                with open(csv_path, newline="") as cf:
-                    csv_rows = list(csv.DictReader(cf))
-            except Exception as e:
-                print("Finalize: controller.csv unreadable —", e)
 
         prog = wx.ProgressDialog(
             "Finalize — focus & light", "Computing focus and light direction…",
@@ -2481,139 +2154,47 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
             style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE | wx.PD_CAN_ABORT
                   | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
 
-        # Pass 1: read every frame once; gather focus + the decoder's observations.
-        jps, datas, focus_list = [], [], []
-        sigs, dark, csvl, dirs = [], [], [], []
-        for i, img in enumerate(images):
-            cont, _ = prog.Update(i, f"{i+1}/{len(images)} frames")
-            if not cont:
-                break
+        def progress(i, msg):
+            cont, _ = prog.Update(i, msg)
             wx.GetApp().Yield(True)
+            return bool(cont)
 
-            jp = annotation_json_path(img)
-            data = read_annotation_json(jp)
-
-            # raw stays as decoded: lightDecoder's signature/is_dark want the original
-            # 4-channel packed PNG, not the repacked 2D mosaic.
-            raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
-            if raw is None:
-                jps.append(jp); datas.append(data); focus_list.append(None)
-                sigs.append(None); dark.append(True); csvl.append(-1)
-                dirs.append(lightDecoder.UNKNOWN)
-                continue
-            imgCV = mosaicToBGR(raw)
-
-            dk = lightDecoder.is_dark(raw)
-            fn = _frameno(img)
-            jps.append(jp); datas.append(data)
-            focus_list.append(float(tenengrad_focus_measure(imgCV)))
-            dark.append(dk)
-            sigs.append(None if dk else lightDecoder.signature(raw))
-            dirs.append(lightDecoder.NO_LIGHT if dk else lightDecoder.brightest_direction(raw))
-            csvl.append(lightDecoder._csv_light(csv_rows[fn])
-                        if (csv_rows and fn is not None and fn < len(csv_rows)) else -1)
-
-        # Decode the whole sequence (CSV cycle + signatures); else brightest-region.
-        use_decoder = bool(csv_rows) and any(c > 0 for c in csvl) and any(s is not None for s in sigs)
-        if use_decoder:
-            light_nums = lightDecoder.decode_light_ids(sigs, csvl, dark)
-            conf       = lightDecoder.light_confidence(sigs, dark)
-            light_dirs, _ = lightDecoder.canonical_directions(
-                light_nums, dark, site=lightDecoder.site_of(img_dir), directions=dirs)
-        else:
-            light_nums = [-1] * len(sigs)
-            conf       = [1.0] * len(sigs)
-            light_dirs = dirs                      # legacy brightest-region behaviour
-
-        # Pass 2: write focus + decoded light back into each frame JSON.
-        updated = 0
-        for k, jp in enumerate(jps):
-            if focus_list[k] is None:
-                continue                            # unreadable frame
-            data = datas[k]
-            if not data:
-                data = {"width": self.width, "height": self.height, "md5hash": "",
-                        "regionClicks": [], "pointClicks": [], "pointClasses": [],
-                        "pointSeverities": [], "pointSources": []}
-            data["tenengradFocusMeasure"] = focus_list[k]
-            data["lightDirection"]        = light_dirs[k]
-            if light_nums[k] > 0:
-                data["lightNumber"]     = light_nums[k]
-                data["lightConfidence"] = round(conf[k], 3)
-            try:
-                with open(jp, "w") as f:
-                    json.dump(data, f, sort_keys=False)
-                updated += 1
-            except Exception as e:
-                print("Finalize: focus/light write failed", jp, e)
+        updated = compute_focus_light(images, progress=progress,
+                                      frame_size=(self.width, self.height))
         prog.Destroy()
-        print(f"Finalize focus/light: {updated} frames written"
-              + ("" if use_decoder else " (no controller.csv — brightest-region fallback)"))
         return updated
 
    def _detectLeadingDarkFrames(self, local_dir):
-        """Count the consecutive dark ('No Light') frames at the very start of the dataset —
-        caused by the latency between disabling the light safety and the scene light actually
-        operating — so Finalize can set startFrame past them. Scans in sorted order and stops
-        at the first correctly-lit frame; a dark frame later in the dataset (a genuine light
-        failure) is left alone. An unreadable/placeholder leading frame counts as dark too."""
+        """Count the consecutive dark ('No Light') frames at the very start of the
+        dataset — see mga.core.dataset_finalize.leading_dark_frames (Stage 3c)."""
         images = dataset_images(self.folderStreamer, self.filepath)
-        leading = 0
-        for img in images:
-            raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
-            if raw is not None:
-                if determine_intensity_region(mosaicToBGR(raw), threshold=0.1) != "No Light":
-                    break  # first correctly-lit frame — stop
-            leading += 1
-        return leading
+        return leading_dark_frames(images)
 
    def _finalizeInfoJSON(self, local_dir):
         """Read, update and write the dataset's info.json with certification info,
         the accumulated annotation-effort statistics, and the dataset-wide
-        defect/severity totals. Returns the written info dict, or None when the
-        write failed (a message has been shown)."""
+        defect/severity totals. The read/modify/write lives in
+        mga.core.dataset_finalize.update_info_json (Stage 3c of this file's
+        refactor); this wrapper commits the session stats and shows the failure
+        dialog. Returns the written info dict, or None when the write failed."""
         info_path = os.path.join(local_dir, "info.json")
-
-        # Preserve existing (camera) fields; tolerate a missing or malformed info.json.
-        info = {}
-        if os.path.isfile(info_path):
-            try:
-                with open(info_path) as f:
-                    info = json.load(f)
-            except Exception as e:
-                print(f"Finalize: existing info.json unreadable ({e}); starting fresh.")
-
-        # Auto-skip the leading dark frames caused by light-safety-off latency: when no
-        # startFrame has been set yet, point it at the first correctly-lit frame.
-        if "startFrame" not in info:
-            leading_dark = self._detectLeadingDarkFrames(local_dir)
-            if leading_dark > 0:
-                info["startFrame"] = leading_dark
-                print(f"Finalize: detected {leading_dark} leading dark frame(s); "
-                      f"setting startFrame={leading_dark}")
 
         # Commit this session's active time before reading the counters.
         self._recordInteraction()
 
-        defect_counts, severity_counts, total_defects = self._datasetDefectTotals(local_dir)
+        stats = {"active_seconds": self._stat_active_seconds,
+                 "clicks": self._stat_clicks,
+                 "keystrokes": self._stat_keystrokes,
+                 "points_added": self._stat_points_added,
+                 "points_deleted": self._stat_points_deleted}
 
-        info["certified_by"]    = getpass.getuser()
-        info["annotated_at"]    = datetime.now().strftime("%Y/%m/%d %H:%M")
-        info["annotation_time"] = int(info.get("annotation_time", 0)) + int(round(self._stat_active_seconds))
-        info["clicks"]          = int(info.get("clicks", 0)) + self._stat_clicks
-        info["keystrokes"]      = int(info.get("keystrokes", 0)) + self._stat_keystrokes
-        info["points_added"]    = int(info.get("points_added", 0)) + self._stat_points_added
-        info["points_deleted"]  = int(info.get("points_deleted", 0)) + self._stat_points_deleted
-        info["defect_counts"]   = defect_counts
-        info["severity_counts"] = severity_counts
-        info["total_defects"]   = total_defects
-
-        try:
-            with open(info_path, "w") as f:
-                json.dump(info, f, indent=1)
-        except Exception as e:
-            wx.MessageBox(f"Failed to write {info_path}:\n{e}", "Finalize", wx.OK | wx.ICON_ERROR)
-            return None
+        info = update_info_json(
+            info_path,
+            *self._datasetDefectTotals(local_dir),
+            stats,
+            leading_dark_fn=lambda: self._detectLeadingDarkFrames(local_dir))
+        if info is None:
+            wx.MessageBox(f"Failed to write {info_path}", "Finalize", wx.OK | wx.ICON_ERROR)
         return info
 
    def onFinalize(self, event):
@@ -2761,15 +2342,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                              streamer=self.folderStreamer,
                              is_directory=True
                             )
-            #self.onNewInputPath(selectedDirectory)
-  
-            #self.populateMetaData("%s/info.json" % selectedDirectory)
-            """
-            self.loadControlsCSV("%s/controller.csv" % selectedDirectory)
-            self._loadSensorPlotsNewDataset(directory = "%s/tactile/" %  self.folderStreamer.local_dir)
-            self.onNext(event)
-            self.onPrevious(event)
-            """
         dlg.Destroy()
 
 
@@ -2796,11 +2368,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
             NewH = heightNewH
         #print("Rescaled ",W,"x",H," to ",NewW,"x",NewH)
         return NewW,NewH
-
-   def rescaleBitmap(self,img):
-        NewW,NewH = self.rescaleAnything(img.GetWidth(),img.GetHeight())
-        img = img.Scale(int(NewW),int(NewH))
-        return img
 
    def rescaleCVMAT(self,img):
         NewW,NewH = self.rescaleAnything(img.shape[1],img.shape[0])
@@ -3226,11 +2793,9 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
    def onRemovePoint(self, event):
         selected_index = self.pointList.GetSelection()
         if selected_index != -1:
-            del self.points_of_interest[selected_index]
-            del self.points_classes[selected_index]
-            del self.points_severities[selected_index]
-            if selected_index < len(self.points_sources):
-                del self.points_sources[selected_index]
+            remove_point(self.points_of_interest, self.points_classes,
+                         self.points_severities, self.points_sources,
+                         selected_index)
             self._stat_points_deleted += 1
             self.updatePointList()
             self.onView()   # fast redraw so the removed marker disappears immediately
@@ -3270,21 +2835,12 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                          "Copy Previous Points", wx.OK | wx.ICON_ERROR)
             return
 
-        pts = list(data.get('pointClicks', []))
-        cls = list(data.get('pointClasses', []))
-        sev = list(data.get('pointSeverities', []))
-        src = list(data.get('pointSources', []))
+        state = annotation_from_dict(data)
 
         # Normalize lengths
-        if len(cls) < len(pts):
-            cls.extend([options[0]] * (len(pts) - len(cls)))
-        if len(sev) < len(pts):
-            sev.extend([severities[0]] * (len(pts) - len(sev)))
-        if len(src) < len(pts):
-            src.extend(["manual"] * (len(pts) - len(src)))
-        cls = cls[:len(pts)]
-        sev = sev[:len(pts)]
-        src = src[:len(pts)]
+        pts, cls, sev, src = normalize_parallel(
+            state["points"], state["classes"], state["severities"], state["sources"],
+            options[0], severities[0], "manual")
 
         self.points_of_interest = pts
         self.points_classes = cls
@@ -3293,12 +2849,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         self._stat_points_added += len(pts)
         self.updatePointList()
         self.onNext(event)
-
-   def onRemoveRegion(self, event):
-        selected_index = self.regionList.GetSelection()
-        if selected_index != -1:
-            del self.regions_of_interest[selected_index]
-            self.updateRegionList()
 
    def onClearAllAnnotations(self, event):
         """Wipe every point/region annotation on the current frame (cleanup shortcut: 'D')."""
@@ -3364,12 +2914,12 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         self._stat_points_added += 1
         self._recordInteraction()
         self.x, self.y = event.GetPosition()
-        self.points_of_interest.append((self.x * self.clickRatioX, self.y * self.clickRatioY))
-        selected_option = self.defectComboBox.GetValue()
-        self.points_classes.append(selected_option)
-        selected_option = self.severityComboBox.GetValue()
-        self.points_severities.append(selected_option)
-        self.points_sources.append("manual")
+        add_point(self.points_of_interest, self.points_classes,
+                  self.points_severities, self.points_sources,
+                  self.x * self.clickRatioX, self.y * self.clickRatioY,
+                  self.defectComboBox.GetValue(),
+                  self.severityComboBox.GetValue(),
+                  "manual")
 
         self.updatePointList()
 
@@ -3406,11 +2956,10 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
        return sum(vals) / len(vals)
 
    def _computeMeasurement(self):
-       """Distance between the two measure points, reported in raw debayered pixels and mm."""
-       (x0, y0), (x1, y1) = self.measurePoints
-       # measurePoints are in full mosaic coords; debayered channels are half that resolution
-       debayer_dist = (((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5) / 2.0
-
+       """Distance between the two measure points, reported in raw debayered pixels and mm.
+       The pinhole px-per-mm math (with TOF height correction) lives in
+       mga.core.frame_processing.pixels_to_mm (Stage 3d of this file's refactor);
+       this keeps the widget reads and the labels."""
        try:
            px_per_mm_ref = float(self.calibPxPerMm.GetValue())
        except ValueError:
@@ -3424,14 +2973,11 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
        if cur_h is None:
            cur_h = ref_h
 
-       # pixels-per-mm scales inversely with sensor distance (pinhole model)
-       if cur_h > 0 and ref_h > 0:
-           px_per_mm = px_per_mm_ref * (ref_h / cur_h)
-       else:
-           px_per_mm = px_per_mm_ref
+       debayer_dist, mm, _px_per_mm = pixels_to_mm(
+           self.measurePoints[0], self.measurePoints[1],
+           px_per_mm_ref, ref_h, cur_h)
 
-       if px_per_mm > 0:
-           mm = debayer_dist / px_per_mm
+       if mm is not None:
            self.measureResult.SetLabel(
                "%.1f px (debayered)  ≈  %.2f mm   @ %.1f mm height"
                % (debayer_dist, mm, cur_h))
@@ -3483,19 +3029,15 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
       self._recordInteraction()
       mx, my = event.GetPosition()
       fx, fy = mx * self.clickRatioX, my * self.clickRatioY  # full-res coords, as points are stored
-      dists = [((px - fx) ** 2 + (py - fy) ** 2) for (px, py) in self.points_of_interest]
-      idx = min(range(len(dists)), key=dists.__getitem__)
+      idx, d2 = nearest_point_sq(fx, fy, self.points_of_interest)
       # guard against deleting a far-away point on an empty-space click (~1.5 tiles)
-      if dists[idx] > (144 * self.clickRatioX) ** 2:
+      if d2 > (144 * self.clickRatioX) ** 2:
           print("Right-click: no point near (%d,%d)" % (int(fx), int(fy)))
           return
       print("Right-click removing point %d at (%d,%d)" %
             (idx, int(self.points_of_interest[idx][0]), int(self.points_of_interest[idx][1])))
-      del self.points_of_interest[idx]
-      del self.points_classes[idx]
-      del self.points_severities[idx]
-      if idx < len(self.points_sources):
-          del self.points_sources[idx]
+      remove_point(self.points_of_interest, self.points_classes,
+                   self.points_severities, self.points_sources, idx)
       self._stat_points_deleted += 1
       self.updatePointList()
       self.onView()
@@ -3509,11 +3051,9 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         if rotation > 0:
             print("Mouse wheel moved up")
             self.onPrevious(event)
-            #self.handleZoomIn()  # Call a zoom-in method or similar action
         else:
             print("Mouse wheel moved down")
             self.onNext(event)
-            #self.handleZoomOut()  # Call a zoom-out method or similar action
 
    def onKeyPress(self, event):
         keycode = event.GetKeyCode()

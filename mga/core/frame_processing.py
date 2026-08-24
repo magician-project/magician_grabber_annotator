@@ -164,3 +164,23 @@ def canonicalize_lighting(mosaic, filepath, cache, numLights=6):
     out[1::2, 0::2] *= float(gains[2])
     out[1::2, 1::2] *= float(gains[3])
     return np.clip(out, 0, maxval).astype(mosaic.dtype)
+
+
+def pixels_to_mm(p0, p1, px_per_mm_ref, ref_h, cur_h):
+    """Distance between two full-mosaic points, reported in debayered pixels
+    and mm: pixels-per-mm scales inversely with sensor distance (pinhole
+    model), so the calibration at reference height `ref_h` is corrected for
+    the current TOF height `cur_h`. Returns (debayer_dist, mm, px_per_mm);
+    mm is None when no px-per-mm calibration is available (Stage 3d of the
+    wx_annotator refactor — was the measuring-tool math in _computeMeasurement)."""
+    # measurePoints are in full mosaic coords; debayered channels are half that resolution
+    (x0, y0), (x1, y1) = p0, p1
+    debayer_dist = (((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5) / 2.0
+
+    if cur_h > 0 and ref_h > 0:
+        px_per_mm = px_per_mm_ref * (ref_h / cur_h)
+    else:
+        px_per_mm = px_per_mm_ref
+
+    mm = debayer_dist / px_per_mm if px_per_mm > 0 else None
+    return debayer_dist, mm, px_per_mm

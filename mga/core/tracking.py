@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from mga.core.read_data_annotator import readPolarPNMToRGBA
+from mga.core.annotation_state import is_near_any
 
 # The illumination cycles through the scene lights during acquisition, so nearby
 # frames repeat the same lighting. The Track button records a direct transform to
@@ -216,3 +217,99 @@ def solve_tracking_positions(images, per_frame_records):
 
     return {i: (float(px[i - 1]), float(py[i - 1]))
             for i in range(1, N) if i in constrained}
+
+
+# Point-carry and manual-correction helpers (Stage 3d of the wx_annotator
+# refactor): the Track button's carry loop and the Nudge dialog's shift/rotate
+# previously lived inline in the GUI handlers.
+def prior_shift_from_record(record, cur, direction, from_index):
+    """Smooth-motion prior from the adjacent-frame tracking record, sign-corrected
+    for our direction of travel (+1 next / -1 previous), or None when the record
+    is not adjacent or has no shift."""
+    s = record.get("shift")
+    if s and from_index is not None:
+        if from_index == cur - direction:
+            return (s[0], s[1])
+        elif from_index == cur + direction:
+            return (-s[0], -s[1])
+    return None
+
+
+def propagate_points(points, classes, severities, M, W, H,
+                     min_dist, default_class, default_severity, existing):
+    """Transform each point by the 2x3 affine M into the destination frame;
+    drop results landing outside (W, H) or within min_dist of a point the frame
+    already has (`existing`) — re-pressing Track or tracking onto a partially
+    annotated frame must not double up. Returns (pts, classes, severities) of
+    the carried points; their sources are all 'auto' (predictions), matching
+    the Track button."""
+    carried_pts, carried_cls, carried_sev = [], [], []
+    for i, (x, y) in enumerate(points):
+        tx = M[0, 0] * x + M[0, 1] * y + M[0, 2]
+        ty = M[1, 0] * x + M[1, 1] * y + M[1, 2]
+        if not (0 <= tx < W and 0 <= ty < H):
+            continue
+        if is_near_any(tx, ty, existing, min_dist):
+            continue
+        carried_pts.append((tx, ty))
+        carried_cls.append(classes[i] if i < len(classes) else default_class)
+        carried_sev.append(severities[i] if i < len(severities) else default_severity)
+    return carried_pts, carried_cls, carried_sev
+
+
+def nudge_auto_points(points, sources, ddx, ddy):
+    """Shift every auto-sourced point by (ddx, ddy) in place (Nudge dialog)."""
+    for i, src in enumerate(sources):
+        if src == "auto" and i < len(points):
+            x, y = points[i]
+            points[i] = (x + ddx, y + ddy)
+
+
+def rotate_auto_points(points, sources, deg):
+    """Rotate the auto-sourced block about its own centroid, so it turns in
+    place; returns the centroid so the tracking record can fold the same
+    rotation, or None when the frame has no auto points. +deg turns clockwise
+    on screen (y points down)."""
+    idx = [i for i, s in enumerate(sources) if s == "auto" and i < len(points)]
+    if not idx:
+        return None
+    cx = sum(points[i][0] for i in idx) / len(idx)
+    cy = sum(points[i][1] for i in idx) / len(idx)
+    a = np.radians(deg)
+    ca, sa = np.cos(a), np.sin(a)
+    for i in idx:
+        x, y = points[i]
+        dx, dy = x - cx, y - cy
+        points[i] = (cx + ca * dx - sa * dy, cy + sa * dx + ca * dy)
+    return cx, cy
+
+
+def nudge_tracking_record(rec, ddx, ddy):
+    """Fold a nudge into tracking record rec: shift += (ddx, ddy), the affine
+    translation columns follow, method marked 'manual'."""
+    sx, sy = rec.get("shift", [0, 0])
+    rec["shift"] = [sx + ddx, sy + ddy]
+    aff = rec.get("affine")
+    if aff:
+        aff[0][2] += ddx
+        aff[1][2] += ddy
+    rec["method"] = "manual"
+
+
+def rotate_tracking_record(rec, deg, cx, cy):
+    """Fold a rotation about (cx, cy) into the record's affine:
+    p' = R(Mp - c) + c. 'shift' is untouched — a turn about the centroid moves
+    nothing. Marks method 'manual'."""
+    aff = rec.get("affine")
+    if aff:
+        a = np.radians(deg)
+        ca, sa = np.cos(a), np.sin(a)
+        a00, a01, a02 = aff[0]
+        a10, a11, a12 = aff[1]
+        aff[0][0] = ca * a00 - sa * a10
+        aff[0][1] = ca * a01 - sa * a11
+        aff[0][2] = ca * (a02 - cx) - sa * (a12 - cy) + cx
+        aff[1][0] = sa * a00 + ca * a10
+        aff[1][1] = sa * a01 + ca * a11
+        aff[1][2] = sa * (a02 - cx) + ca * (a12 - cy) + cy
+    rec["method"] = "manual"

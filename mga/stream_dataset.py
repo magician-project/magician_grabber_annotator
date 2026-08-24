@@ -5,11 +5,12 @@ import os
 import sys
 import cv2
 import numpy as np
-import sys
 import time
 
 
 from mga.paths import classifier_root
+from mga.core.folder_stream import FolderStreamer as _CoreFolderStreamer
+from mga.core.read_data_annotator import checkIfFileExists
 
 try:
   sys.path.append(classifier_root())
@@ -23,9 +24,6 @@ from mvc.core.shared_memory import SharedMemoryManager
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-def checkIfFileExists(filename):
-    return os.path.isfile(filename)
-
 def resize_with_padding(img, target_width, target_height):
     h, w = img.shape[:2]
     scale = min(target_width/w, target_height/h)
@@ -38,21 +36,19 @@ def resize_with_padding(img, target_width, target_height):
     return cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0,0,0])
 
 # ----------------- FolderStreamer -----------------
-class FolderStreamer():
+class FolderStreamer(_CoreFolderStreamer):
+    """cv2-style view of a dataset folder for the shared-memory streaming GUI:
+    a thin adapter over mga.core.folder_stream.FolderStreamer (Stage 3e of the
+    wx_annotator refactor). available_frames are the stream indices of the
+    label-prefixed frames in the sorted directory listing."""
     def __init__(self, path="./", label="colorFrame_0_", width=0, height=0, loop=True):
-        self.path        = path
-        self.label       = label
+        super().__init__(path=path, label=label, width=width, height=height)
+        self.loop = loop
         self.frameNumber = 0
-        self.width       = width
-        self.height      = height
-        self.should_stop = False
-        self.loop        = loop
-
-        self.available_frames = sorted([
-            int(f.replace(label, "").split(".")[0])
-            for f in os.listdir(path)
-            if f.startswith(label) and (f.endswith(".jpg") or f.endswith(".png") or f.endswith(".pnm"))
-        ])
+        dlist = self.directoryList or []
+        self._stream_indices = [i for i, p in enumerate(dlist)
+                                if os.path.basename(p).startswith(label)]
+        self.available_frames = list(range(len(self._stream_indices)))
 
         if not self.available_frames:
             eprint("No frames found in folder:", path)
@@ -63,7 +59,7 @@ class FolderStreamer():
         return not self.should_stop
 
     def release(self):
-        self.should_stop = True 
+        self.should_stop = True
 
     def read(self):
         if self.frameNumber >= len(self.available_frames):
@@ -73,33 +69,14 @@ class FolderStreamer():
                 self.should_stop = True
                 return False, None
 
-        filenameJPG = f"{self.path}/{self.label}{self.frameNumber:05d}.jpg"
-        filenamePNG = f"{self.path}/{self.label}{self.frameNumber:05d}.png"
-        filenamePNM = f"{self.path}/{self.label}{self.frameNumber:05d}.pnm"
-
-        try:
-            if checkIfFileExists(filenameJPG):
-                self.img = cv2.imread(filenameJPG, cv2.IMREAD_UNCHANGED)
-            elif checkIfFileExists(filenamePNG):
-                self.img = cv2.imread(filenamePNG, cv2.IMREAD_UNCHANGED)
-            elif checkIfFileExists(filenamePNM):
-                self.img = cv2.imread(filenamePNM, cv2.IMREAD_UNCHANGED)
-            else:
-                eprint("Could not find ", filenameJPG, filenamePNG, filenamePNM)
-                self.img = None
-        except Exception as e:
-            eprint("Failed to open frame:", e)
-            self.img = None
-
+        img_path = self.directoryList[self._stream_indices[self.frameNumber]]
+        self.img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
         if self.img is not None:
-            #if self.width != 0 and self.height != 0:
-            #    self.img = resize_with_padding(self.img, self.width, self.height)
-            success = True
             self.frameNumber += 1
-        else:
-            success = False
-            self.should_stop = True
-        return success, self.img
+            return True, self.img
+        eprint("Could not read frame ", img_path)
+        self.should_stop = True
+        return False, None
 
 # ----------------- wxPython GUI -----------------
 class StreamerFrame(wx.Frame):

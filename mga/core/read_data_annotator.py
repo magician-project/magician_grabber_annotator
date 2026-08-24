@@ -709,10 +709,6 @@ def count_class_appearances(onehot, num_classes):
 
     return score
 
- 
-def checkIfFileExists(filename):
-    return os.path.isfile(filename) 
-
 
 #12-0.02
 #262 /235 - weld

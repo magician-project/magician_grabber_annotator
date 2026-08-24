@@ -4,14 +4,7 @@ import shutil
 import cv2
 import numpy as np
 
-
-# --- Debayer ---
-def debayerPolarImage(image):
-    polarization_90_deg   = image[0::2, 0::2]
-    polarization_45_deg   = image[0::2, 1::2]
-    polarization_135_deg  = image[1::2, 0::2]
-    polarization_0_deg    = image[1::2, 1::2]
-    return polarization_0_deg, polarization_45_deg, polarization_90_deg, polarization_135_deg
+from mga.core.read_data_annotator import debayerPolarImage   # single-sourced (Stage 3e)
 
 
 # How much tail truncation we're willing to pad on a truncated PNM, expressed as

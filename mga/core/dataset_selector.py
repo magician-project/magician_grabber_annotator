@@ -11,9 +11,12 @@ import wx
 import requests
 import json
 import time
-from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+from urllib.parse import urlparse
 
 from mga.paths import repo_root
+from mga.core.http_stream import (load_credentials as _load_credentials,
+                                  save_credentials as _save_credentials,
+                                  auth_url_with_credentials)
 
 # Cached "Check Annotations" report (the scan costs 2+ HTTP requests per dataset).
 # Shown immediately when the dialog opens; pressing "Check Annotations" rescans
@@ -155,22 +158,13 @@ class DatasetSelector(wx.Dialog):
             return False, str(e)
 
     # ---------- Credentials ----------
+    # The file read/write and the query-string auth live in mga.core.http_stream
+    # (Stage 3e of the wx_annotator refactor).
     def load_credentials(self):
-        if os.path.exists(self.credentials):
-            try:
-                with open(self.credentials, "r") as f:
-                    data = json.load(f)
-                    return data.get("username", ""), data.get("password", "")
-            except Exception:
-                pass
-        return "", ""
+        return _load_credentials(self.credentials)
 
     def save_credentials(self, username, password):
-        try:
-            with open(self.credentials, "w") as f:
-                json.dump({"username": username, "password": password}, f)
-        except Exception:
-            pass
+        _save_credentials(username, password, credentials=self.credentials)
 
     # ---------- Helpers ----------
     def build_url_with_auth(self, base_url):
@@ -180,13 +174,7 @@ class DatasetSelector(wx.Dialog):
         if not user or not pwd:
             raise ValueError("Username and password required")
 
-        parsed = urlparse(base_url)
-        query = parse_qs(parsed.query)
-        query["username"] = user
-        query["password"] = pwd
-
-        new_query = urlencode(query, doseq=True)
-        return urlunparse(parsed._replace(query=new_query))
+        return auth_url_with_credentials(base_url, user, pwd)
 
     def build_url_with_auth_and_dataset(self, base_url, dataset):
         """Append username/password and dataset=... query params to provider URL."""
@@ -196,14 +184,7 @@ class DatasetSelector(wx.Dialog):
         if not user or not pwd:
             raise ValueError("Username and password required")
 
-        parsed = urlparse(base_url)
-        query = parse_qs(parsed.query)
-        query["username"] = user
-        query["password"] = pwd
-        query["dataset"] = dataset
-
-        new_query = urlencode(query, doseq=True)
-        return urlunparse(parsed._replace(query=new_query))
+        return auth_url_with_credentials(base_url, user, pwd, dataset=dataset)
 
     def onDropdownSelection(self, event):
         selection = self.dropdown.GetStringSelection()

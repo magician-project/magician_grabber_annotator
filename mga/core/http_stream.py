@@ -36,7 +36,22 @@ def load_credentials(credentials=os.path.join(repo_root(), "server.json")):
     return "", ""
 
 
-def auth_urlWHY(url, username, password):
+def save_credentials(username, password, credentials=os.path.join(repo_root(), "server.json")):
+    """Write username/password to the credentials file. Silent on failure
+    (Stage 3e of the wx_annotator refactor: this body previously lived in
+    dataset_selector.save_credentials; upload_annotations had a MessageBox
+    variant that is gone)."""
+    try:
+        with open(credentials, "w") as f:
+            json.dump({"username": username, "password": password}, f)
+    except Exception:
+        pass
+
+
+def auth_url_with_credentials(url, username, password, dataset=None):
+    """Append username/password (and optionally dataset=) to `url`'s query
+    string (Stage 3e of the wx_annotator refactor: the old auth_urlWHY body,
+    extended with the dataset param dataset_selector's builders need)."""
     if not username or not password:
         return url
 
@@ -44,6 +59,8 @@ def auth_urlWHY(url, username, password):
     query = parse_qs(parsed.query)
     query["username"] = username
     query["password"] = password
+    if dataset is not None:
+        query["dataset"] = dataset
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
 
 

@@ -43,6 +43,12 @@ import numpy as np
 import wx
 
 from mga import wx_annotator as WA
+# Classifier glue comes from the hub, not the GUI module (Stage 3b of the
+# wx_annotator refactor); WA stays for the PhotoCtrl app class/instance only.
+from mga.core.classifier_hub import (ClassifierPnm, locate_model, web_model_scan,
+                                     ensure_model_downloaded, GATE_DEFECT_MASS,
+                                     GATE_MAX_PROB, GATE_OFF,
+                                     classifier_relative_directory)
 
 
 # ---------------------------------------------------------------------------
@@ -158,19 +164,19 @@ def get_datasets(rescan=False):
 
 
 # ---------------------------------------------------------------------------
-# Model index (same source as wxAnnotator: WA.web_model_scan, local + online)
+# Model index (same source as wxAnnotator: classifier_hub.web_model_scan, local + online)
 # ---------------------------------------------------------------------------
 def model_files_dir(name):
     """Directory that actually holds this model's .pth/.json and the report artifacts the
     training run dropped beside them: the flat models directory on a deployed box, or
-    experiments/<campaign>/<run>/ on a training box (see WA.locate_model)."""
-    found = WA.locate_model(STATE.model_dir, name)
+    experiments/<campaign>/<run>/ on a training box (see classifier_hub.locate_model)."""
+    found = locate_model(STATE.model_dir, name)
     return os.path.dirname(found[0]) if found else STATE.model_dir
 
 
 def scan_models():
-    local = set(WA.ClassifierPnm.model_scan(STATE.model_dir))
-    names = WA.web_model_scan(STATE.model_dir)
+    local = set(ClassifierPnm.model_scan(STATE.model_dir))
+    names = web_model_scan(STATE.model_dir)
     out = []
     for n in names:
         cfg = {}
@@ -226,7 +232,7 @@ def asset_path(name, kind):
     """Path of one report PNG, or None if it does not exist. `name` must be a known
     model, so the caller cannot walk out of the model directory."""
     suffix = ASSET_SUFFIX.get(kind)
-    if suffix is None or name not in WA.ClassifierPnm.model_scan(STATE.model_dir):
+    if suffix is None or name not in ClassifierPnm.model_scan(STATE.model_dir):
         return None
     p = os.path.join(model_files_dir(name), name + suffix)
     return p if os.path.isfile(p) else None
@@ -264,7 +270,7 @@ def change_model(name):
         if left > 0:
             return False, "Cooldown active: %.0f s remaining before another model change." % left
 
-        if not WA.ensure_model_downloaded(STATE.model_dir, name):
+        if not ensure_model_downloaded(STATE.model_dir, name):
             return False, "Could not find '%s' locally or on the online repository." % name
 
         def work():
@@ -500,7 +506,7 @@ def page_model(name, msg=None, err=False):
             "<button type='submit'%s>Load this model</button></form>"
             % (esc(name), esc(name), " disabled" if cooldown_left() > 0 else ""))
 
-    online_note = ("" if name in WA.ClassifierPnm.model_scan(STATE.model_dir) else
+    online_note = ("" if name in ClassifierPnm.model_scan(STATE.model_dir) else
                    "<p class='dim'>Not downloaded yet &mdash; \"Load this model\" fetches it "
                    "from the online repository first.</p>")
 
@@ -549,7 +555,7 @@ def settings_bar(name, idx):
     s = get_settings()
     gates = "".join("<option%s>%s</option>"
                     % (" selected" if g == s["gate"] else "", esc(g))
-                    for g in (WA.GATE_DEFECT_MASS, WA.GATE_MAX_PROB, WA.GATE_OFF))
+                    for g in (GATE_DEFECT_MASS, GATE_MAX_PROB, GATE_OFF))
     return ("<div class='bar'><form method='post' action='/settings' "
             "style='display:flex;gap:10px;align-items:center;flex-wrap:wrap'>"
             "<input type='hidden' name='d' value='%s'><input type='hidden' name='f' value='%d'>"
@@ -691,7 +697,7 @@ def main():
     ap = argparse.ArgumentParser(description="Minimal HTTP front-end for wxAnnotator.py")
     ap.add_argument("--db", default="/media/ammar/games2/Datasets/Magician",
                     help="dataset base directory")
-    ap.add_argument("--models", default=WA.classifier_relative_directory,
+    ap.add_argument("--models", default=classifier_relative_directory,
                     help="directory holding <model>.pth/<model>.json pairs, "
                          "flat and/or under experiments/<campaign>/<run>/")
     ap.add_argument("--port", type=int, default=8080)
@@ -716,7 +722,7 @@ def main():
     clf = getattr(app, "ClassifierPnm", None)
     STATE.model = os.path.splitext(getattr(clf, "name", "") or "")[0] or None
     if STATE.model is None:
-        models = WA.ClassifierPnm.model_scan(STATE.model_dir)
+        models = ClassifierPnm.model_scan(STATE.model_dir)
         STATE.model = models[0] if models else None
 
     httpd = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)

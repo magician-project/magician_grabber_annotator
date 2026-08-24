@@ -330,15 +330,12 @@ class ClassifierTabMixin:
     def _list_remote(self, local_models):
         """Models on the online zip repository (CameraV2Models). Already-local names
         are listed too — downloading them fetches the server's newest archive."""
-        try:
-            # cross-repo: magician_vision_classifier/mvc/inference/model_download.py
-            from mvc.inference.model_download import remote_model_names
-            local = set(local_models)
-            return [n + (LOCAL_MARK if n in local else "")
-                    for n in remote_model_names(timeout=5)]
-        except Exception as e:
-            print(f"[Models] Online repository unavailable: {e}")
-            return []
+        # remote_model_names comes from the classifier hub (Stage 3e of the
+        # wx_annotator refactor) — the single mvc.inference.model_download surface.
+        from mga.core.classifier_hub import remote_model_names
+        local = set(local_models)
+        return [n + (LOCAL_MARK if n in local else "")
+                for n in remote_model_names(timeout=5)]
 
     def _remote_summary(self, remote):
         if not remote:
@@ -377,12 +374,12 @@ class ClassifierTabMixin:
         busy = wx.BusyCursor()
         wx.Yield()
         try:
-            # cross-repo: magician_vision_classifier/mvc/inference/model_download.py
-            from mvc.inference.model_download import download_model
-            # include_plots: the GUI reads confusion/threshold PNGs for the model's
-            # report views, so a manual download shouldn't leave it report-less
-            # (matches ensure_model's default, used by the web annotator's
-            # auto-download-on-select).
+            # download_model comes from the classifier hub (Stage 3e of the
+            # wx_annotator refactor); include_plots: the GUI reads confusion/
+            # threshold PNGs for the model's report views, so a manual download
+            # shouldn't leave it report-less (matches ensure_model's default,
+            # used by the web annotator's auto-download-on-select).
+            from mga.core.classifier_hub import download_model
             download_model(name, model_dir, include_plots=True)
         except Exception as e:
             wx.MessageBox(f"Failed to download '{name}':\n{e}",

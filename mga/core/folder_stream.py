@@ -17,63 +17,11 @@ import json
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-"""
-Check if a file exists
-"""
-def checkIfFileExists(filename):
-    if (filename is None):  
-       return False
-    return os.path.isfile(filename) 
-
-"""
-Check if a path exists
-"""
-def checkIfPathExists(filename):
-    if (filename is None):  
-       return False
-    return os.path.exists(filename) 
-
-"""
-Check if a path exists
-"""
-def checkIfPathIsDirectory(filename):
-    if (filename is None):  
-       return False
-    return os.path.isdir(filename) 
-
-
-def list_image_files(directory):
-    """
-    Retrieve a list of all files in the specified directory.
-
-    Parameters:
-    - directory (str): The path to the directory.
-
-    Returns:
-    - files (list): A list of file names in the directory.
-    """
-
-    image_extensions = ['.png', '.pnm', '.jpg', '.jpeg']
-    image_files = []
-
-    try:
-        # Iterate over all files and directories in the specified directory
-        for filename in os.listdir(directory):
-            filepath = os.path.join(directory, filename)
-
-            # Check if it's a file (not a directory) and has a valid image extension
-            if os.path.isfile(filepath) and any(filename.lower().endswith(ext) for ext in image_extensions):
-               if "foreground.png" in filepath:
-                   print("Omitting ",filepath," since it is a foreground file!")
-               else:
-                   image_files.append(filepath) 
-
-    except OSError as e:
-        print(f"Error reading directory '{directory}': {e}")
-    
-    image_files.sort() # Always sort files 
-
-    return image_files
+# fs helpers are single-sourced in mga/core/read_data_annotator.py (Stage 3e of
+# the wx_annotator refactor — these copies had drifted).
+from mga.core.read_data_annotator import (checkIfFileExists, checkIfPathExists,
+                                          checkIfPathIsDirectory,
+                                          list_image_files)
 
 
 class FolderStreamer():
