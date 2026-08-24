@@ -151,17 +151,8 @@ except Exception as _autoErr:
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-from mga.core.read_data_annotator import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive
+from mga.core.read_data_annotator import repackPolarToMosaic,readPolarPNMToRGBALive
 
-"""
-def debayerPolarImage(image): 
- # Split the A, B, C, and D values into separate monochrome images
- polarization_90_deg   = image[0::2, 0::2]
- polarization_45_deg   = image[0::2, 1::2]
- polarization_135_deg  = image[1::2, 0::2]
- polarization_0_deg    = image[1::2, 1::2]
- return polarization_0_deg,polarization_45_deg,polarization_90_deg,polarization_135_deg      
-"""
 #-------------------------------------------------------------------------------
 # Make Classifier completely seperatable from the rest of the codebase
 #-------------------------------------------------------------------------------
@@ -281,7 +272,7 @@ def ensure_model_downloaded(model_dir, name):
         return False
 
 
-from mga.core.read_data_annotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
+from mga.core.read_data_annotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathIsDirectory
 from mga.core.read_data_annotator import annotation_json_path, read_annotation_json, dataset_images
 from mga.core.frame_processing import loadFrameMosaic, mosaicToBGR, canonicalize_lighting, PROCESSOR_WAYS
 from mga.core.tracking import (lightingFingerprint, estimateFrameAffine,
@@ -291,24 +282,12 @@ from mga.core.tracking import (lightingFingerprint, estimateFrameAffine,
 from mga.core.visualize_data import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
 import re
 import mga.core.light_decoder as lightDecoder
-from mga.core.upload_annotations import UploadDialog
 
 
 # Lighting fingerprints, affine estimation, tracking records and the pose-graph
 # solve moved to mga/core/tracking.py (Stage 1 of this file's refactor); the
 # names are re-imported above so the rest of this file is unchanged.
 
-"""
-def loadMoreClasses(filename,classes_dict):
-    with open("%s.json"%filename) as json_data:
-        data          = json.load(json_data)
-        point_clicks  = data.get("pointClicks", [])
-        point_classes = data.get("pointClasses", [])
-        for cl in point_classes:
-           #print("Add `",cl,"` class ")
-           classes_dict[cl]=True 
-    return classes_dict 
-"""
 
 
 
@@ -484,27 +463,6 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         # Create global instance once
         self.stats = AnnotationCorrelationStats(classifier_name=self.classifierModelCombo.GetValue(),hit_radius=60)
 
-        """
-['ID_ABORT', 'ID_ABOUT', 'ID_ADD', 'ID_ANY', 'ID_APPLY', 'ID_BACKWARD', 'ID_BOLD
-', 'ID_CANCEL', 'ID_CLEAR', 'ID_CLOSE', 'ID_CLOSE_ALL', 'ID_CONTEXT_HELP', 'ID_C
-OPY', 'ID_CUT', 'ID_DEFAULT', 'ID_DELETE', 'ID_DOWN', 'ID_DUPLICATE', 'ID_EDIT',
- 'ID_EXIT', 'ID_FILE', 'ID_FILE1', 'ID_FILE2', 'ID_FILE3', 'ID_FILE4', 'ID_FILE5
-', 'ID_FILE6', 'ID_FILE7', 'ID_FILE8', 'ID_FILE9', 'ID_FIND', 'ID_FORWARD', 'ID_
-HELP', 'ID_HELP_COMMANDS', 'ID_HELP_CONTENTS', 'ID_HELP_CONTEXT', 'ID_HELP_INDEX
-', 'ID_HELP_PROCEDURES', 'ID_HELP_SEARCH', 'ID_HIGHEST', 'ID_HOME', 'ID_IGNORE',
- 'ID_INDENT', 'ID_INDEX', 'ID_ITALIC', 'ID_JUSTIFY_CENTER', 'ID_JUSTIFY_FILL', '
-ID_JUSTIFY_LEFT', 'ID_JUSTIFY_RIGHT', 'ID_LOWEST', 'ID_MORE', 'ID_NEW', 'ID_NO',
- 'ID_NONE', 'ID_NOTOALL', 'ID_OK', 'ID_OPEN', 'ID_PAGE_SETUP', 'ID_PASTE', 'ID_P
-REFERENCES', 'ID_PREVIEW', 'ID_PREVIEW_CLOSE', 'ID_PREVIEW_FIRST', 'ID_PREVIEW_G
-OTO', 'ID_PREVIEW_LAST', 'ID_PREVIEW_NEXT', 'ID_PREVIEW_PREVIOUS', 'ID_PREVIEW_P
-RINT', 'ID_PREVIEW_ZOOM', 'ID_PRINT', 'ID_PRINT_SETUP', 'ID_PROPERTIES', 'ID_RED
-O', 'ID_REFRESH', 'ID_REMOVE', 'ID_REPLACE', 'ID_REPLACE_ALL', 'ID_RESET', 'ID_R
-ETRY', 'ID_REVERT', 'ID_REVERT_TO_SAVED', 'ID_SAVE', 'ID_SAVEAS', 'ID_SELECTALL'
-, 'ID_SEPARATOR', 'ID_SETUP', 'ID_STATIC', 'ID_STOP', 'ID_UNDELETE', 'ID_UNDERLI
-NE', 'ID_UNDO', 'ID_UNINDENT', 'ID_UP', 'ID_VIEW_DETAILS', 'ID_VIEW_LARGEICONS',
- 'ID_VIEW_LIST', 'ID_VIEW_SMALLICONS', 'ID_VIEW_SORTDATE', 'ID_VIEW_SORTNAME', '
-ID_VIEW_SORTSIZE', 'ID_VIEW_SORTTYPE', 'ID_YES', 'ID_YESTOALL', 'ID_ZOOM_100', '
-ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
    def _clamp_range(self, start, end, total):
@@ -2004,73 +1962,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       self.onProcessNewImageSample(self.filepath)
       self.onView()
 
-   def onAutoOLD(self, event):
-      print("Automatically retrieved annotations")
-      print(self.AIAnnotations)
-      print("User Submitted annotations")
-      print(self.points_of_interest)
-      print(self.points_classes)
-      print(self.points_severities)
-      tileSize = self.ClassifierPnm.tile_size
-
-      # === Prepare cleaned lists ===
-      new_points     = []
-      new_classes    = []
-      new_severities = []
-
-      ai_points  = self.AIAnnotations.get("points", [])
-      ai_classes = self.AIAnnotations.get("classes", [])
-
-      # Helper: check if two tiles overlap
-      def tiles_overlap(pt1, pt2):
-        half = tileSize / 2
-        x1_min, y1_min = pt1[0] - half, pt1[1] - half
-        x1_max, y1_max = pt1[0] + half, pt1[1] + half
-
-        x2_min, y2_min = pt2[0] - half, pt2[1] - half
-        x2_max, y2_max = pt2[0] + half, pt2[1] + half
-
-        # Overlap if bounding boxes intersect
-        return not (x1_max < x2_min or x1_min > x2_max or
-                    y1_max < y2_min or y1_min > y2_max)
-
-      # === Iterate over AI annotations ===
-      for pt, cls in zip(ai_points, ai_classes):
-        # Skip if this AI tile overlaps any user-provided tile
-        if any(tiles_overlap(pt, user_pt) for user_pt in self.points_of_interest):
-            continue
-
-        # Replace AI class with 'class Clean' since we assume AI is unreliable
-        new_points.append(pt)
-        new_classes.append("Clean")
-        new_severities.append("AI")
-
-      # === Store the cleaned results ===
-      self.cleaned_points    = new_points
-      self.cleaned_classes   = new_classes
-      self.cleaned_severities = new_severities
-
-      # === Print summary ===
-      print("\nGenerated cleaned annotations:")
-      for p, c in zip(new_points, new_classes):
-        print(f"{p} -> {c}")
-
-      self.points_of_interest.extend(new_points)
-      self.points_classes.extend(new_classes)
-      self.points_severities.extend(new_severities)
-      self.points_sources.extend(["auto"] * len(new_points))
-
-
-      print(f"Total new clean tiles: {len(new_points)}")
-
-      if (self.incrementFrameAfterAnAdditionCheckbox.GetValue()):
-          print(f"Auto incrementing due to checkbox")
-          self.onNext(event)
-
-
-      return new_points, new_classes
-        
-
    def onSave(self, event):
         print("Save")
         if not self.filepath or not os.path.isfile(self.filepath):
@@ -2401,23 +2292,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            self.cleanThisFrameMetaData()
            self._pf_next = None  # set below if this frame is prefetch-eligible
 
-           #if (checkIfFileExists("%s.json"%filepath)):
-           #    print("There are saved data that need to be restored here")
-           #    self.restoreFromJSON("%s.json" % filepath)
-           #jsonPath = self.folderStreamer.getJSON()
-           # Make .png/.jpg compatible with legacy annotations saved as *.pnm.json
-           #jsonPath = resolve_annotation_json_path(filepath, prefer_existing=True) or jsonPath
 
            print("onProcessNewImageSample (", filepath, ") ")
            self._restoreFrameAnnotations(filepath)
 
            
-           """
-           if hasattr(self, 'controlsData'):
-                   frame_idx = self.scrollBar.GetValue()
-                   if 0 <= frame_idx < len(self.controlsData):
-                       self.updateControlsTab(self.controlsData[frame_idx],sample_number = frame_idx)
-           """
            ui_idx = self.scrollBar.GetValue()
            stream_idx = self._stream_from_ui(ui_idx)
 
@@ -2426,10 +2305,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                    self.updateControlsTab(self.controlsData[stream_idx], sample_number=stream_idx)
 
 
-           #self.filehash = get_md5(filepath) 
-           #img = wx.Image(self.filepath, wx.BITMAP_TYPE_ANY)
-           #img = self.rescaleBitmap(img)
-           #self.imageCtrl.SetBitmap(wx.Bitmap(img))
 
            # Render the polarization image for both view panels
            global combineChannels
@@ -3680,17 +3555,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         else:
             event.Skip()
 
-   def onUploadAnnotationsOLD(self, event):
-      print("Local Dir: ",self.folderStreamer.local_dir)
-      zip_path = "./upload.zip"  # replace with your real file path
-      zipCommand = "zip %s -b %s %s/color*.json "% (zip_path, self.local_base_path, self.folderStreamer.local_dir) 
-      print("Zip command : ",zipCommand)
-      os.system(zipCommand)
-      dlg = UploadDialog(self.frame, zip_path, self.folderStreamer.local_dir)
-      dlg.ShowModal()
-      dlg.Destroy()
-      os.system("rm upload.zip")
-
    def onUploadAnnotations(self, event):
         """Upload this dataset's annotation JSONs to the server (zip build and
         dialog moved to mga.core.upload_annotations.upload_dataset_annotations)."""
@@ -3702,25 +3566,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         dlg = BatchProcessDialog(self.frame, self.folderStreamer)
         dlg.ShowModal()
         dlg.Destroy()
-
-   def onOpenMagnifierOLD(self, event):
-     """Open a magnifier window."""
-     if hasattr(self, 'magnifier') and self.magnifier:
-        self.magnifier.Raise()
-        return
-
-     self.magnifier = MagnifierFrame(self.frame)
-     self.magnifier.Show()
-
-     # Pass the current image (wx.Image) to magnifier
-     bmp = self.imageCtrl.GetBitmap()
-     if bmp.IsOk():
-        img = bmp.ConvertToImage()
-        self.magnifier.setImage(img)
-
-     # Bind mouse motion to update magnifier for both images
-     self.imageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
-     self.secondaryImageCtrl.Bind(wx.EVT_MOTION, self.onMouseMoveMagnifier)
 
    def _updateMagnifierImage(self):
     if not self.magnifier:
@@ -3837,12 +3682,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         encode with ffmpeg (see mga.core.video_export.export_dataset_video)."""
         from mga.core.video_export import export_dataset_video
         export_dataset_video(self)
-
-   def onMouseMoveMagnifierOLD(self, event):
-     if hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown():
-        x, y = event.GetX(), event.GetY()
-        self.magnifier.updateMagnifier(x, y)
-     event.Skip()
 
    def onMouseMoveMagnifier(self, event):
     if not (hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown()):
