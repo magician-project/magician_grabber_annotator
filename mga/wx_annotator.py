@@ -2304,6 +2304,98 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        self._prefetch_thread = threading.Thread(target=work, daemon=True)
        self._prefetch_thread.start()
 
+   def _restoreFrameAnnotations(self, filepath):
+       """Load this frame's saved annotations: trust the streamer's JSON first
+       (the HTTP streamer downloads stem.json), then the local legacy resolver."""
+       jsonPath = self.folderStreamer.getJSON()
+       print(" self.folderStreamer.getJSON() = ", jsonPath, " ")
+
+       # 1) Trust the streamer's answer first (HTTP streamer downloads stem.json)
+       if jsonPath is not None and checkIfFileExists(jsonPath):
+           print("There are saved data that need to be restored here (", jsonPath, ")")
+           self.restoreFromJSON(jsonPath)
+       else:
+           # 2) Fallback to resolver (local legacy compatibility)
+           resolved = resolve_annotation_json_path(filepath, prefer_existing=True)
+           if resolved is not None and checkIfFileExists(resolved):
+               print("There are saved data that need to be restored here (", resolved, ")")
+               self.restoreFromJSON(resolved)
+           else:
+               print("No annotations found for ", filepath, " / ", resolved)
+
+   def _renderForeground(self, imgCV, cached):
+       """Right-panel visualization: the polarization/DoLP/... render of the frame
+       (with the Sobel pre-step), or the prefetched render when it matches."""
+       if cached is not None:
+           return cached['foreground']
+       if (self.processingWay==3):
+           imgCV = detect_sobel_edges(imgCV)
+           self.processingWay=0
+       return self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
+
+   def _runClassifierOnFrame(self, imgPNM):
+       """Run the ACTIVE classifier (1-stage or 2-stage ensemble, per the GUI
+       switches) on the frame, update the correlation stats against the user's
+       annotations, and return the rescaled classifier visualization for the
+       left panel — or None when the classifier is disabled or suppressed (the
+       boot-logo "default" dataset), so the caller shows the plain base render."""
+       if not (useClassifier and not self.classifierDisabledCheckbox.GetValue()): #<- Only use classifier when classifier is on
+           return None
+
+       imgRGBFromClassifier = None
+       if self.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots
+         self.AIAnnotations=None
+         if self.classifierTwoStage.GetValue() and getattr(self, 'EnsembleClassifierPnm', None) is None:
+            print("2-stage ensemble requested but no allclass_* models are loaded — using single classifier")
+            self.classifierTwoStage.SetValue(False)
+         if self.classifierTwoStage.GetValue():
+            print("Image classification done through 2-stage ensemble classifier")
+            self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
+            self._applyGateSettings(self.EnsembleClassifierPnm) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
+            imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=False, multimodel=self.parallellTwoStage.GetValue())
+            imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+            self.classifierInfo.SetLabel("2-stage: %0.2f Hz" % self.EnsembleClassifierPnm.hz)
+         else:
+            print("Image classification done through regular 1-stage classifier")
+            self.ClassifierPnm.step = self.classifierTileSize.GetValue()
+            self._applyGateSettings(self.ClassifierPnm)
+            imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
+            imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
+            self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
+
+       # Correlation stats against the user's annotations (matches the original,
+       # which also ran this on the boot logo with AIAnnotations=None). The
+       # classifier runs on the DEMOSAICED half-res image, so AI points scale x2
+       # to the user-click (full mosaic) coords.
+       current_hz = (self.EnsembleClassifierPnm.hz
+                     if self.classifierTwoStage.GetValue()
+                     else self.ClassifierPnm.hz)
+       ai_ann_scaled = self.AIAnnotations
+       if ai_ann_scaled and ai_ann_scaled.get("points"):
+           ai_ann_scaled = dict(ai_ann_scaled)
+           ai_ann_scaled["points"] = [(2 * x, 2 * y) for (x, y) in ai_ann_scaled["points"]]
+       self.stats.update(
+                        frame_id=self.filepath,
+                        user_ann={
+                                  "points":     self.points_of_interest,
+                                  "classes":    self.points_classes,
+                                  "severities": self.points_severities,
+                                 },
+                        ai_ann=ai_ann_scaled,
+                        hz=current_hz
+                      )
+       self.classifierInfo.SetLabel(self.stats.get_summary_string())
+       return imgRGBFromClassifier
+
+   def _classifierBaseImage(self, imgPNM, cached):
+       """Plain RGBA base render for the left panel when the classifier is off:
+       the prefetched render when it matches, otherwise a fresh decode."""
+       if cached is not None:
+           return cached['processed']
+       rgba = readPolarPNMToRGBALive(imgPNM)
+       classifierBaseImg = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+       return self.rescaleCVMAT(convertRGBCVMATToRGB(classifierBaseImg, brightness=self.brightness_offset, contrast=self.contrast_offset))
+
    def onProcessNewImageSample(self,filepath):
            # Always start from a clean frame; we may restore JSON or apply carried points below
            self.cleanThisFrameMetaData()
@@ -2317,28 +2409,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            #jsonPath = resolve_annotation_json_path(filepath, prefer_existing=True) or jsonPath
 
            print("onProcessNewImageSample (", filepath, ") ")
-           json_exists = False
-
-           jsonPath = self.folderStreamer.getJSON()
-           print(" self.folderStreamer.getJSON() = ", jsonPath, " ")
-
-           # 1) Trust the streamer's answer first (HTTP streamer downloads stem.json)
-           if jsonPath is not None and checkIfFileExists(jsonPath):
-               print("There are saved data that need to be restored here (", jsonPath, ")")
-               self.restoreFromJSON(jsonPath)
-               json_exists = True
-           else:
-               # 2) Fallback to resolver (local legacy compatibility)
-               resolved = resolve_annotation_json_path(filepath, prefer_existing=True)
-               if resolved is not None and checkIfFileExists(resolved):
-                   jsonPath = resolved
-                   print("There are saved data that need to be restored here (", jsonPath, ")")
-                   self.restoreFromJSON(jsonPath)
-                   json_exists = True
-               else:
-                   print("No annotations found for ", filepath, " / ", resolved)
-
-           _ = json_exists
+           self._restoreFrameAnnotations(filepath)
 
            
            """
@@ -2393,102 +2464,34 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               # pure function of (filepath, way, brightness, contrast) and may already be
               # computed by the background worker for this frame.
               fast_eligible = (not (useClassifier and not self.classifierDisabledCheckbox.GetValue())
-                               and app.photoTxt.GetValue() != "default")
+                               and self.photoTxt.GetValue() != "default")
               cached = None
               if fast_eligible:
                   key_way = self.processingWay  # capture before the Sobel branch mutates it
                   cached = self._takePrefetch(filepath, key_way, self.brightness_offset, self.contrast_offset)
                   self._pf_next = (key_way, self.brightness_offset, self.contrast_offset)
 
-              if cached is not None:
-                  imgCV = cached['foreground']
-              else:
-                  if (self.processingWay==3):
-                      imgCV = detect_sobel_edges(imgCV)
-                      self.processingWay=0
-                  imgCV = self.rescaleCVMAT(convertPolarCVMATToRGB(imgCV,way=self.processingWay,brightness=self.brightness_offset, contrast=self.contrast_offset))
+              # Right panel: the polarization/DoLP/... visualization (prefetched when it matches)
+              imgCV = self._renderForeground(imgCV, cached)
 
-              if app.photoTxt.GetValue() != "default": #<- Don't trigger classification in logo "default dataset" when application boots
+              # Left panel: the classifier visualization when it ran, the plain
+              # RGBA base render otherwise.
+              processed_img = self._runClassifierOnFrame(imgPNM)
+              if processed_img is None:
+                  processed_img = self._classifierBaseImage(imgPNM, cached)
+              self.leftViewImage = processed_img
 
-                if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
-                  self.AIAnnotations=None
-                  if self.classifierTwoStage.GetValue() and getattr(self, 'EnsembleClassifierPnm', None) is None:
-                     print("2-stage ensemble requested but no allclass_* models are loaded — using single classifier")
-                     self.classifierTwoStage.SetValue(False)
-                  if self.classifierTwoStage.GetValue():
-                     print("Image classification done through 2-stage ensemble classifier")
-                     self.EnsembleClassifierPnm.step = self.classifierTileSize.GetValue()
-                     self._applyGateSettings(self.EnsembleClassifierPnm) #parallel=True	Re-tiles the full image per model (selected-tile optimization is lost); Python GIL + shared CUDA queue limits real overlap.
-                     imgRGBFromClassifier, occupancy, self.AIAnnotations = self.EnsembleClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), parallel=False, multimodel=self.parallellTwoStage.GetValue())
-                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
-                     processed_img = imgRGBFromClassifier
-                     self.leftViewImage = imgRGBFromClassifier
-                     self.classifierInfo.SetLabel("2-stage: %0.2f Hz" % self.EnsembleClassifierPnm.hz)
-                  else:
-                     print("Image classification done through regular 1-stage classifier")
-                     self.ClassifierPnm.step = self.classifierTileSize.GetValue()
-                     self._applyGateSettings(self.ClassifierPnm)
-                     imgRGBFromClassifier,occupancy, self.AIAnnotations = self.ClassifierPnm.forward(imgPNM, majorityVote=self.classifierMajorityVoting.GetValue(), erosion_kernel=self.erodeKernelSize.GetValue(),erosion_threshold=self.erodeThreshold.GetValue())
-                     imgRGBFromClassifier = self.rescaleCVMAT(convertRGBCVMATToRGB(imgRGBFromClassifier,brightness=self.brightness_offset, contrast=self.contrast_offset))
-                     processed_img = imgRGBFromClassifier
-                     self.leftViewImage = imgRGBFromClassifier
-                     self.classifierInfo.SetLabel("1-stage: %0.2f Hz" % self.ClassifierPnm.hz)
-                  #print(" self.AIAnnotations: ",self.AIAnnotations)
-                  #self.AIAnnotations:  {'points': [(1424, 368), (1360, 400), (1392, 400), (1424, 400), (1360, 432), (1392, 432)], 'classes': ['class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA', 'class_NegativeDentClassA']}
-              else:
-                #If we didn't trigger then show the raw image as processed image
-                processed_img                  = imgCV
-                self.leftViewImage       = imgCV
-
-              if useClassifier and not self.classifierDisabledCheckbox.GetValue(): #<- Only use classifier when classifier is on
-                current_hz = (self.EnsembleClassifierPnm.hz
-                              if self.classifierTwoStage.GetValue()
-                              else self.ClassifierPnm.hz)
-                # The classifier runs on the DEMOSAICED (half-res) image, so its
-                # activation coords are half the user-click (full mosaic) coords.
-                # Scale AI points x2 so the spatial matcher compares like with like.
-                ai_ann_scaled = self.AIAnnotations
-                if ai_ann_scaled and ai_ann_scaled.get("points"):
-                    ai_ann_scaled = dict(ai_ann_scaled)
-                    ai_ann_scaled["points"] = [(2 * x, 2 * y) for (x, y) in ai_ann_scaled["points"]]
-                self.stats.update(
-                                 frame_id=self.filepath,
-                                 user_ann={
-                                           "points":     self.points_of_interest,
-                                           "classes":    self.points_classes,
-                                           "severities": self.points_severities,
-                                          },
-                                 ai_ann=ai_ann_scaled,
-                                 hz=current_hz
-                               )
-                self.classifierInfo.SetLabel(self.stats.get_summary_string())
-                
               if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
                print("We don't know Light Direction")
                if (self.calcFocusLightCheckbox.GetValue()):   #If we are ok with guessing 
                  print("We will try to guess light direction")
                  self.lightComboBox.SetValue(determine_intensity_region(imgCV, threshold=0.1))
 
-              if useClassifier and not self.classifierDisabledCheckbox.GetValue():
-                  #processed_img = imgRGBFromClassifier
-                  #self.leftViewImage = imgRGBFromClassifier
-                  pass
-              else:
-                  if cached is not None:
-                      classifierBaseImg = cached['processed']
-                  else:
-                      rgba = readPolarPNMToRGBALive(imgPNM)
-                      classifierBaseImg = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
-                      classifierBaseImg = self.rescaleCVMAT(convertRGBCVMATToRGB(classifierBaseImg, brightness=self.brightness_offset, contrast=self.contrast_offset))
-                  processed_img                  = classifierBaseImg
-                  self.leftViewImage       = classifierBaseImg
               self.rightViewImage = imgCV
            else:
               processed_img                      = imgCV
               self.leftViewImage           = imgCV
               self.rightViewImage = imgCV
-  
-   
            self.width  = processed_img.shape[1]
            self.height = processed_img.shape[0]
            self.viewedImageViewWidth  = self.width
@@ -2689,26 +2692,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
             leading += 1
         return leading
 
-   def onFinalize(self, event):
-        """Finalize the dataset: write/augment info.json with certification info, the
-        accumulated annotation-effort statistics, and the dataset-wide defect/severity totals."""
-        local_dir = getattr(self.folderStreamer, "local_dir", None)
-        if not local_dir or not os.path.isdir(local_dir):
-            wx.MessageBox("No local dataset directory is loaded — cannot finalize.",
-                          "Finalize", wx.OK | wx.ICON_ERROR)
-            return
-
-        # If focus/light were not computed live (checkbox off), backfill them for every frame.
-        if not self.calcFocusLightCheckbox.GetValue():
-            self._batchComputeFocusLight(local_dir)
-
-        # Backfill inter-frame tracking for frames the Track button never visited,
-        # then reconcile everything with the least-squares pass.
-        res = self._fillTracking()
-        if res:
-            print("Finalize tracking: %u measured, %u already tracked, %u failed, "
-                  "%u least-squares positions" % res[:4])
-
+   def _finalizeInfoJSON(self, local_dir):
+        """Read, update and write the dataset's info.json with certification info,
+        the accumulated annotation-effort statistics, and the dataset-wide
+        defect/severity totals. Returns the written info dict, or None when the
+        write failed (a message has been shown)."""
         info_path = os.path.join(local_dir, "info.json")
 
         # Preserve existing (camera) fields; tolerate a missing or malformed info.json.
@@ -2750,16 +2738,42 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 json.dump(info, f, indent=1)
         except Exception as e:
             wx.MessageBox(f"Failed to write {info_path}:\n{e}", "Finalize", wx.OK | wx.ICON_ERROR)
+            return None
+        return info
+
+   def onFinalize(self, event):
+        """Finalize the dataset: backfill focus/light and inter-frame tracking,
+        then write/augment info.json with certification info, effort statistics
+        and the dataset-wide defect/severity totals."""
+        local_dir = getattr(self.folderStreamer, "local_dir", None)
+        if not local_dir or not os.path.isdir(local_dir):
+            wx.MessageBox("No local dataset directory is loaded — cannot finalize.",
+                          "Finalize", wx.OK | wx.ICON_ERROR)
+            return
+
+        # If focus/light were not computed live (checkbox off), backfill them for every frame.
+        if not self.calcFocusLightCheckbox.GetValue():
+            self._batchComputeFocusLight(local_dir)
+
+        # Backfill inter-frame tracking for frames the Track button never visited,
+        # then reconcile everything with the least-squares pass.
+        res = self._fillTracking()
+        if res:
+            print("Finalize tracking: %u measured, %u already tracked, %u failed, "
+                  "%u least-squares positions" % res[:4])
+
+        info = self._finalizeInfoJSON(local_dir)
+        if info is None:
             return
 
         # Reset so a second Finalize this session doesn't double-count the same effort.
         self._resetSessionStats()
-        self.populateMetaData(info_path)
+        self.populateMetaData(os.path.join(local_dir, "info.json"))
         wx.MessageBox(
             f"Finalized {os.path.basename(local_dir)}.\n\n"
-            f"Total defects: {total_defects}\n"
-            f"Defect types: {defect_counts}\n"
-            f"Severities: {severity_counts}\n"
+            f"Total defects: {info['total_defects']}\n"
+            f"Defect types: {info['defect_counts']}\n"
+            f"Severities: {info['severity_counts']}\n"
             f"(info.json updated with effort statistics.)\n\n"
             f"The Upload Annotations dialog will open next (Cancel there to skip).",
             "Finalize", wx.OK | wx.ICON_INFORMATION)
@@ -2865,7 +2879,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
             # Must be set BEFORE openDataset: the classifier trigger checks
             # photoTxt != "default" while processing the FIRST frame
-            app.photoTxt.SetValue(dlg.selectedDirectory)
+            self.photoTxt.SetValue(dlg.selectedDirectory)
 
             self.openDataset(
                              base_dir=selectedDirectory,   # cache dir where info.json/controller.csv live
