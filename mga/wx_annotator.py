@@ -1151,7 +1151,11 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         try:
             # cross-repo: magician_vision_classifier/mvc/inference/model_download.py
             from mvc.inference.model_download import download_model
-            download_model(name, model_dir)
+            # include_plots: the GUI reads confusion/threshold PNGs for the model's
+            # report views, so a manual download shouldn't leave it report-less
+            # (matches ensure_model's default, used by the web annotator's
+            # auto-download-on-select).
+            download_model(name, model_dir, include_plots=True)
         except Exception as e:
             wx.MessageBox(f"Failed to download '{name}':\n{e}",
                           "Model Download Error", wx.OK | wx.ICON_ERROR)
