@@ -158,7 +158,7 @@ def get_datasets(rescan=False):
 
 
 # ---------------------------------------------------------------------------
-# Model index (same source as wxAnnotator: ClassifierPnm.model_scan)
+# Model index (same source as wxAnnotator: WA.web_model_scan, local + online)
 # ---------------------------------------------------------------------------
 def model_files_dir(name):
     """Directory that actually holds this model's .pth/.json and the report artifacts the
@@ -169,7 +169,8 @@ def model_files_dir(name):
 
 
 def scan_models():
-    names = WA.ClassifierPnm.model_scan(STATE.model_dir)
+    local = set(WA.ClassifierPnm.model_scan(STATE.model_dir))
+    names = WA.web_model_scan(STATE.model_dir)
     out = []
     for n in names:
         cfg = {}
@@ -180,6 +181,7 @@ def scan_models():
             pass
         out.append({
             "name":      n,
+            "local":     n in local,
             "backbone":  cfg.get("model", "?"),
             "tile_size": cfg.get("hparams", {}).get("tile_size", "?"),
             "classes":   len(cfg.get("classes", []) or []),
@@ -254,11 +256,16 @@ def cooldown_left():
 
 
 def change_model(name):
-    """Global-cooldown-guarded model switch. Returns (ok, message)."""
+    """Global-cooldown-guarded model switch. Downloads `name` from the online
+    repository first if web_model_scan() found it there but not on disk.
+    Returns (ok, message)."""
     with STATE.lock:
         left = cooldown_left()
         if left > 0:
             return False, "Cooldown active: %.0f s remaining before another model change." % left
+
+        if not WA.ensure_model_downloaded(STATE.model_dir, name):
+            return False, "Could not find '%s' locally or on the online repository." % name
 
         def work():
             clf = getattr(WA.app, "ClassifierPnm", None)
@@ -401,13 +408,19 @@ def esc(s):
                   .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def model_option_label(m):
+    if m["local"]:
+        return "%s &mdash; %s, tile %s" % (esc(m["name"]), esc(m["backbone"]), esc(m["tile_size"]))
+    return "%s &mdash; online, not downloaded" % esc(m["name"])
+
+
 def model_bar(msg=None, err=False):
     models = scan_models()
     left   = cooldown_left()
     cur    = STATE.model or "(none)"
-    opts   = "".join("<option value='%s'%s>%s &mdash; %s, tile %s</option>"
+    opts   = "".join("<option value='%s'%s>%s</option>"
                      % (esc(m["name"]), " selected" if m["name"] == STATE.model else "",
-                        esc(m["name"]), esc(m["backbone"]), esc(m["tile_size"]))
+                        model_option_label(m))
                      for m in models)
     dis    = " disabled" if left > 0 else ""
     note   = ("<span class='dim'>cooldown %.0fs</span>" % left) if left > 0 else \
@@ -439,13 +452,14 @@ def page_models(msg=None, err=False):
     for m in scan_models():
         n = m["name"]
         rows.append("<tr><td><a href='/model?m=%s'>%s</a></td><td>%s</td>"
-                    "<td class='num'>%s</td><td class='num'>%s</td><td>%s</td><td>%s</td></tr>"
+                    "<td class='num'>%s</td><td class='num'>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
                     % (quote(n), esc(n), esc(m["backbone"]), esc(m["tile_size"]),
-                       esc(m["classes"]), esc(m["loss"]), esc(m["pfc"])))
+                       esc(m["classes"]), esc(m["loss"]), esc(m["pfc"]),
+                       "local" if m["local"] else "<span class='dim'>online</span>"))
     return page("Models",
         "<h1><a href='/'>&larr;</a> Models <span class='dim'>%s</span></h1>%s"
         "<table><tr><th>Model</th><th>Backbone</th><th class='num'>Tile</th>"
-        "<th class='num'>Classes</th><th>Loss</th><th>pfc</th></tr>%s</table>"
+        "<th class='num'>Classes</th><th>Loss</th><th>pfc</th><th>Source</th></tr>%s</table>"
         % (esc(STATE.model_dir), model_bar(msg, err), "".join(rows)))
 
 
@@ -486,14 +500,18 @@ def page_model(name, msg=None, err=False):
             "<button type='submit'%s>Load this model</button></form>"
             % (esc(name), esc(name), " disabled" if cooldown_left() > 0 else ""))
 
+    online_note = ("" if name in WA.ClassifierPnm.model_scan(STATE.model_dir) else
+                   "<p class='dim'>Not downloaded yet &mdash; \"Load this model\" fetches it "
+                   "from the online repository first.</p>")
+
     return page(name,
-        "<h1><a href='/models'>&larr;</a> %s%s</h1>%s"
+        "<h1><a href='/models'>&larr;</a> %s%s</h1>%s%s"
         "<div class='bar'>%s</div>"
         "<table style='max-width:900px'>%s</table>%s"
         "<h2>Reports</h2><div class='views'>%s</div>"
         % (esc(name),
            " <span class='dim'>(active)</span>" if name == STATE.model else "",
-           model_bar(msg, err), load, facts_html, ops_html, tiles))
+           online_note, model_bar(msg, err), load, facts_html, ops_html, tiles))
 
 
 def page_index(msg=None, err=False):

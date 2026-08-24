@@ -176,8 +176,10 @@ def debayerPolarImage(image):
 #                                            recommended_configuration_available (below)
 #                    mvc.inference.ensemble_classifier
 #                                            EnsembleClassifierPnm        (below)
-#                    mvc.inference.model_download   remote_model_names     (~line 1040)
+#                    mvc.inference.model_download   remote_model_names     (~line 1040,
+#                                                                             web_model_scan below)
 #                                            download_model               (~line 1120)
+#                                            ensure_model                 (ensure_model_downloaded below)
 #   mga/stream_dataset.py mvc.core.shared_memory         SharedMemoryManager
 #
 # The classifier core lives in mvc/inference/classifier_pnm.py (ensemble in
@@ -252,6 +254,32 @@ def locate_model(model_dir, name):
     cfg = os.path.join(model_dir, "%s.json" % name)
     return (pth, cfg) if (os.path.isfile(pth) and os.path.isfile(cfg)) else None
 
+
+def web_model_scan(model_dir):
+    """All models available to the web annotator: model_scan()'s local pairs plus
+    whatever the online repository (mvc.inference.model_download) advertises, so a
+    model that only lives on the server still shows up in the list (see
+    web_annotator.change_model, which downloads it on demand when selected)."""
+    local = ClassifierPnm.model_scan(model_dir)
+    try:
+        from mvc.inference.model_download import remote_model_names
+        remote = remote_model_names(timeout=5)
+    except Exception as e:
+        print(f"[Models] Online repository unavailable: {e}")
+        remote = []
+    return sorted(set(local) | set(remote))
+
+
+def ensure_model_downloaded(model_dir, name):
+    """Fetch `name` from the online repository if model_scan() doesn't see it in
+    `model_dir` yet. Returns True once the model is available locally (already
+    there, or freshly downloaded), False if it's on neither disk nor the server."""
+    try:
+        from mvc.inference.model_download import ensure_model
+        return ensure_model(name, model_dir)
+    except Exception as e:
+        print(f"[Models] Download of '{name}' failed: {e}")
+        return False
 
 
 from mga.core.read_data_annotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
