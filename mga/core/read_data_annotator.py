@@ -164,7 +164,40 @@ def resolve_annotation_json_path(image_path: str, prefer_existing: bool = True) 
 
     # default location for saving annotations
     return candidates[0]
- 
+
+
+def annotation_json_path(image_path):
+    """The annotation JSON path to use for an image: any existing historical
+    naming scheme (see resolve_annotation_json_path), otherwise the new-style
+    stem.json (colorFrame_0_00047.json). Shared by every wx_annotator path
+    that reads or writes per-frame annotations."""
+    jp = resolve_annotation_json_path(image_path, prefer_existing=True)
+    if not jp or not checkIfFileExists(jp):
+        jp = os.path.splitext(image_path)[0] + ".json"
+    return jp
+
+
+def read_annotation_json(json_path):
+    """The annotation dict from json_path, or {} when missing or unreadable.
+    Callers never have to care about the difference."""
+    if checkIfFileExists(json_path):
+        try:
+            with open(json_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def dataset_images(streamer, filepath):
+    """Frame list of the open dataset: the streamer's directoryList when
+    present, else the image files next to `filepath` (a dataset opened via
+    --from may not have a directory-mode streamer)."""
+    images = list(getattr(streamer, "directoryList", None) or [])
+    if not images and filepath and os.path.isfile(filepath):
+        images = list_image_files(os.path.dirname(filepath))
+    return images
+
 
 """
 Function under construction 

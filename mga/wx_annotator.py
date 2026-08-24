@@ -152,7 +152,7 @@ except Exception as _autoErr:
 # Add this line at the beginning of the file to define a new event
 ScrollEvent, EVT_SCROLL_EVENT = wx.lib.newevent.NewCommandEvent()
 
-from mga.core.read_data_annotator import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive,readPolarPNMToRGBA
+from mga.core.read_data_annotator import debayerPolarImage,repackPolarToMosaic,readPolarPNMToRGBALive
 
 """
 def debayerPolarImage(image): 
@@ -283,109 +283,21 @@ def ensure_model_downloaded(model_dir, name):
 
 
 from mga.core.read_data_annotator import resolve_annotation_json_path, list_image_files, checkIfFileExists, checkIfPathExists, checkIfPathIsDirectory, get_md5
+from mga.core.read_data_annotator import annotation_json_path, read_annotation_json, dataset_images
+from mga.core.frame_processing import loadFrameMosaic, mosaicToBGR, canonicalize_lighting, PROCESSOR_WAYS
+from mga.core.tracking import (lightingFingerprint, estimateFrameAffine,
+                               SAME_LIGHT_SEARCH_MAX, SAME_LIGHT_MIN_SIMILARITY,
+                               lighting_fingerprint_cached, best_same_light_index,
+                               tracking_record, solve_tracking_positions)
 from mga.core.visualize_data import convertPolarCVMATToRGB, convertRGBCVMATToRGB, tenengrad_focus_measure, determine_intensity_region, detect_sobel_edges
 import re
 import mga.core.light_decoder as lightDecoder
 from mga.core.upload_annotations import UploadDialog
 
 
-# The illumination cycles through the scene lights during acquisition, so nearby
-# frames repeat the same lighting. The Track button records a direct transform to
-# the earlier frame whose lighting fingerprint best matches the destination's —
-# scanning back at most this many frames (fingerprints, not a fixed period, so
-# this stays correct across framerates).
-SAME_LIGHT_SEARCH_MAX = 12
-# Minimum fingerprint cosine similarity to accept a frame as "same lighting"
-# (same-light pairs score >0.95 on FORTH_DoorCase_weld_650, differently-lit
-# neighbours <0.7).
-SAME_LIGHT_MIN_SIMILARITY = 0.90
-
-
-def lightingFingerprint(path, grid=4):
-    """Compact lighting signature of a frame: the per-channel × grid×grid cell mean
-    intensities, mean-subtracted and L2-normalized. Cosine similarity between two
-    fingerprints separates the scene-light cycle far better than the coarse 6-region
-    lightDirection label, which cannot when the part occupies one image corner.
-    Read through readPolarPNMToRGBA so raw .pnm mosaics and already packed .png
-    frames — which a dataset can mix — yield the same channel count and therefore
-    comparable fingerprints. Returns None when the image cannot be read."""
-    raw = readPolarPNMToRGBA(path)
-    if raw is None:
-        return None
-    raw = raw.astype(np.float32)
-    H, W, C = raw.shape
-    cells = []
-    for c in range(C):
-        for gy in range(grid):
-            for gx in range(grid):
-                cells.append(raw[gy*H//grid:(gy+1)*H//grid,
-                                 gx*W//grid:(gx+1)*W//grid, c].mean())
-    v = np.array(cells, np.float32)
-    v -= v.mean()
-    n = float(np.linalg.norm(v))
-    return v / n if n > 0 else v
-
-
-def estimateFrameAffine(prev_path, next_path, block=256, step=128, min_block_resp=0.08):
-    """Estimate the transform between two consecutive frames as a similarity
-    (rotation + scale + translation): the camera motion is not purely 2D, so a
-    global translation drifts (~0.4 deg and ~0.3% scale per frame on
-    FORTH_DoorCase_weld_650). Phase correlation is the only primitive robust to
-    the frame-to-frame lighting cycle, so it is applied per block on a grid and a
-    RANSAC similarity is fitted through the block motions; when fewer than 4
-    inlier blocks survive, falls back to the global translation.
-    Returns (M, (cdx, cdy), response, inliers) with the 2x3 matrix M and the
-    displacement (cdx, cdy) of the image centre both in full-mosaic coordinates,
-    response the global phase-correlation confidence.
-    Both frames are read through readPolarPNMToRGBA, so a raw .pnm mosaic and an
-    already packed .png — which a dataset can mix — are correlated at the same
-    half-mosaic resolution instead of failing to broadcast."""
-    shift_scale = 2.0   # correlation runs on the half-res demosaic
-    imgs = []
-    for path in (prev_path, next_path):
-        img = readPolarPNMToRGBA(path)
-        if img is None:
-            raise IOError("Could not load %s" % path)
-        imgs.append(img.astype(np.float32).mean(axis=2))
-    ia, ib = imgs
-    H, W = ia.shape
-    win = cv2.createHanningWindow((W, H), cv2.CV_32F)
-    (dx, dy), response = cv2.phaseCorrelate(ia * win, ib * win)
-
-    src, dst = [], []
-    bwin = cv2.createHanningWindow((block, block), cv2.CV_32F)
-    for y0 in range(0, H - block + 1, step):
-        for x0 in range(0, W - block + 1, step):
-            blk = ia[y0:y0 + block, x0:x0 + block]
-            if blk.std() < 8:
-                continue  # flat/dark block carries no alignment signal
-            xs, ys = int(round(x0 + dx)), int(round(y0 + dy))
-            if xs < 0 or ys < 0 or xs + block > W or ys + block > H:
-                continue
-            (bx, by), r = cv2.phaseCorrelate(
-                blk * bwin, ib[ys:ys + block, xs:xs + block] * bwin)
-            if r < min_block_resp:
-                continue
-            c = block / 2.0
-            src.append([x0 + c, y0 + c])
-            dst.append([xs + c + bx, ys + c + by])
-
-    M, inliers = None, 0
-    if len(src) >= 4:
-        M, inl = cv2.estimateAffinePartial2D(np.float32(src), np.float32(dst),
-                                             ransacReprojThreshold=4.0)
-        inliers = 0 if inl is None else int(inl.sum())
-    if M is None or inliers < 4:
-        M, inliers = np.float64([[1, 0, dx], [0, 1, dy]]), 0
-
-    # To mosaic coordinates: the linear part is scale-invariant, translation scales.
-    Mm = np.float64(M).copy()
-    Mm[:, 2] *= shift_scale
-    cx, cy = W * shift_scale / 2.0, H * shift_scale / 2.0
-    cdx = Mm[0, 0] * cx + Mm[0, 1] * cy + Mm[0, 2] - cx
-    cdy = Mm[1, 0] * cx + Mm[1, 1] * cy + Mm[1, 2] - cy
-    return Mm, (float(cdx), float(cdy)), float(response), inliers
-
+# Lighting fingerprints, affine estimation, tracking records and the pose-graph
+# solve moved to mga/core/tracking.py (Stage 1 of this file's refactor); the
+# names are re-imported above so the rest of this file is unchanged.
 
 """
 def loadMoreClasses(filename,classes_dict):
@@ -401,6 +313,53 @@ def loadMoreClasses(filename,classes_dict):
 
 
 
+
+
+def dataset_defaults(name):
+    """(widget attribute, value) pairs to apply, in order, for a dataset name —
+    one definition shared by sensibleDefaults() and the --from argument handling
+    (the two used to drift apart). Every keyword that matches contributes, so
+    "weld_class-b" still ends on Class B. Names the combo attributes directly
+    so both call sites stay a one-line loop."""
+    n = name.lower()
+    out = []
+    if ("weld" in n):
+        out += [("defectComboBox", "Welding"), ("severityComboBox", "Class A")]
+    if ("positive" in n):
+        out.append(("defectComboBox", "Positive Dent"))
+    if ("negative" in n):
+        out.append(("defectComboBox", "Negative Dent"))
+    if ("class-a" in n):
+        out.append(("severityComboBox", "Class A"))
+    if ("class-b" in n):
+        out.append(("severityComboBox", "Class B"))
+    if ("class-c" in n):
+        out.append(("severityComboBox", "Class C"))
+    if ("pda" in n) or ("posa" in n):
+        out += [("defectComboBox", "Positive Dent"), ("severityComboBox", "Class A")]
+    if ("pdb" in n) or ("posb" in n):
+        out += [("defectComboBox", "Positive Dent"), ("severityComboBox", "Class B")]
+    if ("pdc" in n) or ("posc" in n):
+        out += [("defectComboBox", "Positive Dent"), ("severityComboBox", "Class C")]
+    if ("nda" in n) or ("nega" in n):
+        out += [("defectComboBox", "Negative Dent"), ("severityComboBox", "Class A")]
+    if ("ndb" in n) or ("negb" in n):
+        out += [("defectComboBox", "Negative Dent"), ("severityComboBox", "Class B")]
+    if ("ndc" in n) or ("negc" in n):
+        out += [("defectComboBox", "Negative Dent"), ("severityComboBox", "Class C")]
+    if ("positive-dent-a" in n):
+        out += [("defectComboBox", "Positive Dent"), ("severityComboBox", "Class A")]
+    if ("positive-dent-b" in n):
+        out += [("defectComboBox", "Positive Dent"), ("severityComboBox", "Class B")]
+    if ("positive-dent-c" in n):
+        out += [("defectComboBox", "Positive Dent"), ("severityComboBox", "Class C")]
+    if ("negative-dent-a" in n):
+        out += [("defectComboBox", "Negative Dent"), ("severityComboBox", "Class A")]
+    if ("negative-dent-b" in n):
+        out += [("defectComboBox", "Negative Dent"), ("severityComboBox", "Class B")]
+    if ("negative-dent-c" in n):
+        out += [("defectComboBox", "Negative Dent"), ("severityComboBox", "Class C")]
+    return out
 
 
 class PhotoCtrl(wx.App):
@@ -447,6 +406,7 @@ class PhotoCtrl(wx.App):
         self.points_sources      = []  # parallel to points_of_interest: "auto" | "manual"
         self.tracking            = None  # list of inter-frame transform records from the Track button (persisted as 'tracking' in the JSON)
         self._light_fp_cache     = {}    # path -> lighting fingerprint vector (see lightingFingerprint)
+        self._canonCache         = {}    # dirpath -> canonical-light exemplars (see canonicalize_lighting)
         self.lastFrameFile       = None  # per-dataset last.frame path, set in openDataset
         self._base_cache         = None  # (img, fg, left_bmp, right_bmp, left_ok): annotation-free bases for fast onView redraws
         self.leftViewImage       = None  # processed image shown in the left panel (imageCtrl)
@@ -2082,16 +2042,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       finally:
           self.folderStreamer.select(cur)
 
-      jp = resolve_annotation_json_path(img_path, prefer_existing=True)
-      if not jp or not checkIfFileExists(jp):
-          jp = os.path.splitext(img_path)[0] + ".json"
-      data = {}
-      if checkIfFileExists(jp):
-          try:
-              with open(jp) as f:
-                  data = json.load(f)
-          except Exception:
-              data = {}
+      jp = annotation_json_path(img_path)
+      data = read_annotation_json(jp)
       light = data.get("lightDirection", "Unknown")
       if light not in ("", "Unknown"):
           return light
@@ -2108,14 +2060,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           except Exception as e:
               print("Track: light direction write failed", jp, e)
       return light
-
-   def _lightFingerprintCached(self, path):
-      fp = self._light_fp_cache.get(path)
-      if fp is None:
-          fp = lightingFingerprint(path)
-          if fp is not None:
-              self._light_fp_cache[path] = fp
-      return fp
 
    def _streamIndexOfFrame(self, name):
       """Stream index of the frame with this basename, or None.
@@ -2136,7 +2080,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       forward, ahead when tracking backward), or (None, 0.0) when nothing scores
       above SAME_LIGHT_MIN_SIMILARITY. The adjacent source frame is excluded — it
       is already tracking record [0]."""
-      fp_next = self._lightFingerprintCached(next_path)
+      fp_next = lighting_fingerprint_cached(next_path, self._light_fp_cache)
       if fp_next is None:
           return None, 0.0
       cur = self.folderStreamer.current()
@@ -2149,7 +2093,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                   break
               self.folderStreamer.select(idx)
               path = self.folderStreamer.getImage()
-              fp = self._lightFingerprintCached(path)
+              fp = lighting_fingerprint_cached(path, self._light_fp_cache)
               if fp is None:
                   continue
               sim = float(fp_next @ fp)
@@ -2227,14 +2171,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       if same_light_path:
           try:
               sM, (sdx, sdy), sresp, sinl = estimateFrameAffine(same_light_path, next_path)
-              records.append({"fromFrame": os.path.basename(same_light_path),
-                              "shift": [sdx, sdy],
-                              "affine": sM.tolist(),
-                              "response": sresp,
-                              "inliers": sinl,
-                              "method": "phaseCorrelateAffine" if sinl else "phaseCorrelate",
-                              "fallback": False,
-                              "lightSimilarity": round(same_light_sim, 3)})
+              records.append(tracking_record(same_light_path, sM, sdx, sdy, sresp, sinl,
+                                             light_similarity=same_light_sim))
           except Exception as e:
               print("Track: same-lighting transform estimation failed:", e)
       wx.EndBusyCursor()
@@ -2278,13 +2216,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
           self.points_sources.append("auto")
           carried += 1
 
-      self.tracking = [{"fromFrame": os.path.basename(prev_path),
-                        "shift": [dx, dy],
-                        "affine": M.tolist() if hasattr(M, "tolist") else M,
-                        "response": response,
-                        "inliers": inliers,
-                        "method": "phaseCorrelateAffine" if inliers else "phaseCorrelate",
-                        "fallback": fallback}] + records
+      self.tracking = [tracking_record(prev_path, M, dx, dy, response, inliers,
+                                       fallback=fallback)] + records
 
       self._stat_points_added += carried
       self.updatePointList()
@@ -2299,9 +2232,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
    def onFillTracking(self, event):
       """Fill Tracking button: confirm, then run the batch tracking pass and report."""
-      images = list(getattr(self.folderStreamer, "directoryList", None) or [])
-      if not images and self.filepath and os.path.isfile(self.filepath):
-          images = list_image_files(os.path.dirname(self.filepath))
+      images = dataset_images(self.folderStreamer, self.filepath)
       if len(images) < 2:
           wx.MessageBox("Need at least two frames in a dataset.", "Fill Tracking",
                         wx.OK | wx.ICON_WARNING)
@@ -2339,29 +2270,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                  'leastSquaresGlobal' record.
       Annotation JSONs are read-modified-written, so points/classes are untouched.
       Returns (filled, skipped, failed, solved, aborted), or None with <2 frames."""
-      images = list(getattr(self.folderStreamer, "directoryList", None) or [])
-      if not images and self.filepath and os.path.isfile(self.filepath):
-          images = list_image_files(os.path.dirname(self.filepath))
+      images = dataset_images(self.folderStreamer, self.filepath)
       if len(images) < 2:
           return None
 
       # Flush the currently-open frame so its JSON is up to date before the pass.
       self.onSave(None)
-
-      def json_path_for(img):
-          jp = resolve_annotation_json_path(img, prefer_existing=True)
-          if not jp or not checkIfFileExists(jp):
-              jp = os.path.splitext(img)[0] + ".json"
-          return jp
-
-      def read_json(jp):
-          if checkIfFileExists(jp):
-              try:
-                  with open(jp) as f:
-                      return json.load(f)
-              except Exception:
-                  pass
-          return {}
 
       def tracking_list(data):
           tr = data.get("tracking", None)
@@ -2384,8 +2298,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               break
           wx.GetApp().Yield(True)
 
-          jp = json_path_for(images[i])
-          data = read_json(jp)
+          jp = annotation_json_path(images[i])
+          data = read_annotation_json(jp)
           if tracking_list(data):
               skipped += 1
               continue
@@ -2396,36 +2310,15 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               print("Fill Tracking: shift failed for", images[i], ":", e)
               failed += 1
               continue
-          records = [{"fromFrame": os.path.basename(images[i - 1]),
-                      "shift": [dx, dy],
-                      "affine": M.tolist(),
-                      "response": response,
-                      "inliers": inliers,
-                      "method": "phaseCorrelateAffine" if inliers else "phaseCorrelate",
-                      "fallback": False}]
+          records = [tracking_record(images[i - 1], M, dx, dy, response, inliers)]
 
           # Best same-lighting link among the preceding frames (i-1 excluded).
-          fp_i = self._lightFingerprintCached(images[i])
-          best_j, best_sim = None, 0.0
-          if fp_i is not None:
-              for j in range(i - 2, max(-1, i - 2 - SAME_LIGHT_SEARCH_MAX), -1):
-                  fp_j = self._lightFingerprintCached(images[j])
-                  if fp_j is None:
-                      continue
-                  sim = float(fp_i @ fp_j)
-                  if sim > best_sim:
-                      best_j, best_sim = j, sim
-          if best_j is not None and best_sim >= SAME_LIGHT_MIN_SIMILARITY:
+          best_j, best_sim = best_same_light_index(images, i, self._light_fp_cache)
+          if best_j is not None:
               try:
                   sM, (sdx, sdy), sresp, sinl = estimateFrameAffine(images[best_j], images[i])
-                  records.append({"fromFrame": os.path.basename(images[best_j]),
-                                  "shift": [sdx, sdy],
-                                  "affine": sM.tolist(),
-                                  "response": sresp,
-                                  "inliers": sinl,
-                                  "method": "phaseCorrelateAffine" if sinl else "phaseCorrelate",
-                                  "fallback": False,
-                                  "lightSimilarity": round(best_sim, 3)})
+                  records.append(tracking_record(images[best_j], sM, sdx, sdy, sresp, sinl,
+                                                 light_similarity=best_sim))
               except Exception as e:
                   print("Fill Tracking: same-light shift failed for", images[i], ":", e)
 
@@ -2445,66 +2338,36 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
       prog.Destroy()
 
       # PASS 2 — weighted least squares over the pose graph: solve for per-frame
-      # global positions p_i (p_0 = 0) from all pairwise measurements p_b - p_a = s.
+      # global positions p_i (p_0 = 0) from all pairwise measurements p_b - p_a = s
+      # (the solve itself lives in mga.core.tracking.solve_tracking_positions).
       solved = 0
       if not aborted:
-          name2idx = {os.path.basename(p): i for i, p in enumerate(images)}
           frame_json = []   # (json_path, data) per frame, aligned with images
-          measurements = []  # (a, b, dx, dy, weight)
           for i, img in enumerate(images):
-              jp = json_path_for(img)
-              data = read_json(jp)
+              jp = annotation_json_path(img)
+              data = read_annotation_json(jp)
               frame_json.append((jp, data))
-              for r in tracking_list(data):
-                  if r.get("method") == "leastSquaresGlobal":
-                      continue
-                  a = name2idx.get(r.get("fromFrame", ""))
-                  s = r.get("shift")
-                  if a is None or a == i or not s:
-                      continue
-                  w = max(float(r.get("response") or 0.0), 0.01)
-                  if r.get("fallback"):
-                      w *= 0.3
-                  if r.get("method") == "manual":
-                      w = 2.0   # hand-corrected shifts outweigh any estimate
-                  measurements.append((a, i, float(s[0]), float(s[1]), w))
 
-          if measurements:
-              N = len(images)
-              A  = np.zeros((len(measurements), N - 1), np.float64)
-              bx = np.zeros(len(measurements), np.float64)
-              by = np.zeros(len(measurements), np.float64)
-              constrained = set()
-              for row, (a, b, dx, dy, w) in enumerate(measurements):
-                  if b > 0:
-                      A[row, b - 1] += w
-                  if a > 0:
-                      A[row, a - 1] -= w
-                  bx[row] = w * dx
-                  by[row] = w * dy
-                  constrained.update((a, b))
-              px = np.linalg.lstsq(A, bx, rcond=None)[0]
-              py = np.linalg.lstsq(A, by, rcond=None)[0]
+          positions = solve_tracking_positions(
+              images, [tracking_list(data) for _jp, data in frame_json])
 
-              first = os.path.basename(images[0])
-              for i in range(1, N):
-                  if i not in constrained:
-                      continue  # unmeasured frame: a stored zero would be a lie
-                  jp, data = frame_json[i]
-                  if not data:
-                      continue
-                  recs = [r for r in tracking_list(data)
-                          if r.get("method") != "leastSquaresGlobal"]
-                  recs.append({"fromFrame": first,
-                               "shift": [float(px[i - 1]), float(py[i - 1])],
-                               "method": "leastSquaresGlobal"})
-                  data["tracking"] = recs
-                  try:
-                      with open(jp, "w") as f:
-                          json.dump(data, f, sort_keys=False)
-                      solved += 1
-                  except Exception as e:
-                      print("Fill Tracking: write failed", jp, e)
+          first = os.path.basename(images[0])
+          for i, (gx, gy) in positions.items():
+              jp, data = frame_json[i]
+              if not data:
+                  continue
+              recs = [r for r in tracking_list(data)
+                      if r.get("method") != "leastSquaresGlobal"]
+              recs.append({"fromFrame": first,
+                           "shift": [gx, gy],
+                           "method": "leastSquaresGlobal"})
+              data["tracking"] = recs
+              try:
+                  with open(jp, "w") as f:
+                      json.dump(data, f, sort_keys=False)
+                  solved += 1
+              except Exception as e:
+                  print("Fill Tracking: write failed", jp, e)
 
       # The pass may have rewritten the open frame's JSON — reload it.
       self.onProcessNewImageSample(self.filepath)
@@ -2613,9 +2476,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
       # The frame list is already loaded in the streamer (local_dir is not always set,
       # e.g. when started via --from); fall back to the current frame's directory.
-      images = list(getattr(self.folderStreamer, "directoryList", None) or [])
-      if not images and self.filepath and os.path.isfile(self.filepath):
-          images = list_image_files(os.path.dirname(self.filepath))
+      images = dataset_images(self.folderStreamer, self.filepath)
       if not images:
           wx.MessageBox("No dataset frames are loaded.\nOpen a dataset directory first.",
                         "Full Auto", wx.OK | wx.ICON_WARNING)
@@ -2654,18 +2515,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
               break
           wx.GetApp().Yield(True)
 
-          json_path = resolve_annotation_json_path(img, prefer_existing=True)
-          if not json_path or not checkIfFileExists(json_path):
-              json_path = os.path.splitext(img)[0] + ".json"
+          json_path = annotation_json_path(img)
 
           # Skip frames that already carry annotations.
-          if checkIfFileExists(json_path):
-              try:
-                  if json.load(open(json_path)).get("pointClicks"):
-                      skipped += 1
-                      continue
-              except Exception:
-                  pass
+          if read_annotation_json(json_path).get("pointClicks"):
+              skipped += 1
+              continue
 
           raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
           if raw is None:
@@ -2873,11 +2728,8 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         #primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
         #fallback_json = f"{self.filepath}.json"
 
-        root, _ = os.path.splitext(self.filepath)
-        newstyle_json = root + ".json"  # <-- colorFrame_0_00047.json
-        primary_json = resolve_annotation_json_path(self.filepath, prefer_existing=True)
-        if (not checkIfFileExists(primary_json)):
-                  primary_json = newstyle_json
+        # <-- colorFrame_0_00047.json when no historical scheme exists yet
+        primary_json = annotation_json_path(self.filepath)
 
         try:
           with open(primary_json, "w") as outfile:
@@ -2904,57 +2756,9 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
 
 
    def sensibleDefaults(self,loadDatasetCase):
-               loadDataset = loadDatasetCase.lower()
                #Small check (this will need to  be updated if defects change)..
-               if ("weld" in loadDataset):
-                   app.defectComboBox.SetValue("Welding")
-                   app.severityComboBox.SetValue("Class A")
-               if ("positive" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-               if ("negative" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-               if ("class-a" in loadDataset):
-                   app.severityComboBox.SetValue("Class A")
-               if ("class-b" in loadDataset):
-                   app.severityComboBox.SetValue("Class B")
-               if ("class-c" in loadDataset):
-                   app.severityComboBox.SetValue("Class C")
-               if ("pda" in loadDataset) or ("posa" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-                   app.severityComboBox.SetValue("Class A")
-               if ("pdb" in loadDataset) or ("posb" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-                   app.severityComboBox.SetValue("Class B")
-               if ("pdc" in loadDataset) or ("posc" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-                   app.severityComboBox.SetValue("Class C")
-               if ("nda" in loadDataset) or ("nega" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-                   app.severityComboBox.SetValue("Class A")
-               if ("ndb" in loadDataset) or ("negb" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-                   app.severityComboBox.SetValue("Class B")
-               if ("ndc" in loadDataset) or ("negc" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-                   app.severityComboBox.SetValue("Class C")
-               if ("positive-dent-a" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-                   app.severityComboBox.SetValue("Class A")
-               if ("positive-dent-b" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-                   app.severityComboBox.SetValue("Class B")
-               if ("positive-dent-c" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-                   app.severityComboBox.SetValue("Class C")
-               if ("negative-dent-a" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-                   app.severityComboBox.SetValue("Class A")
-               if ("negative-dent-b" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-                   app.severityComboBox.SetValue("Class B")
-               if ("negative-dent-c" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-                   app.severityComboBox.SetValue("Class C")
+               for widget, value in dataset_defaults(loadDatasetCase):
+                   getattr(self, widget).SetValue(value)
 
    def openDataset(self, base_dir, streamer, is_directory=True):
     """
@@ -3050,18 +2854,10 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
        {'foreground': <way/DoLP render>, 'processed': <RGB base render>} or None.
        Touches no UI and no shared state, so it is safe to run in a worker thread
        (only reads self.PhotoMaxSize* via rescaleCVMAT, which is stable during navigation)."""
-       imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED)
+       canonical = self._canonCache if self.canonicalLightCheckbox.GetValue() else None
+       imgPNM, imgCV = loadFrameMosaic(filepath, canonical_cache=canonical)
        if imgPNM is None:
            return None
-       if (imgPNM.ndim == 3) and (imgPNM.shape[2] == 4):
-           imgPNM = repackPolarToMosaic(imgPNM[:, :, 0], imgPNM[:, :, 1], imgPNM[:, :, 2], imgPNM[:, :, 3])
-           if self.canonicalLightCheckbox.GetValue():
-               imgPNM = self._canonicalizeLighting(imgPNM, filepath)
-           imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])
-       else:
-           if (imgPNM.ndim == 2) and self.canonicalLightCheckbox.GetValue():
-               imgPNM = self._canonicalizeLighting(imgPNM, filepath)
-           imgCV  = imgPNM if (imgPNM.ndim == 3 and imgPNM.shape[2] == 3) else cv2.cvtColor(imgPNM, cv2.COLOR_GRAY2BGR)
        src, w = imgCV, way
        if w == 3:                       # Sobel pre-step, mirrors onProcessNewImageSample
            src = detect_sobel_edges(src)
@@ -3117,67 +2913,6 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                self._prefetch = (key, data)
        self._prefetch_thread = threading.Thread(target=work, daemon=True)
        self._prefetch_thread.start()
-
-   def _canonicalizeLighting(self, mosaic, filepath, numLights=6):
-      """Remap the strobed light of this frame so it renders as light #0.
-
-      Light identity is resolved with the ActiveLighting signature (per-channel
-      global mean proportions — position independent). Exemplars come from the
-      dataset's first numLights frames, assumed to be one clean strobe cycle
-      (same bootstrap as ActiveLighting). The remap is a per-channel gain
-      exemplar0/exemplarK applied on the 2x2 mosaic quadrants, so it works for
-      both .pnm mosaics and re-bayered .png frames.
-      """
-      if mosaic is None or mosaic.ndim != 2:
-          return mosaic
-      dirpath = os.path.dirname(filepath)
-      if getattr(self, '_canonLightDir', None) != dirpath:
-          self._canonLightDir = dirpath
-          self._canonExemplars = None
-          # first numLights frames of the dataset = one clean strobe cycle
-          try:
-              import glob as _glob
-              frames = sorted(_glob.glob(os.path.join(dirpath, "colorFrame_0_*.pnm")) +
-                              _glob.glob(os.path.join(dirpath, "colorFrame_0_*.png")))[:numLights]
-              exemplars = []
-              for f in frames:
-                  img = cv2.imread(f, cv2.IMREAD_UNCHANGED)
-                  if img is not None and img.ndim == 3 and img.shape[2] == 4:
-                      img = repackPolarToMosaic(img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3])
-                  if img is None or img.ndim != 2:
-                      continue
-                  quads = (img[0::2, 0::2], img[0::2, 1::2], img[1::2, 0::2], img[1::2, 1::2])
-                  means = np.array([float(q.mean()) for q in quads], dtype=np.float32)
-                  exemplars.append({'means': np.maximum(means, 1e-6),
-                                    'sig': means / max(float(means.sum()), 1e-6)})
-              if len(exemplars) == numLights:
-                  self._canonExemplars = exemplars
-                  print(f"[CanonicalLight] bootstrapped {numLights} light exemplars from {dirpath}")
-              else:
-                  print(f"[CanonicalLight] bootstrap failed ({len(exemplars)}/{numLights} usable frames)")
-          except Exception as e:
-              print(f"[CanonicalLight] bootstrap error: {e}")
-      if not self._canonExemplars:
-          return mosaic
-
-      quads = (mosaic[0::2, 0::2], mosaic[0::2, 1::2], mosaic[1::2, 0::2], mosaic[1::2, 1::2])
-      means = np.array([float(q.mean()) for q in quads], dtype=np.float32)
-      sig = means / max(float(means.sum()), 1e-6)
-      dists = [float(np.linalg.norm(sig - e['sig'])) for e in self._canonExemplars]
-      k = int(np.argmin(dists))
-      srt = sorted(dists)
-      print(f"[CanonicalLight] frame light={k} (distance {srt[0]:.4f}, margin {srt[1]-srt[0]:.4f})"
-            + ("" if k else " — already canonical"))
-      if k == 0:
-          return mosaic
-      gains = self._canonExemplars[0]['means'] / self._canonExemplars[k]['means']
-      maxval = 65535.0 if mosaic.dtype == np.uint16 else 255.0
-      out = mosaic.astype(np.float32)
-      out[0::2, 0::2] *= float(gains[0])
-      out[0::2, 1::2] *= float(gains[1])
-      out[1::2, 0::2] *= float(gains[2])
-      out[1::2, 1::2] *= float(gains[3])
-      return np.clip(out, 0, maxval).astype(mosaic.dtype)
 
    def onProcessNewImageSample(self,filepath):
            # Always start from a clean frame; we may restore JSON or apply carried points below
@@ -3238,29 +2973,14 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            # Render the polarization image for both view panels
            global combineChannels
            #imgCV  = cv2.imread(filepath) #,cv2.IMREAD_UNCHANGED  # wasteful: this decode is overwritten below for 4-ch polar PNGs; imgCV is derived from imgPNM instead
-           imgPNM = cv2.imread(filepath, cv2.IMREAD_UNCHANGED) #This is to be used without changes by the classifier
+           # if we got a 4-channel PNG (p0,p45,p90,p135), repack to the original 2x2
+           # mosaic; canonical-light remap when the checkbox is on (see loadFrameMosaic)
+           canonical = self._canonCache if self.canonicalLightCheckbox.GetValue() else None
+           imgPNM, imgCV = loadFrameMosaic(filepath, canonical_cache=canonical)
 
            if (imgPNM is None):
                   print("Could not load ",filepath)
                   return
-
-
-           # if we got a 4-channel PNG (p0,p45,p90,p135), repack to the original 2x2 mosaic
-           if (imgPNM.ndim == 3) and (imgPNM.shape[2] == 4):
-               p0   = imgPNM[:, :, 0]
-               p45  = imgPNM[:, :, 1]
-               p90  = imgPNM[:, :, 2]
-               p135 = imgPNM[:, :, 3]
-               print("Re-bayering .PNG file to transparently treat it as .PNM")
-               imgPNM = repackPolarToMosaic(p0, p45, p90, p135)   # now 2D, as classifier expects
-               if self.canonicalLightCheckbox.GetValue():
-                   imgPNM = self._canonicalizeLighting(imgPNM, filepath)
-               imgCV  = cv2.merge([imgPNM, imgPNM, imgPNM])       # keep existing visualization logic happy
-           else:
-               if (imgPNM.ndim == 2) and self.canonicalLightCheckbox.GetValue():
-                   imgPNM = self._canonicalizeLighting(imgPNM, filepath)  # .pnm mosaic path
-               # non-polar PNG (e.g. boot logo / 3-ch / gray): reproduce the old cv2.imread() 3-channel BGR
-               imgCV  = imgPNM if (imgPNM.ndim == 3 and imgPNM.shape[2] == 3) else cv2.cvtColor(imgPNM, cv2.COLOR_GRAY2BGR)
 
 
            print("Raw image dims for ",filepath," ",imgCV.shape)
@@ -3275,57 +2995,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
            processingString = self.ProcessorComboBox.GetValue()
            if self.photoTxt.GetValue() == "default":
                processingString = processors[0]
-           if (processingString=="PolarizationRGB1"):
-               self.processingWay=0
-           elif (processingString=="PolarizationRGB2"):
-               self.processingWay=1
-           elif (processingString=="PolarizationRGB3"):
-               self.processingWay=2
-           elif (processingString=="Polarization_0_degree"):
-               self.processingWay=5
-           elif (processingString=="Polarization_45_degree"):
-               self.processingWay=6
-           elif (processingString=="Polarization_90_degree"):
-               self.processingWay=7
-           elif (processingString=="Polarization_135_degree"):
-               self.processingWay=8
-           elif (processingString=="AoLP"):
-               self.processingWay=9
-           elif (processingString=="DoLP"):
-               self.processingWay=10
-           elif (processingString=="Intensity"):
-               self.processingWay=11
-           elif (processingString=="s0"):
-               self.processingWay=12
-           elif (processingString=="s1"):
-               self.processingWay=13
-           elif (processingString=="s2"):
-               self.processingWay=14
-           elif (processingString=="s3"):
-               self.processingWay=15
-           elif (processingString=="AoLP (light)"):
-               self.processingWay=16
-           elif (processingString=="AoLP (dark)"):
-               self.processingWay=17
-           elif (processingString=="DoP"):
-               self.processingWay=18
-           elif (processingString=="DoCP"):
-               self.processingWay=19
-           elif (processingString=="ToP"):
-               self.processingWay=20
-           elif (processingString=="CoP"):
-               self.processingWay=21
-           elif (processingString=="RetardationMag"):
-               self.processingWay=22
-           elif (processingString=="MaxMinAvgRGB"):
-               self.processingWay=23
-           elif (processingString=="Normals"):
-               self.processingWay=24
-           elif (processingString=="Sobel"):
-               self.processingWay=3
-           elif (processingString=="Visible"):
-               self.processingWay=4
-           
+           self.processingWay = PROCESSOR_WAYS.get(processingString, self.processingWay)
 
            if combineChannels:
               print("Image CV Combining all channels to one")
@@ -3517,9 +3187,7 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         wiring-invariant canonical direction, and preserves the 'No Light' malfunction
         flag (same mean<18 test). Falls back to per-frame brightest-region when there
         is no controller.csv."""
-        images = list(getattr(self.folderStreamer, "directoryList", None) or [])
-        if not images and self.filepath and os.path.isfile(self.filepath):
-            images = list_image_files(os.path.dirname(self.filepath))
+        images = dataset_images(self.folderStreamer, self.filepath)
         if not images:
             return 0
 
@@ -3554,28 +3222,18 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
                 break
             wx.GetApp().Yield(True)
 
-            jp = resolve_annotation_json_path(img, prefer_existing=True)
-            if not jp or not checkIfFileExists(jp):
-                jp = os.path.splitext(img)[0] + ".json"
-            data = {}
-            if checkIfFileExists(jp):
-                try:
-                    with open(jp) as f:
-                        data = json.load(f)
-                except Exception:
-                    data = {}
+            jp = annotation_json_path(img)
+            data = read_annotation_json(jp)
 
+            # raw stays as decoded: lightDecoder's signature/is_dark want the original
+            # 4-channel packed PNG, not the repacked 2D mosaic.
             raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
             if raw is None:
                 jps.append(jp); datas.append(data); focus_list.append(None)
                 sigs.append(None); dark.append(True); csvl.append(-1)
                 dirs.append(lightDecoder.UNKNOWN)
                 continue
-            if raw.ndim == 3 and raw.shape[2] == 4:
-                mosaic = repackPolarToMosaic(raw[:, :, 0], raw[:, :, 1], raw[:, :, 2], raw[:, :, 3])
-                imgCV  = cv2.merge([mosaic, mosaic, mosaic])
-            else:
-                imgCV  = raw if (raw.ndim == 3 and raw.shape[2] == 3) else cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
+            imgCV = mosaicToBGR(raw)
 
             dk = lightDecoder.is_dark(raw)
             fn = _frameno(img)
@@ -3631,19 +3289,12 @@ ID_ZOOM_FIT', 'ID_ZOOM_IN', 'ID_ZOOM_OUT']"""
         operating — so Finalize can set startFrame past them. Scans in sorted order and stops
         at the first correctly-lit frame; a dark frame later in the dataset (a genuine light
         failure) is left alone. An unreadable/placeholder leading frame counts as dark too."""
-        images = list(getattr(self.folderStreamer, "directoryList", None) or [])
-        if not images and self.filepath and os.path.isfile(self.filepath):
-            images = list_image_files(os.path.dirname(self.filepath))
+        images = dataset_images(self.folderStreamer, self.filepath)
         leading = 0
         for img in images:
             raw = cv2.imread(img, cv2.IMREAD_UNCHANGED)
             if raw is not None:
-                if raw.ndim == 3 and raw.shape[2] == 4:
-                    mosaic = repackPolarToMosaic(raw[:, :, 0], raw[:, :, 1], raw[:, :, 2], raw[:, :, 3])
-                    imgCV  = cv2.merge([mosaic, mosaic, mosaic])
-                else:
-                    imgCV  = raw if (raw.ndim == 3 and raw.shape[2] == 3) else cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR)
-                if determine_intensity_region(imgCV, threshold=0.1) != "No Light":
+                if determine_intensity_region(mosaicToBGR(raw), threshold=0.1) != "No Light":
                     break  # first correctly-lit frame — stop
             leading += 1
         return leading
@@ -4997,16 +4648,8 @@ if __name__ == '__main__':
                print("Loading from ",loadDataset," dataset")
 
                #Small check (this will need to  be updated if defects change)..
-               if ("positive" in loadDataset):
-                   app.defectComboBox.SetValue("Positive Dent")
-               if ("negative" in loadDataset):
-                   app.defectComboBox.SetValue("Negative Dent")
-               if ("class-a" in loadDataset):
-                   app.severityComboBox.SetValue("Class A")
-               if ("class-b" in loadDataset):
-                   app.severityComboBox.SetValue("Class B")
-               if ("class-c" in loadDataset):
-                   app.severityComboBox.SetValue("Class C")
+               for widget, value in dataset_defaults(loadDataset):
+                   getattr(app, widget).SetValue(value)
 
                app.photoTxt.SetValue(loadDataset)
                app.onNewInputPath(loadDataset)
