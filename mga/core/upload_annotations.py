@@ -110,3 +110,41 @@ class UploadDialog(wx.Dialog):
             wx.MessageBox(f"Upload failed!\n{e.stderr}", "Error", wx.OK | wx.ICON_ERROR)
 
 
+
+
+def upload_dataset_annotations(parent, base_dir, local_dir):
+    """Zip the per-frame annotation JSONs + info.json of `local_dir` and open the
+    UploadDialog (the body of wx_annotator.onUploadAnnotations).
+
+    base_dir is the datasets ROOT shared by every dataset; the zip lands there, so
+    the name carries our PID: two annotator instances uploading different datasets
+    at the same time would otherwise build and rm -f the same upload.zip."""
+    print("Local Dir: ", local_dir)
+
+    # e.g. /media/ammar/games2/Datasets/Magician
+    zip_path = os.path.join(base_dir, "upload_%d.zip" % os.getpid())
+    rel_dir  = os.path.basename(local_dir.rstrip("/"))
+    # rel_dir should be "AltinayKapoDefect"
+
+    # zip APPENDS to an existing archive — start fresh, otherwise previously-uploaded
+    # datasets accumulate in the same upload_<pid>.zip (the name is stable for the
+    # lifetime of this instance, so a second upload from it would pile up).
+    try:
+        if os.path.isfile(zip_path):
+            os.remove(zip_path)
+    except Exception as e:
+        print("Could not remove stale zip:", zip_path, e)
+
+    # Include the per-frame annotation JSONs AND the (finalized) info.json for this dataset only.
+    zipCommand = (
+        f'cd "{base_dir}" && '
+        f'zip "{zip_path}" -b "{base_dir}" "{rel_dir}"/color*.json "{rel_dir}"/info.json'
+    )
+
+    print("Zip command : ", zipCommand)
+    os.system(zipCommand)
+
+    dlg = UploadDialog(parent, zip_path, local_dir)
+    dlg.ShowModal()
+    dlg.Destroy()
+    os.system(f'rm -f "{zip_path}"')
