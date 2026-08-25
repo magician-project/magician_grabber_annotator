@@ -290,6 +290,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         self.lastFrameFile       = None  # per-dataset last.frame path, set in openDataset
         self._base_cache         = None  # (img, fg, left_bmp, right_bmp, left_ok): annotation-free bases for fast onView redraws
         self.leftViewImage       = None  # processed image shown in the left panel (imageCtrl)
+        self.leftViewImageOriginal = None  # plain pre-classifier render of the left panel (for Image Snapshot _L.png)
         self.rightViewImage      = None  # foreground/visualization image shown in the right panel (secondaryImageCtrl)
         # --- annotation-effort statistics for the current dataset session (committed to info.json on Finalize) ---
         self._stat_clicks         = 0
@@ -2070,6 +2071,11 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
               processed_img = self._runClassifierOnFrame(imgPNM)
               if processed_img is None:
                   processed_img = self._classifierBaseImage(imgPNM, cached)
+                  self.leftViewImageOriginal = processed_img
+              else:
+                  # The left panel shows the classifier visualization; keep the plain
+                  # pre-classifier render for the Image Snapshot _L.png files.
+                  self.leftViewImageOriginal = self._classifierBaseImage(imgPNM, None)
               self.leftViewImage = processed_img
 
               if (self.lightComboBox.GetValue()=="Unknown"): #If we don't have a light orientation set
@@ -2082,6 +2088,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
            else:
               processed_img                      = imgCV
               self.leftViewImage           = imgCV
+              self.leftViewImageOriginal   = imgCV
               self.rightViewImage = imgCV
            self.width  = processed_img.shape[1]
            self.height = processed_img.shape[0]
@@ -3228,13 +3235,21 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
    def onImageSnapshot(self, event):
         """Save 4 PNGs of the current frame into snapshots/: snap_<serial>_L.png / _LO.png
         (left, plain / with overlays) and _R.png / _RO.png (right), where <serial> is the
-        next incremental snapshot number. Plain images come from the cached annotation-free
-        bases, overlays straight from the displayed bitmaps -- all at panel resolution."""
+        next incremental snapshot number. Plain images: the pre-classifier render for the
+        left, the annotation-free base for the right; overlays straight from the displayed
+        bitmaps -- all at panel resolution."""
         if not self.filepath or self.rightViewImage is None:
             wx.MessageBox("No frame loaded.", "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
             return
 
         left_bmp, right_bmp, left_ok = self._baseBitmapsForView()
+        # _L.png must show the image before the classifier visualization, but the
+        # left panel holds the classifier output when it ran. Rebuild the plain
+        # base from the render saved at frame load instead.
+        if self.leftViewImageOriginal is not None:
+            left_img = self.rescaleCVMAT(self.leftViewImageOriginal)
+            left_bmp = wx.Bitmap.FromBuffer(left_img.shape[1], left_img.shape[0], left_img)
+            left_ok  = left_bmp.IsOk()
         if not left_ok:
             wx.MessageBox("Left image is not available for the current frame.",
                           "Image Snapshot", wx.OK | wx.ICON_WARNING)
