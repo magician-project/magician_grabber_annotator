@@ -515,6 +515,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
     itemBenchmarkAcc  = toolsMenu.Append(wx.ID_UNINDENT, "&Benchmark Accuracy based on loaded NN", "Benchmark Accuracy Classifier")
     toolsMenu.AppendSeparator()
     itemMakeVideo     = toolsMenu.Append(wx.ID_ANY, "&Make Video", "Render all frames to a video file")
+    itemImageSnapshot = toolsMenu.Append(wx.ID_ANY, "&Image Snapshot", "Save 4 PNGs of the current frame (left/right, with and without overlays)")
     self.Bind(wx.EVT_MENU, self.onOpenMagnifier,itemMagnify)
     self.Bind(wx.EVT_MENU, self.onRecordDataset,itemRecordDataset)
     self.Bind(wx.EVT_MENU, self.onCreateDataset,itemCreateDataset)
@@ -523,6 +524,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
     self.Bind(wx.EVT_MENU, self.onBenchmarkPerf,itemBenchmarkPerf)
     self.Bind(wx.EVT_MENU, self.onBenchmarkAcc,itemBenchmarkAcc)
     self.Bind(wx.EVT_MENU, self.onMakeVideo, itemMakeVideo)
+    self.Bind(wx.EVT_MENU, self.onImageSnapshot, itemImageSnapshot)
     menuBar.Append(toolsMenu, "&Tools")
 
     helpMenu = wx.Menu()
@@ -3222,6 +3224,56 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         encode with ffmpeg (see mga.core.video_export.export_dataset_video)."""
         from mga.core.video_export import export_dataset_video
         export_dataset_video(self)
+
+   def onImageSnapshot(self, event):
+        """Save 4 PNGs of the current frame into snapshots/: snap_<frame>_L.png / _LO.png
+        (left, plain / with overlays) and _R.png / _RO.png (right). Plain images come from
+        the cached annotation-free bases, overlays straight from the displayed bitmaps --
+        all at panel resolution."""
+        if not self.filepath or self.rightViewImage is None:
+            wx.MessageBox("No frame loaded.", "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
+            return
+
+        left_bmp, right_bmp, left_ok = self._baseBitmapsForView()
+        if not left_ok:
+            wx.MessageBox("Left image is not available for the current frame.",
+                          "Image Snapshot", wx.OK | wx.ICON_WARNING)
+            return
+        if not (right_bmp and right_bmp.IsOk()):
+            wx.MessageBox("Right image is not available for the current frame.",
+                          "Image Snapshot", wx.OK | wx.ICON_WARNING)
+            return
+
+        num = self._snapshotFrameNumber()
+        os.makedirs("snapshots", exist_ok=True)
+
+        saved = []
+        for suffix, bmp in (("_L.png",  left_bmp),
+                            ("_LO.png", self.imageCtrl.GetBitmap()),
+                            ("_R.png",  right_bmp),
+                            ("_RO.png", self.secondaryImageCtrl.GetBitmap())):
+            if not (bmp and bmp.IsOk()):
+                continue
+            path = os.path.join("snapshots", "snap_%05d%s" % (num, suffix))
+            if bmp.ConvertToImage().SaveFile(path, wx.BITMAP_TYPE_PNG):
+                saved.append(path)
+            else:
+                print("Image Snapshot: failed to write", path)
+
+        wx.MessageBox("Saved %d of 4 snapshots:\n%s" % (len(saved), "\n".join(saved)),
+                      "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
+
+   def _snapshotFrameNumber(self):
+        """Frame number for snapshot filenames: colorFrame_0_00047.png -> 47.
+        Falls back to the streamer's current index, then 0."""
+        fname = os.path.basename(self.filepath)
+        if "colorFrame" in fname:
+            num = fname.split('_')[-1].split('.')[0]
+            if num.isdigit():
+                return int(num)
+        if self.folderStreamer.max() > 0:
+            return self.folderStreamer.current()
+        return 0
 
    def onMouseMoveMagnifier(self, event):
     if not (hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown()):
