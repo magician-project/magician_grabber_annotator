@@ -3226,10 +3226,10 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         export_dataset_video(self)
 
    def onImageSnapshot(self, event):
-        """Save 4 PNGs of the current frame into snapshots/: snap_<frame>_L.png / _LO.png
-        (left, plain / with overlays) and _R.png / _RO.png (right). Plain images come from
-        the cached annotation-free bases, overlays straight from the displayed bitmaps --
-        all at panel resolution."""
+        """Save 4 PNGs of the current frame into snapshots/: snap_<serial>_L.png / _LO.png
+        (left, plain / with overlays) and _R.png / _RO.png (right), where <serial> is the
+        next incremental snapshot number. Plain images come from the cached annotation-free
+        bases, overlays straight from the displayed bitmaps -- all at panel resolution."""
         if not self.filepath or self.rightViewImage is None:
             wx.MessageBox("No frame loaded.", "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
             return
@@ -3244,8 +3244,8 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                           "Image Snapshot", wx.OK | wx.ICON_WARNING)
             return
 
-        num = self._snapshotFrameNumber()
         os.makedirs("snapshots", exist_ok=True)
+        serial = self._nextSnapshotSerial()
 
         saved = []
         for suffix, bmp in (("_L.png",  left_bmp),
@@ -3254,26 +3254,24 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                             ("_RO.png", self.secondaryImageCtrl.GetBitmap())):
             if not (bmp and bmp.IsOk()):
                 continue
-            path = os.path.join("snapshots", "snap_%05d%s" % (num, suffix))
+            path = os.path.join("snapshots", "snap_%05d%s" % (serial, suffix))
             if bmp.ConvertToImage().SaveFile(path, wx.BITMAP_TYPE_PNG):
                 saved.append(path)
             else:
                 print("Image Snapshot: failed to write", path)
 
-        wx.MessageBox("Saved %d of 4 snapshots:\n%s" % (len(saved), "\n".join(saved)),
-                      "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
+        #wx.MessageBox("Saved %d of 4 snapshots:\n%s" % (len(saved), "\n".join(saved)),
+        #              "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
 
-   def _snapshotFrameNumber(self):
-        """Frame number for snapshot filenames: colorFrame_0_00047.png -> 47.
-        Falls back to the streamer's current index, then 0."""
-        fname = os.path.basename(self.filepath)
-        if "colorFrame" in fname:
-            num = fname.split('_')[-1].split('.')[0]
-            if num.isdigit():
-                return int(num)
-        if self.folderStreamer.max() > 0:
-            return self.folderStreamer.current()
-        return 0
+   def _nextSnapshotSerial(self):
+        """Next snapshot serial: one past the highest snap_NNNNN_*.png already in
+        snapshots/ (0 when the folder holds no snapshots)."""
+        serial = -1
+        for name in os.listdir("snapshots"):
+            parts = name.split("_")
+            if name.startswith("snap_") and len(parts) > 1 and parts[1].isdigit():
+                serial = max(serial, int(parts[1]))
+        return serial + 1
 
    def onMouseMoveMagnifier(self, event):
     if not (hasattr(self, 'magnifier') and self.magnifier and self.magnifier.IsShown()):
