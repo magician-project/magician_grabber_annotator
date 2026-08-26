@@ -52,7 +52,9 @@ def fetch_repository_index(base_url):
     Fetch the directory listing at base_url and return
     ``(dict[filename -> size_bytes_or_None], error_str_or_None)``.
 
-    Parses standard Apache / nginx autoindex HTML for .pth and .json entries.
+    Parses standard Apache / nginx autoindex HTML for .zip entries -- the
+    repository packs each model as one flat {model}_{timestamp}.zip (see
+    mvc.inference.model_download), not bare .pth/.json files.
     """
     if not base_url.endswith('/'):
         base_url += '/'
@@ -64,24 +66,28 @@ def fetch_repository_index(base_url):
 
     files = {}
 
-    # Step 1 — collect every href that ends in .pth or .json (no sub-paths)
-    for m in re.finditer(r'href="([^"/?][^"]*\.(pth|json))"', html, re.IGNORECASE):
+    # Step 1 — collect every href that ends in .zip (no sub-paths)
+    for m in re.finditer(r'href="([^"/?][^"]*\.zip)"', html, re.IGNORECASE):
         fname = m.group(1)
         if '/' not in fname:
             files[fname] = None
 
-    # Step 2 — try to parse sizes from the Apache listing text around each link.
-    # Common Apache format:
-    #   <a href="name.pth">name.pth</a>    2025-01-15 14:23   45M
+    # Step 2 — parse sizes from the text around each link. Tolerant of both a
+    # flat Apache listing (link then plain text: "...</a>  2025-01-15 14:23  45M")
+    # and a table-based nginx autoindex (link then "</a></td><td>...date...</td>
+    # <td>...size...</td>") by stripping tags from a window after the link
+    # before matching the date + size.
     for fname in list(files.keys()):
-        esc = re.escape(fname)
-        m = re.search(
-            esc + r'[^<]*</a>[^<\n]*'
+        m = re.search(re.escape(fname) + r'[^<]*</a>', html, re.IGNORECASE)
+        if not m:
+            continue
+        window = re.sub(r'<[^>]+>', ' ', html[m.end():m.end() + 300])
+        sm = re.search(
             r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+([\d.]+[KMGkmg]?|-)',
-            html, re.IGNORECASE,
+            window, re.IGNORECASE,
         )
-        if m:
-            files[fname] = _parse_size_str(m.group(2))
+        if sm:
+            files[fname] = _parse_size_str(sm.group(2))
 
     return files, None
 
@@ -128,39 +134,50 @@ def _is_valid_pth(path):
 
 def check_for_updates(base_url, local_dir):
     """
-    Compare the remote repository with the local classifier directory, including
-    runs filed under experiments/<campaign>/<run>/ (see find_local_model).
+    Compare the remote model repository with the local classifier directory,
+    including runs filed under experiments/<campaign>/<run>/ (see find_local_model).
+
+    The repository packs each model as one {name}_{timestamp}.zip (pth+json+
+    plots), so picking "which zip is current for this model" delegates to
+    mvc.inference.model_download.newest_zip_for -- the same helper the app's
+    own auto-download path (ensure_model) uses -- instead of re-deriving it here.
 
     Returns ``(list[model_info_dict], error_str_or_None)``.
 
     Each dict contains:
-        name              – model base name (no extension)
-        pth_remote_size   – remote .pth size in bytes or None
-        json_remote_size  – remote .json size in bytes or None
-        has_pth_local     – bool
-        has_json_local    – bool
-        local_pth         – path of the local .pth, or None
-        local_pth_size    – int or None
-        status            – 'new' | 'updated' | 'corrupted' | 'filed' | 'current'
+        name           – model base name (no extension)
+        remote_zip     – newest {name}_{timestamp}.zip filename on the server
+        remote_size    – that zip's size in bytes, or None if unknown
+        local_pth      – path of the local .pth, or None
+        local_pth_size – int or None
+        status         – 'new' | 'corrupted' | 'filed' | 'current'
 
     'filed' means the only local copy was trained here and sits in a run directory
-    rather than in the deployment directory. It is present, so it is NOT 'new', and
-    its size is not a staleness signal (it never came from the repository), so it is
-    never 'updated' either -- downloading it would only add a flat copy that shadows
-    the local run.
+    rather than in the deployment directory. It is present, so it is NOT 'new'.
+
+    There is no 'updated' status: the remote size is a compressed zip bundling
+    pth+json+plots, which has no byte-for-byte relationship to the locally
+    extracted .pth, so it can't signal staleness. ensure_model() (which the
+    rest of the app's auto-download path uses) makes the same call --
+    presence-only, no staleness check.
     """
     remote_files, err = fetch_repository_index(base_url)
     if remote_files is None:
         return [], err
 
-    pth_names  = {os.path.splitext(f)[0] for f in remote_files if f.endswith('.pth')}
-    json_names = {os.path.splitext(f)[0] for f in remote_files if f.endswith('.json')}
-    model_names = sorted(pth_names & json_names)
+    from mvc.inference.model_download import newest_zip_for
+    remote_zips = list(remote_files.keys())
+
+    model_names = set()
+    for z in remote_zips:
+        m = re.match(r"(.+)_\d{8}_\d{6}\.zip$", z)
+        if m:
+            model_names.add(m.group(1))
 
     results = []
-    for name in model_names:
-        pth_remote  = remote_files.get(f"{name}.pth")
-        json_remote = remote_files.get(f"{name}.json")
+    for name in sorted(model_names):
+        remote_zip  = newest_zip_for(name, remote_zips)
+        remote_size = remote_files.get(remote_zip)
         found       = find_local_model(local_dir, name)
         local_pth   = found[0] if found else None
         local_size  = os.path.getsize(local_pth) if found else None
@@ -171,20 +188,16 @@ def check_for_updates(base_url, local_dir):
             status = 'corrupted'
         elif not _is_flat(local_dir, local_pth):
             status = 'filed'
-        elif pth_remote is not None and local_size is not None and pth_remote != local_size:
-            status = 'updated'
         else:
             status = 'current'
 
         results.append({
-            'name':            name,
-            'pth_remote_size': pth_remote,
-            'json_remote_size': json_remote,
-            'has_pth_local':   found is not None,
-            'has_json_local':  found is not None,
-            'local_pth':       local_pth,
-            'local_pth_size':  local_size,
-            'status':          status,
+            'name':           name,
+            'remote_zip':     remote_zip,
+            'remote_size':    remote_size,
+            'local_pth':      local_pth,
+            'local_pth_size': local_size,
+            'status':         status,
         })
 
     return results, None
@@ -207,7 +220,7 @@ class ModelUpdaterDialog(wx.Dialog):
     """
 
     # Statuses "Select New / Updated" ticks, i.e. the ones a download actually fixes.
-    FETCH_STATUSES = ('new', 'updated', 'corrupted')
+    FETCH_STATUSES = ('new', 'corrupted')
 
     def __init__(self, parent, base_url, local_dir):
         super().__init__(parent, title="Check for Model Updates", size=(660, 500))
@@ -277,17 +290,14 @@ class ModelUpdaterDialog(wx.Dialog):
         self.list_ctrl.Clear()
 
         new_count     = sum(1 for r in results if r['status'] == 'new')
-        updated_count = sum(1 for r in results if r['status'] == 'updated')
         filed_count   = sum(1 for r in results if r['status'] == 'filed')
 
         for i, r in enumerate(results):
-            remote_sz = _format_size(r['pth_remote_size'])
+            remote_sz = _format_size(r['remote_size'])
             if r['status'] == 'new':
                 tag = '[NEW]'
             elif r['status'] == 'corrupted':
                 tag = f"[CORRUPTED  local={_format_size(r['local_pth_size'])}]"
-            elif r['status'] == 'updated':
-                tag = f"[UPDATE  local={_format_size(r['local_pth_size'])}]"
             elif r['status'] == 'filed':
                 where = os.path.relpath(os.path.dirname(r['local_pth']), self.local_dir)
                 tag = f"[trained here: {where}]"
@@ -298,7 +308,7 @@ class ModelUpdaterDialog(wx.Dialog):
             if r['status'] in self.FETCH_STATUSES:
                 self.list_ctrl.Check(i, True)
 
-        summary = f"{new_count} new, {updated_count} updated"
+        summary = f"{new_count} new"
         if filed_count:
             summary += f", {filed_count} trained here"
         self.status_lbl.SetLabel(
@@ -313,25 +323,20 @@ class ModelUpdaterDialog(wx.Dialog):
     # ------------------------------------------------------------------ download
 
     def _download_thread(self, to_download):
-        total = len(to_download) * 2   # .pth + .json per model
+        from mvc.inference.model_download import download_model
+        total = len(to_download)   # one zip archive (pth+json+plots) per model
         done  = 0
 
         for r in to_download:
             if self._stop:
                 break
-            for ext in ('pth', 'json'):
-                if self._stop:
-                    break
-                fname = f"{r['name']}.{ext}"
-                url   = self.base_url + fname
-                dst   = os.path.join(self.local_dir, fname)
-                self._ui(self.status_lbl.SetLabel, f"Downloading {fname}…")
-                try:
-                    urllib.request.urlretrieve(url, dst)
-                except Exception as e:
-                    self._ui(self.status_lbl.SetLabel, f"Failed {fname}: {e}")
-                done += 1
-                self._ui(self.gauge.SetValue, int(done / total * 100))
+            self._ui(self.status_lbl.SetLabel, f"Downloading {r['remote_zip'] or r['name']}…")
+            try:
+                download_model(r['name'], self.local_dir, include_plots=True, base_url=self.base_url)
+            except Exception as e:
+                self._ui(self.status_lbl.SetLabel, f"Failed {r['name']}: {e}")
+            done += 1
+            self._ui(self.gauge.SetValue, int(done / total * 100))
 
         if not self._stop:
             self._ui(self._on_download_done)

@@ -292,6 +292,7 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         self.leftViewImage       = None  # processed image shown in the left panel (imageCtrl)
         self.leftViewImageOriginal = None  # plain pre-classifier render of the left panel (for Image Snapshot _L.png)
         self.rightViewImage      = None  # foreground/visualization image shown in the right panel (secondaryImageCtrl)
+        self._currentImgPNM      = None  # raw/repacked polarization mosaic for the current frame (for Image Snapshot _M.png)
         # --- annotation-effort statistics for the current dataset session (committed to info.json on Finalize) ---
         self._stat_clicks         = 0
         self._stat_keystrokes     = 0
@@ -2035,6 +2036,8 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                   print("Could not load ",filepath)
                   return
 
+           self._currentImgPNM = imgPNM
+
 
            print("Raw image dims for ",filepath," ",imgCV.shape)
            self.viewedImageFullWidth  = imgCV.shape[1]
@@ -3233,10 +3236,11 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         export_dataset_video(self)
 
    def onImageSnapshot(self, event):
-        """Save 4 PNGs of the current frame into snapshots/: snap_<serial>_L.png / _LO.png
-        (left, plain / with overlays) and _R.png / _RO.png (right), where <serial> is the
-        next incremental snapshot number. Plain images: the pre-classifier render for the
-        left, the annotation-free base for the right; overlays straight from the displayed
+        """Save 5 PNGs of the current frame into snapshots/: snap_<serial>_L.png / _LO.png
+        (left, plain / with overlays), _R.png / _RO.png (right), and _M.png (monochrome
+        average of the 4 polarization channels), where <serial> is the next incremental
+        snapshot number. Plain images: the pre-classifier render for the left, the
+        annotation-free base for the right; overlays straight from the displayed
         bitmaps -- all at panel resolution."""
         if not self.filepath or self.rightViewImage is None:
             wx.MessageBox("No frame loaded.", "Image Snapshot", wx.OK | wx.ICON_INFORMATION)
@@ -3259,6 +3263,13 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
                           "Image Snapshot", wx.OK | wx.ICON_WARNING)
             return
 
+        mono_bmp = None
+        if self._currentImgPNM is not None:
+            rgba = readPolarPNMToRGBALive(self._currentImgPNM)  # ch0..3 = p0,p45,p90,p135
+            mono = rgba.astype(np.float32).mean(axis=2).astype(np.uint8)
+            mono_rgb = self.rescaleCVMAT(cv2.cvtColor(mono, cv2.COLOR_GRAY2RGB))
+            mono_bmp = wx.Bitmap.FromBuffer(mono_rgb.shape[1], mono_rgb.shape[0], mono_rgb)
+
         os.makedirs("snapshots", exist_ok=True)
         serial = self._nextSnapshotSerial()
 
@@ -3266,7 +3277,8 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
         for suffix, bmp in (("_L.png",  left_bmp),
                             ("_LO.png", self.imageCtrl.GetBitmap()),
                             ("_R.png",  right_bmp),
-                            ("_RO.png", self.secondaryImageCtrl.GetBitmap())):
+                            ("_RO.png", self.secondaryImageCtrl.GetBitmap()),
+                            ("_M.png",  mono_bmp)):
             if not (bmp and bmp.IsOk()):
                 continue
             path = os.path.join("snapshots", "snap_%05d%s" % (serial, suffix))

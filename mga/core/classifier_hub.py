@@ -48,7 +48,7 @@ from mga.paths import classifier_root
 
 useClassifier   = True #<- Master switch classifier off if you have hw/sw limitations
 benchmark       = False #<- Set to True to run a forward-pass timing test on each model at startup
-classifier_online_repository = "http://ammar.gr/magician/ckpts2/"
+classifier_online_repository = "http://ammar.gr/magician/models/CameraV2Models/"
 classifier_relative_directory = classifier_root()
 
 #-------------------------------------------------------------------------------
