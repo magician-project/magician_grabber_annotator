@@ -154,20 +154,20 @@ class AutomationTabMixin:
 
         s.Add(wx.StaticText(parent, label="Response"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
         self.vlmResponseCtrl = wx.TextCtrl(
-            parent, size=(-1, 100), style=wx.TE_MULTILINE | wx.TE_READONLY)
+            parent, size=(-1, 50), style=wx.TE_MULTILINE | wx.TE_READONLY)
         s.Add(self.vlmResponseCtrl, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 5)
 
         s.Add(wx.StaticText(parent, label="Parsed coordinates"), 0, wx.LEFT | wx.RIGHT | wx.TOP, 5)
         self.vlmPointsList = wx.ListBox(parent, size=(-1, 60), choices=[])
         s.Add(self.vlmPointsList, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 5)
 
-        self.vlmAddPointsBtn = wx.Button(parent, label="Add parsed coordinates as points")
+        self.vlmAddPointsBtn = wx.Button(parent, label="Add as Points")
         self.vlmAddPointsBtn.Bind(wx.EVT_BUTTON, self.onAddVlmPoints)
         self.vlmAddPointsBtn.Enable(False)
         s.Add(self.vlmAddPointsBtn, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 5)
 
         note = wx.StaticText(parent, label=(
-            "Note: this VLM was previously found unreliable for precise defect\n"
+            "Note: VLM may be unreliable for precise defects\n"
             "localisation on this imagery (see knowledge/PLAN.md). SAM3 pen-mark\n"
             "detection (above) remains the primary auto-annotation path — use\n"
             "this panel for ad-hoc questions, not as a trusted detector."))
