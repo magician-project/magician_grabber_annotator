@@ -137,14 +137,17 @@ from mga.core.classifier_grading import AnnotationCorrelationStats
 from mga.core.download_all_frames import BatchProcessDialog
 from mga.core.magnifier import MagnifierFrame
 from mga.core.classifier_tab import ClassifierTabMixin
+from mga.core.automation_tab import AutomationTabMixin
 
 # AutoAnnotator needs gradio_client (optional). Import lazily-safe so the GUI still
 # launches if the dependency / servers are unavailable; onAuto reports the error.
 try:
-    from mga.core.auto_annotator import AutoAnnotator, temporal_consensus
+    from mga.core.auto_annotator import (AutoAnnotator, temporal_consensus,
+                                         SAM3_IP, SAM3_PORT, DEFAULT_PROMPT)
 except Exception as _autoErr:
     AutoAnnotator = None
     _autoImportError = _autoErr
+    SAM3_IP, SAM3_PORT, DEFAULT_PROMPT = "127.0.0.1", "7860", "drawn circle"
 
 
 from mga.core.read_data_annotator import repackPolarToMosaic,readPolarPNMToRGBALive
@@ -242,7 +245,7 @@ def dataset_defaults(name):
     return out
 
 
-class PhotoCtrl(wx.App, ClassifierTabMixin):
+class PhotoCtrl(wx.App, ClassifierTabMixin, AutomationTabMixin):
    def __init__(self, redirect=False, filename=None):
         
         wx.App.__init__(self, redirect, filename)
@@ -638,6 +641,11 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
     self.controlsPanel = wx.Panel(self.rightBook)
     self._buildControlsTab(self.controlsPanel)
     self.rightBook.AddPage(self.controlsPanel, "Sensors")
+
+    # --- Automation tab (SAM3 server/keyword/knobs + VLM grounded-question panel) ---
+    automationPanel = wx.Panel(self.rightBook)
+    self._buildAutomationTab(automationPanel)
+    self.rightBook.AddPage(automationPanel, "Automation")
 
 
 
@@ -1088,7 +1096,14 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
               "Auto Annotate", wx.OK | wx.ICON_ERROR)
           return False
       try:
-          self.autoAnnotator = AutoAnnotator()
+          if hasattr(self, "samIpCtrl"):     # Automation tab built -> honor its fields
+              self.autoAnnotator = AutoAnnotator(
+                  ip=self.samIpCtrl.GetValue().strip() or SAM3_IP,
+                  port=self.samPortCtrl.GetValue().strip() or str(SAM3_PORT),
+                  prompt=self.samPromptCtrl.GetValue().strip() or DEFAULT_PROMPT,
+                  representation=self.samRepresentationCombo.GetValue())
+          else:
+              self.autoAnnotator = AutoAnnotator()
       except Exception as e:
           wx.MessageBox(f"Could not initialise AutoAnnotator:\n{e}",
                         "Auto Annotate", wx.OK | wx.ICON_ERROR)
@@ -1196,7 +1211,8 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
           polarity = "high" if "positive" in self.defectComboBox.GetValue().lower() else "low"
           wx.BeginBusyCursor()
           try:
-              dets = self.autoAnnotator.detect(prev_raw, polarity=polarity)
+              dets = self.autoAnnotator.detect(prev_raw, polarity=polarity,
+                                               **self._samDetectKwargs())
           except Exception as e:
               wx.EndBusyCursor()
               wx.MessageBox(f"Detection failed:\n{e}", "Auto Annotate",
@@ -1649,7 +1665,8 @@ class PhotoCtrl(wx.App, ClassifierTabMixin):
               failed += 1
               continue
           try:
-              cands = self.autoAnnotator.detect_ex(raw, polarity=polarity)
+              cands = self.autoAnnotator.detect_ex(raw, polarity=polarity,
+                                                   **self._samDetectKwargs())
           except Exception as e:
               prog.Destroy()
               wx.MessageBox(f"Detection failed on:\n{img}\n\n{e}",
